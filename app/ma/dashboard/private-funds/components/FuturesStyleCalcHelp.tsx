@@ -18,29 +18,285 @@ type HelpBlock = {
   bullets?: string[]
 }
 
+type FactorHelp = {
+  key: string
+  title: string
+  summary: string
+  paragraphs: string[]
+  formula?: string
+  bullets?: string[]
+  note?: string
+}
+
+/** Per-factor calc text aligned with lib/server/futures-style-factors.ts (REPORT_FIT live path). */
+export const FACTOR_CALC_HELP: Record<string, FactorHelp> = {
+  report_basis: {
+    key: "report_basis",
+    title: "基差(近远月)（国君 CTA 周报代理）",
+    summary: "近远月对数基差的截面多空，再乘 REPORT_FIT.basisScale。",
+    paragraphs: [
+      "信号日 t 用近月/远月收盘构造 Carry_i = ln(近月价/远月价)（贴水为正、升水为负）。",
+      "在商品池内按 Carry 排序，做多最高 topFrac、做空最低 topFrac（等权多空，crossSectionLs longHigh=true）。",
+      "组合日收益取下一交易日主力连续收益 r_{i,t+1}，再乘 amp 缩放，使路径幅度贴近周报校准（非 Wind 净值）。",
+    ],
+    formula: `score_i = ln(P_near / P_far)
+r_basis = CS_LS(score, topFrac=basisTopFrac=0.2, longHigh) × basisScale(=0.1)`,
+    bullets: [
+      "当前 knobs：basisTopFrac=0.2，basisScale=0.1（相对 Wind GTJAQH012 离线校准）。",
+      "USE_WIND_GTJAQH=false：图上永不直接画 GTJAQH*.WI。",
+    ],
+    note: "与「基差因子/价值收益」同源 Carry，但是周报名因子并带独立 scale。",
+  },
+  report_cs_long: {
+    key: "report_cs_long",
+    title: "长期截面（国君 CTA 周报代理）",
+    summary: "默认 csLongBlend 3腿（neg_slope L120 + z L120 + neg_z L250）；vs GTJAQH013 3m corr_ret≈0.333 / 1y≈0.679。",
+    paragraphs: [
+      "对每个品种用近 L 日收盘做 price ~ time 回归（L=csLongL=120），要求 R² ≥ csLongR2(=0.15)。",
+      "打分取回归斜率 slope（csLongNegZ=false，不用 −z）。可选板块内 demean + 全截面 z-score 标准化。",
+      "按分数做多 topFrac、做空 bottom（topFrac=0.15），日收益再乘 csLongScale(=−1.0)。",
+      "代码里另有 csLongBlend 多腿（neg_z / neg_slope），但 enabled=false，线上不走 blend。",
+    ],
+    formula: `reg: P_τ = a + b·τ + ε,  τ∈[t−L+1,t], L=120
+score = b   (若 R²≥0.15)
+score ← sectorNeutral demean + 截面 z-score
+r = CS_LS(score, topFrac=0.15) × (−1.0)`,
+    bullets: [
+      "对照离线校准：Wind GTJAQH013（文件标签「截面动量」）。",
+      "负 scale 等价于翻转多空方向以贴合周报路径。",
+    ],
+  },
+  report_pv_corr: {
+    key: "report_pv_corr",
+    title: "量价相关性（国君 CTA 周报代理）",
+    summary: "多字段持仓/成交 shock 的加权 blend（dOiShockBlend），做空高冲击。",
+    paragraphs: [
+      "当前 pvKind = dOiShockBlend：对每条 leg 在窗口 L 内把字段序列做成截面 z-score（(x−μ)/σ）。",
+      "字段包括 ΔOI、OI 百分比变化、成交额/持仓、sign(r)·ΔOI、成交额等；部分 leg 再做 EWMA 高通（hp）。",
+      "每条 leg 做截面多空（longHigh=false，即做多低冲击/做空高冲击），日收益按 weight 加权后乘 pvBlend.scale。",
+    ],
+    formula: `z_i = (x_{i,t} − μ_L) / σ_L
+r_leg = CS_LS(z, topFrac≈0.1, longHigh=false)  [再可选 HP]
+r_pv = (Σ w_leg · HP(r_leg)) × pvBlend.scale(≈ −0.183)`,
+    bullets: [
+      "当前约 8 条 legs（dOi / oiPct / turnover / amount / signRetDoi 等不同 L、hp）。",
+      "名称沿用周报「量价相关性」，实现已是多字段 shock blend，而非单纯 |r|–volume 相关。",
+      "对照离线：Wind GTJAQH011。",
+    ],
+  },
+  report_long_rule: {
+    key: "report_long_rule",
+    title: "长期规则（国君 CTA 周报代理）",
+    summary: "低波动过滤后的长时间序列动量，逆波动加权并 flip。",
+    paragraphs: [
+      "回看 L=longRuleL(=150) 的累计收益 R，信号 s = sign(R)；若 longRuleFlip 则取反。",
+      "波动过滤：若 20 日波动 > longRuleVolCap(=1.2)×120 日波动，该品种当日不参与。",
+      "权重：非等权时 w = s / σ（σ 为 longRuleVolL=40 日收益波动）；至少 4 个品种才开仓。",
+      "日收益 = Σ (w/Σ|w|) · r_{t+1}，再乘 longRuleScale(=−0.7)。",
+    ],
+    formula: `R = P_t/P_{t−L} − 1,  L=150
+skip if σ_20 > 1.2 · σ_120
+w = flip(sign(R)) / σ_40
+r = (Σ w r_{t+1} / Σ|w|) × (−0.7)`,
+    bullets: ["对照离线：Wind GTJAQH010（长期规则动量）。"],
+  },
+  report_inventory: {
+    key: "report_inventory",
+    title: "库存（国君 CTA 周报 · 注册仓单）",
+    summary: "默认 invRetBlend 三腿（社库+仓单）；vs GTJAQH007 3m corr_ret≈0.657。",
+    paragraphs: [
+      "默认 invKind=invRetBlend（三腿：社库L5 w0.6 + 社库L10 lag1 w0.2 + 仓单L5 w0.2）。",
+      "校准 vs GTJAQH007：3m corr_ret≈0.657 / corr_lvl≈0.826（先前双腿 0.611/0.819）；1y corr_ret≈0.417。",
+      "备选 invKind：social / warehouse / socialZ / socialMulti / socialBlend / dOi；离线 ridge/GBM 未稳定抬升 OOS。",
+    ],
+    formula: `score_leg = -d% inventory (L per leg)
+r = sum w_k * CS_LS(score_leg_k) * scale_k   (3-leg invRetBlend)`,
+    bullets: [
+      "数据：raw_futures_warehouse_receipts_daily。对照：Wind GTJAQH007（校准-only）。",
+      "要再抬 corr_ret，需要更多品种的社会/港口/厂库库存序列（见 Choice wishlist）。",
+    ],
+  },
+  report_profit: {
+    key: "report_profit",
+    title: "利润（国君 CTA 周报 · Carry 动量）",
+    summary: "默认 profitRetBlend（carryMom 多 horizon 合成）；vs GTJAQH009 3m corr_ret≈0.489。",
+    paragraphs: [
+      "默认 profitKind=profitRetBlend（carryMom L30 top0.35 scale0.08 ⊕ L20 top0.2 scale0.05，等权；全日腿齐全才出信号）。",
+      "校准 vs GTJAQH009：3m corr_ret≈0.489 / corr_lvl≈0.699（先前 L30-only 0.341/0.523）；1y corr_ret≈0.174（守 0.85×先验底）。",
+      "备选：carryMom / carry / carryMomBlend / edb / edbMom / edbBlend；EDB 覆盖仍偏稀。",
+    ],
+    formula: `score = Carry_t - Carry_{t-L}   (L in {30,20})
+r = 0.5*CS_LS(L30)*0.08 + 0.5*CS_LS(L20)*0.05`,
+    bullets: [
+      "对照：Wind GTJAQH009。更多盘面加工利润 EMI 见 Choice wishlist。",
+    ],
+  },
+  report_basis_mom: {
+    key: "report_basis_mom",
+    title: "基差动量（CTA/REPORT_FIT）",
+    summary: "Carry 相对 20 日前变化的截面动量。",
+    paragraphs: [
+      "score_i = Carry_{i,t} − Carry_{i,t−20}。",
+      "做多变化大、做空变化小（longHigh=true）；无额外 scale（与旧「基差动量」同源思想）。",
+    ],
+    formula: `score = Carry_t − Carry_{t−20}
+r = CS_LS(score, longHigh=true)`,
+    bullets: ["无独立 Wind 列时完全本地重构；期限基差另见 GTJAQH004（校准-only）。"],
+  },
+  report_mid_mom: {
+    key: "report_mid_mom",
+    title: "中期动量（CTA/REPORT_FIT）",
+    summary: "MA20 与 MA60 交叉的时间序列动量（波动缩放）。",
+    paragraphs: [
+      "对每个品种比较 MA20 与 MA60：金叉偏多、死叉偏空，再按波动缩放权重合成组合日收益（maCrossTsReturn）。",
+    ],
+    formula: `signal ≈ sign(MA20 − MA60)，权重按波动缩放
+r = 组合下一期收益`,
+    bullets: ["对照离线：Wind GTJAQH008。"],
+  },
+  ts_mom_short: {
+    key: "ts_mom_short",
+    title: "时间序列动量(短)",
+    summary: "L=20 的符号动量，逆波动加权。",
+    paragraphs: [
+      "s_i = sign(R_i(20))，σ_i 为约 60 日波动，w_i = s_i/σ_i，日收益 = Σ w r / Σ|w|。",
+    ],
+    formula: `w_i = sign(R_i(20)) / σ_i
+r = Σ w_i r_{i,t+1} / Σ|w_i|`,
+  },
+  ts_mom_mid: {
+    key: "ts_mom_mid",
+    title: "时间序列动量(中)",
+    summary: "L=60 的符号动量，逆波动加权。",
+    paragraphs: ["同短期 TS 动量，回看窗口改为 60 日。"],
+    formula: `w_i = sign(R_i(60)) / σ_i`,
+  },
+  ts_mom_long: {
+    key: "ts_mom_long",
+    title: "时间序列动量(长)",
+    summary: "L=120 的符号动量，逆波动加权。",
+    paragraphs: ["同短期 TS 动量，回看窗口改为 120 日。"],
+    formula: `w_i = sign(R_i(120)) / σ_i`,
+  },
+  cs_mom_short: {
+    key: "cs_mom_short",
+    title: "截面动量(短)",
+    summary: "按 20 日收益排序的截面多空。",
+    paragraphs: ["按过去 20 日收益排序，做多最高约 20%、做空最低约 20%，多空等权。"],
+    formula: `r = CS_LS(R(20), longHigh=true)`,
+  },
+  cs_mom: {
+    key: "cs_mom",
+    title: "截面动量",
+    summary: "按 60 日收益排序的截面多空。",
+    paragraphs: ["按过去 60 日收益排序，做多最高约 20%、做空最低约 20%。"],
+    formula: `r = CS_LS(R(60), longHigh=true)`,
+  },
+  term_structure: {
+    key: "term_structure",
+    title: "期限结构因子",
+    summary: "近远月 Carry 截面多空。",
+    paragraphs: ["Carry_i = 近月/次近月相关度量，做多高 Carry、做空低 Carry。"],
+    formula: `r = CS_LS(Carry, longHigh=true)`,
+  },
+  basis: {
+    key: "basis",
+    title: "基差因子",
+    summary: "与期限结构相同的 Carry 截面（展示名不同）。",
+    paragraphs: ["实现上与 term_structure / carry_value 共用 Carry 截面多空。"],
+    formula: `r = CS_LS(Carry, longHigh=true)`,
+  },
+  carry_value: {
+    key: "carry_value",
+    title: "价值收益因子",
+    summary: "Carry 截面，与基差因子同源。",
+    paragraphs: ["代码中直接复用 basis 当日收益。"],
+  },
+  basis_mom: {
+    key: "basis_mom",
+    title: "基差动量(旧)",
+    summary: "Carry 20 日变化截面（旧版命名）。",
+    paragraphs: ["score = Carry_t − Carry_{t−20}，做多高变化。与 report_basis_mom 思路相近。"],
+    formula: `r = CS_LS(Δ_20 Carry, longHigh=true)`,
+  },
+  basis_mom_short: {
+    key: "basis_mom_short",
+    title: "期限基差动量",
+    summary: "同基差动量，UI 主要出现在累计/区间面。",
+    paragraphs: ["与 basis_mom 同一套 ΔCarry 截面。"],
+  },
+  vol_short: {
+    key: "vol_short",
+    title: "波动因子(短)",
+    summary: "20 日波动截面：做多低波、做空高波。",
+    paragraphs: ["σ 为 20 日收益波动，CS_LS(longHigh=false)。"],
+    formula: `r = CS_LS(σ_20, longHigh=false)`,
+  },
+  vol: {
+    key: "vol",
+    title: "波动因子",
+    summary: "60 日波动截面：做多低波、做空高波。",
+    paragraphs: ["σ 为 60 日收益波动，CS_LS(longHigh=false)。"],
+    formula: `r = CS_LS(σ_60, longHigh=false)`,
+  },
+  liquidity: {
+    key: "liquidity",
+    title: "流动性因子",
+    summary: "Amihud 非流动性：|r|/均量，做多低、做空高。",
+    paragraphs: ["Amihud ≈ |r|/20 日均成交量，longHigh=false。"],
+    formula: `r = CS_LS(|r|/avgVol, longHigh=false)`,
+  },
+  price_dev: {
+    key: "price_dev",
+    title: "价格偏离因子",
+    summary: "相对 MA20 偏离的反转截面。",
+    paragraphs: ["Dev = P/MA20 − 1，做多低 Dev、做空高 Dev。"],
+    formula: `r = CS_LS(P/MA20−1, longHigh=false)`,
+  },
+  skew: {
+    key: "skew",
+    title: "偏度因子",
+    summary: "20 日收益偏度截面，做多低偏度。",
+    paragraphs: ["对近 20 日收益算偏度，CS_LS(longHigh=false)。"],
+  },
+  kurtosis: {
+    key: "kurtosis",
+    title: "峰度因子",
+    summary: "20 日超额峰度截面，做多低峰度。",
+    paragraphs: ["对近 20 日收益算超额峰度，CS_LS(longHigh=false)。"],
+  },
+  spec_willingness: {
+    key: "spec_willingness",
+    title: "投机意愿因子",
+    summary: "成交量/持仓量截面，做多意愿高。",
+    paragraphs: ["score = volume/OI，CS_LS(longHigh=true)。"],
+  },
+  position_chg: {
+    key: "position_chg",
+    title: "持仓变化因子",
+    summary: "sign(r)·ΔOI 截面，做多高分。",
+    paragraphs: ["score = sign(日收益)·ΔOI，CS_LS(longHigh=true)。"],
+  },
+}
+
 const FACTOR_DEFINITIONS: HelpBlock = {
   title: "各因子的研究定义（已落地为真实多空组合）",
   paragraphs: [
     "信号一律用 t−1 及更早的价格/持仓数据构造，收益取各品种下一交易日主力连续合约收益 r_{i,t} = P_{i,t}/P_{i,t−1} − 1。组合在商品期货池内做多空（剔除股指/国债）。",
     "价格主源：AkShare 主力连续 + EMQuant 近远月。报告名因子为本机 REPORT_FIT 价格/持仓重构（非 Wind NAV）。data/gtjaqh_closes.csv 仅作离线校准真值，默认不接入实时图表（USE_WIND_GTJAQH=false）。",
+    "点开各分因子图标题旁的「?」可查看该因子的详细计算说明。",
   ],
   bullets: [
     "时间序列动量(短/中/长)：回看 L = 20 / 60 / 120，信号 s_i = sign(R_i(L))，σ_i 为 60 日波动，权重 w_i = s_i/σ_i，日收益 = Σ w_i r_{i,t} / Σ |w_i|。",
     "截面动量(短) / 截面动量：按 L = 20 / 60 过去收益排序，做多最高 20%、做空最低 20%，多空等权。",
-    "期限结构 / 基差 / 价值收益：Carry_i = 近月价/次近月价 − 1，做多 Carry 高、做空 Carry 低。",
+    "期限结构 / 基差 / 价值收益：Carry 截面，做多 Carry 高、做空 Carry 低。",
     "基差动量：Carry 相对 20 日前的变化，做多变化高、做空变化低。",
-    "波动因子(短)/波动/低波动：σ 为 20/60 日收益波动，做多低波动、做空高波动。",
-    "流动性因子：Amihud ≈ |r|/成交量（20 日均量），做多 Amihud 低、做空高。",
-    "价格偏离 / 均价突破：Dev = P/MA20 − 1，反转：做多 Dev 低、做空 Dev 高。",
+    "波动因子(短)/波动：σ 为 20/60 日收益波动，做多低波动、做空高波动。",
+    "流动性因子：Amihud ≈ |r|/成交量，做多 Amihud 低、做空高。",
+    "价格偏离：Dev = P/MA20 − 1，反转：做多 Dev 低、做空 Dev 高。",
     "偏度 / 峰度：20 日收益偏度或超额峰度，做多低、做空高。",
-    "投机意愿：成交量/持仓量，做多意愿高、做空低。",
-    "持仓变化：Score = sign(r)·ΔOI，做多 Score 高、做空低。",
-    "基差（周报代理）：CS ln(近/远) 多贴水/空升水；topFrac≈20%；日收益×scale（REPORT_FIT.basis*，Wind GTJAQH012 校准）。",
-    "长期截面（周报代理）：price~time OLS（L≈120，用斜率而非 −z），截面 demean/中性，topFrac≈15%，scale 为负（REPORT_FIT.csLong*；对照 Wind GTJAQH013 截面动量）。",
-    "量价相关性（周报代理）：多腿 dOi/oiPct/turnover/amount shock blend（REPORT_FIT.pvBlend）；Wind 日收益相关仍偏弱，保留水平路径较稳的 blend。",
-    "长期规则（周报代理）：低波动动量 momLowVol（L≈150，volCap≈1.2，逆波动加权，flip + 负 scale；REPORT_FIT.longRule*，对照 Wind GTJAQH010）。",
-    "库存代理：截面 −ΔOI（无基本面库存序列时的弱代理）；利润代理：Carry 截面。对照 Wind 007/009，非实时 NAV。",
-    "中期动量：MA20/60 本地交叉。离线校准 CSV 映射：012基差/011量价/010长期规则动量/013截面动量/007库存/009利润。",
+    "投机意愿：成交量/持仓量；持仓变化：sign(r)·ΔOI。",
+    "基差(近远月)（周报）：CS ln(近/远)×basisScale；长期截面：OLS slope 截面×负 scale；量价：dOiShockBlend；长期规则：momLowVol+flip；库存：−Δ%仓单L5；利润：ΔCarry(L20)；基差动量/中期动量：ΔCarry 与 MA20/60。",
   ],
 }
 
@@ -111,7 +367,7 @@ const HELP: Record<HelpSection, { heading: string; intro: string; blocks: HelpBl
   },
   cumulative: {
     heading: "风格因子累计收益 · 计算说明",
-    intro: "折线是查询区间内各因子日收益率（百分点）的算术累计路径，起点为 0。纵轴单位是 %。",
+    intro: "折线是查询区间内各因子日收益率的累计路径。报告名因子为复利路径。",
     blocks: [
       DATA_SOURCE,
       {
@@ -123,11 +379,68 @@ const HELP: Record<HelpSection, { heading: string; intro: string; blocks: HelpBl
 其他: C_0 = 0; C_t = round( C_{t−1} + 100 × r_f(t) , 2 )`,
         bullets: [
           "若真实收益接近平坦，曲线也可能较直；那是市场结果，不是常数漂移 mock。",
+          "各分因子小图标题旁的「?」可查看该因子具体公式。",
         ],
       },
       FACTOR_DEFINITIONS,
     ],
   },
+}
+
+function HelpTrigger({ label }: { label: string }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-300 text-[11px] font-semibold leading-none text-zinc-500 hover:border-zinc-400 hover:bg-zinc-50 hover:text-zinc-800 transition-colors shrink-0"
+      aria-label={label}
+      title="计算说明"
+    >
+      ?
+    </button>
+  )
+}
+
+function HelpBody({
+  heading,
+  intro,
+  blocks,
+}: {
+  heading: string
+  intro: string
+  blocks: HelpBlock[]
+}) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="text-base pr-6">{heading}</DialogTitle>
+        <DialogDescription className="text-xs leading-relaxed">{intro}</DialogDescription>
+      </DialogHeader>
+      <div className="space-y-4 text-sm text-zinc-700">
+        {blocks.map((block) => (
+          <section key={block.title} className="space-y-2">
+            <h4 className="text-sm font-semibold text-zinc-900">{block.title}</h4>
+            {block.paragraphs?.map((paragraph) => (
+              <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
+                {paragraph}
+              </p>
+            ))}
+            {block.formula ? (
+              <pre className="overflow-x-auto rounded bg-zinc-50 px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap">
+                {block.formula}
+              </pre>
+            ) : null}
+            {block.bullets ? (
+              <ul className="list-disc pl-5 space-y-1 text-xs leading-relaxed text-zinc-600">
+                {block.bullets.map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        ))}
+      </div>
+    </>
+  )
 }
 
 export function FuturesStyleCalcHelp({ section }: { section: HelpSection }) {
@@ -136,44 +449,129 @@ export function FuturesStyleCalcHelp({ section }: { section: HelpSection }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-300 text-[11px] font-semibold leading-none text-zinc-500 hover:border-zinc-400 hover:bg-zinc-50 hover:text-zinc-800 transition-colors"
-          aria-label={content.heading}
-          title="计算说明"
-        >
-          ?
-        </button>
+        <span>
+          <HelpTrigger label={content.heading} />
+        </span>
       </DialogTrigger>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="text-base pr-6">{content.heading}</DialogTitle>
-          <DialogDescription className="text-xs leading-relaxed">{content.intro}</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 text-sm text-zinc-700">
-          {content.blocks.map((block) => (
-            <section key={block.title} className="space-y-2">
-              <h4 className="text-sm font-semibold text-zinc-900">{block.title}</h4>
-              {block.paragraphs?.map((paragraph) => (
-                <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
-                  {paragraph}
-                </p>
-              ))}
-              {block.formula ? (
-                <pre className="overflow-x-auto rounded bg-zinc-50 px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap">
-                  {block.formula}
-                </pre>
-              ) : null}
-              {block.bullets ? (
-                <ul className="list-disc pl-5 space-y-1 text-xs leading-relaxed text-zinc-600">
-                  {block.bullets.map((b) => (
-                    <li key={b}>{b}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </section>
+        <HelpBody heading={content.heading} intro={content.intro} blocks={content.blocks} />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Build help blocks for a factor key (shared by dialog ? and manage modal panel). */
+export function getFactorHelpBlocks(
+  factorKey: string,
+  displayName?: string,
+): { title: string; summary: string; blocks: HelpBlock[] } {
+  const help = FACTOR_CALC_HELP[factorKey]
+  const title = help?.title ?? displayName ?? factorKey
+  if (!help) {
+    return {
+      title,
+      summary: "本机风格因子真实多空组合日收益。",
+      blocks: [
+        {
+          title: "暂无专项说明",
+          paragraphs: [
+            `因子「${displayName ?? factorKey}」暂未单独整理公式。实现见 lib/server/futures-style-factors.ts。`,
+          ],
+        },
+      ],
+    }
+  }
+  return {
+    title,
+    summary: help.summary,
+    blocks: [
+      {
+        title: "计算逻辑（与代码一致）",
+        paragraphs: help.paragraphs,
+        formula: help.formula,
+        bullets: help.bullets,
+      },
+      ...(help.note ? [{ title: "备注", paragraphs: [help.note] } satisfies HelpBlock] : []),
+      {
+        title: "通用约定",
+        paragraphs: [
+          "信号用 t 及更早数据，收益用下一交易日主力连续收益；商品池多空（剔除股指/国债）。",
+          "报告名因子为 REPORT_FIT 本地重构；Wind GTJAQH*.WI 仅离线校准，默认不接入实盘图。",
+        ],
+      },
+    ],
+  }
+}
+
+/** Inline explanation panel (no dialog) — used inside 管理因子 modal. */
+export function FuturesStyleFactorHelpPanel({
+  factorKey,
+  displayName,
+  className,
+}: {
+  factorKey: string | null
+  displayName?: string
+  className?: string
+}) {
+  if (!factorKey) {
+    return (
+      <div className={["text-xs text-zinc-400 py-8 text-center", className].filter(Boolean).join(" ")}>
+        点击左侧因子名称查看计算说明
+      </div>
+    )
+  }
+  const { title, summary, blocks } = getFactorHelpBlocks(factorKey, displayName)
+  return (
+    <div className={["space-y-3 text-sm text-zinc-700", className].filter(Boolean).join(" ")}>
+      <div>
+        <h3 className="text-sm font-semibold text-zinc-900">{title}</h3>
+        <p className="text-xs leading-relaxed text-zinc-500 mt-1">{summary}</p>
+      </div>
+      {blocks.map((block) => (
+        <section key={block.title} className="space-y-1.5">
+          <h4 className="text-xs font-semibold text-zinc-800">{block.title}</h4>
+          {block.paragraphs?.map((paragraph) => (
+            <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
+              {paragraph}
+            </p>
           ))}
-        </div>
+          {block.formula ? (
+            <pre className="overflow-x-auto rounded bg-zinc-50 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap border border-zinc-100">
+              {block.formula}
+            </pre>
+          ) : null}
+          {block.bullets ? (
+            <ul className="list-disc pl-4 space-y-1 text-xs leading-relaxed text-zinc-600">
+              {block.bullets.map((b) => (
+                <li key={b}>{b}</li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ))}
+    </div>
+  )
+}
+
+/** Per-factor 「?」 on 分因子累计收益 cards (and reusable elsewhere). */
+export function FuturesStyleFactorHelp({
+  factorKey,
+  displayName,
+}: {
+  factorKey: string
+  displayName?: string
+}) {
+  const { title, summary, blocks } = getFactorHelpBlocks(factorKey, displayName)
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <span>
+          <HelpTrigger label={`${title} · 计算说明`} />
+        </span>
+      </DialogTrigger>
+      <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+        <HelpBody heading={`${title} · 计算说明`} intro={summary} blocks={blocks} />
       </DialogContent>
     </Dialog>
   )

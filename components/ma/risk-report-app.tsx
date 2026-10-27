@@ -9519,7 +9519,7 @@ html[data-mom-embed="1"] #mom-briefing-printable {
                     <div className="rounded border border-[#d4c9a8] overflow-hidden"
                          style={{ background: "#ffffff" }}>
                       <div className="p-3">
-                        <SectorPositionCharts height={260} capturing={sectorChartCapturing} />
+                        <SectorPositionCharts height={260} capturing={sectorChartCapturing} enableSleeveFilter={!isAccount} />
                       </div>
                     </div>
                     <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4"

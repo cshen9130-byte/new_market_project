@@ -2054,7 +2054,7 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
 
         # Positions and/or NHCI may have advanced — drop stale MOM 简报 cache.
         if ok_count > 0 or not skip_market_data:
-            clear_mom_file_cache("quant-vs-subjective", "warm-cache")
+            clear_mom_file_cache("quant-vs-subjective", "warm-cache", "benchmark", "product-nav")
 
         return 0 if err_count == 0 else 2
 

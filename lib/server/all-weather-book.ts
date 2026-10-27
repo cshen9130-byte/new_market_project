@@ -18,6 +18,7 @@ import {
   type AllWeatherVariantId,
 } from "@/lib/all-weather/variants"
 import { fetchLiveFuturesPrices, normalizeListedContract } from "@/lib/server/all-weather-prices"
+import { isCffexContractExpired } from "@/lib/client/cffex-expiry"
 import { readAllWeatherSettings, type AllWeatherSettings } from "@/lib/server/all-weather-settings"
 
 const DATA_ROOT = path.join(process.cwd(), "data", "all-weather")
@@ -350,16 +351,18 @@ function buildPositions(
   return snapshot.positions.map((src) => {
     const prev = prevByAsset?.get(src.asset)
     const price = prices[src.asset] ?? src.price ?? 0
-    const prevPrice = prev?.price ?? price
-    const rawLots = prev?.rawLots ?? sizeLots(src.targetWeight, capital, price, src.multiplier)
-    const lots = prev?.lots ?? rawLots
-    const targetRiskShare = src.riskShare ?? 0
     const spec = snapshot.specs.find((s) => s.asset === src.asset)
     const contract =
       contracts?.[src.asset] ||
       prev?.contract ||
       normalizeListedContract(spec?.refContract, src.asset) ||
       src.asset
+    // On a roll, do not treat (newMonth - expiredMonth) as the day's P/L.
+    const rolled = Boolean(prev?.contract && contract && prev.contract !== contract)
+    const prevPrice = rolled ? price : prev?.price ?? price
+    const rawLots = prev?.rawLots ?? sizeLots(src.targetWeight, capital, price, src.multiplier)
+    const lots = prev?.lots ?? rawLots
+    const targetRiskShare = src.riskShare ?? 0
     return markPosition(
       {
         asset: src.asset,
@@ -377,7 +380,7 @@ function buildPositions(
         assetVol: src.assetVol ?? null,
         rawLots,
         cumPnl: prev?.cumPnl ?? 0,
-        dailyPnl: prev ? lots * (price - prev.price) * src.multiplier : 0,
+        dailyPnl: prev ? lots * (price - prevPrice) * src.multiplier : 0,
       },
       snapshot.brokerMarginMult,
     )
@@ -646,6 +649,37 @@ function toOverview(book: PaperBook, variantId: AllWeatherVariantId): OverviewPa
   }
 }
 
+function hasExpiredHeldContract(positions: BookPosition[], now = new Date()) {
+  return positions.some((p) => p.lots > 0 && p.contract && isCffexContractExpired(p.contract, now))
+}
+
+/** Keep a locked same-day P/L when the feed reprints yesterday's settle after the bell. */
+function preserveLockedDayPnl(
+  prev: BookPosition | undefined,
+  next: BookPosition,
+  brokerMarginMult: number,
+): BookPosition {
+  if (!prev) return next
+  const flatNow = Math.abs(next.dailyPnl) < 1e-6
+  const hadDay = Math.abs(prev.dailyPnl) > 1e-6
+  const markUnchanged =
+    next.price > 0 && prev.price > 0 && Math.abs(next.price - prev.price) / prev.price < 1e-8
+  const markEqualsPrev =
+    next.price > 0 && next.prevPrice > 0 && Math.abs(next.price - next.prevPrice) / next.prevPrice < 1e-8
+  if (flatNow && hadDay && (markUnchanged || markEqualsPrev)) {
+    return markPosition(
+      {
+        ...next,
+        price: prev.price,
+        prevPrice: prev.prevPrice,
+        dailyPnl: prev.dailyPnl,
+        cumPnl: (prev.cumPnl ?? 0) - (prev.dailyPnl ?? 0),
+      },
+      brokerMarginMult,
+    )
+  }
+  return next
+}
 function bookNeedsRebuild(
   book: PaperBook,
   snapshot: StrategySnapshot,
@@ -701,7 +735,7 @@ export async function refreshPaperBook(opts?: {
       const prev = prevMap.get(p.asset)
       const base = prev?.prevPrice ?? p.prevPrice
       const dailyPnl = p.lots * (p.price - base) * p.multiplier
-      return markPosition(
+      const marked = markPosition(
         {
           ...p,
           prevPrice: base,
@@ -710,6 +744,7 @@ export async function refreshPaperBook(opts?: {
         },
         snapshot.brokerMarginMult,
       )
+      return preserveLockedDayPnl(prev, marked, snapshot.brokerMarginMult)
     })
     const sleevePnl = emptySleevePnl()
     const productPnl: Record<string, number> = {}
@@ -772,8 +807,10 @@ export async function getOverview(
     refresh ||
     !book ||
     book.positions.some((p) => !p.contract) ||
-    bookNeedsRebuild(book, live, settings.contractTenor, id)
+    bookNeedsRebuild(book, live, settings.contractTenor, id) ||
+    hasExpiredHeldContract(book.positions)
   ) {
+    // Expired months roll via buildPositions + live calendar contracts (not initBook).
     return refreshPaperBook({ variantId: id })
   }
   return toOverview(book, id)
@@ -793,7 +830,8 @@ export async function refreshAllWeatherBooksIfStale(): Promise<void> {
   const today = todayStamp()
   for (const variantId of ALL_WEATHER_VARIANT_IDS) {
     const existing = readPaperBook(variantId)
-    if (existing && existing.asOf >= today) continue // already up-to-date
+    // Still refresh when asOf is today but held CFFEX months have expired.
+    if (existing && existing.asOf >= today && !hasExpiredHeldContract(existing.positions)) continue
     try {
       await refreshPaperBook({ variantId })
       console.log(`[all-weather-book] refreshed ${variantId} → ${today}`)

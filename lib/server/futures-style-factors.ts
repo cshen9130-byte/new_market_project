@@ -89,7 +89,7 @@ export const FUTURES_STYLE_FACTOR_META: FactorMeta[] = [
   { key: "spec_willingness", cardName: "投机意愿因子", cumName: "投机意愿因子", intervalName: "投机意愿因子", sector: "all", color: "#f97316", surfaces: ["card", "daily"] },
   { key: "position_chg", cardName: "持仓变化因子", cumName: "持仓变化因子", intervalName: "持仓变化因子", sector: "all", color: "#0ea5e9", surfaces: ["card", "daily", "cum", "interval"] },
   // CTA周报名 — REPORT_FIT reconstructions from local futures prices/OI (not vendor NAVs)
-  { key: "report_basis", cardName: "基差", cumName: "基差", intervalName: "基差", sector: "all", color: "#7c3aed", surfaces: ["card", "daily", "cum", "interval"] },
+  { key: "report_basis", cardName: "基差(近远月)", cumName: "基差(近远月)", intervalName: "基差(近远月)", sector: "all", color: "#7c3aed", surfaces: ["card", "daily", "cum", "interval"] },
   { key: "report_cs_long", cardName: "长期截面", cumName: "长期截面", intervalName: "长期截面", sector: "all", color: "#db2777", surfaces: ["card", "daily", "cum", "interval"] },
   { key: "report_pv_corr", cardName: "量价相关性", cumName: "量价相关性", intervalName: "量价相关性", sector: "all", color: "#ea580c", surfaces: ["card", "daily", "cum", "interval"] },
   { key: "report_long_rule", cardName: "长期规则", cumName: "长期规则", intervalName: "长期规则", sector: "all", color: "#0891b2", surfaces: ["card", "daily", "cum", "interval"] },
@@ -391,6 +391,161 @@ type DayPanel = {
   nearClose: Record<string, number>
   farClose: Record<string, number>
   dOi: Record<string, number>
+  /** Choice FTREGORDERVOL registered warehouse receipts (product-level). */
+  warehouse?: Record<string, number>
+  /** Choice EDB EMI processing / industry margins (sparse; forward-filled). */
+  profit?: Record<string, number>
+  /** Choice EDB social/exchange inventory (best priority per product; ffill). */
+  socialInv?: Record<string, number>
+}
+
+
+type WhRow = { date: string; product: string; vol: number }
+type ProfitRow = { date: string; product: string; value: number }
+
+async function loadWarehouseReceipts(from: string, to: string): Promise<WhRow[]> {
+  try {
+    const rows = await query<{
+      trade_date: Date | string
+      product: string
+      ftregordervol: string | number | null
+    }>(
+      `SELECT trade_date, product, ftregordervol
+       FROM raw_futures_warehouse_receipts_daily
+       WHERE trade_date >= $1 AND trade_date <= $2
+         AND ftregordervol IS NOT NULL
+       ORDER BY trade_date ASC`,
+      [from, to],
+    )
+    const out: WhRow[] = []
+    for (const row of rows) {
+      const product = String(row.product || "").toUpperCase()
+      if (!product || !sectorOfProduct(product)) continue
+      const vol = n(row.ftregordervol)
+      if (vol == null || !Number.isFinite(vol)) continue
+      out.push({ date: fmtIso(row.trade_date), product, vol })
+    }
+    return out
+  } catch {
+    // Table may be missing on older DBs — inventory falls back to -ΔOI.
+    return []
+  }
+}
+
+async function loadEdbIndustryProfit(from: string, to: string): Promise<ProfitRow[]> {
+  try {
+    const rows = await query<{
+      trade_date: Date | string
+      product: string | null
+      value: string | number | null
+    }>(
+      `SELECT trade_date, product, value
+       FROM raw_edb_industry_profit_daily
+       WHERE trade_date >= $1 AND trade_date <= $2
+         AND value IS NOT NULL
+         AND product IS NOT NULL
+       ORDER BY trade_date ASC`,
+      [from, to],
+    )
+    const out: ProfitRow[] = []
+    for (const row of rows) {
+      const product = String(row.product || "").toUpperCase()
+      if (!product || !sectorOfProduct(product)) continue
+      const value = n(row.value)
+      if (value == null || !Number.isFinite(value)) continue
+      out.push({ date: fmtIso(row.trade_date), product, value })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+
+type SocialInvRow = { date: string; product: string; value: number; priority: number }
+
+async function loadEdbCommodityInventory(from: string, to: string): Promise<SocialInvRow[]> {
+  try {
+    const rows = await query<{
+      trade_date: Date | string
+      product: string | null
+      value: string | number | null
+      priority: string | number | null
+      region_hint: string | null
+    }>(
+      `SELECT trade_date, product, value, priority, region_hint
+       FROM raw_edb_commodity_inventory_daily
+       WHERE trade_date >= $1 AND trade_date <= $2
+         AND value IS NOT NULL
+         AND product IS NOT NULL
+         AND COALESCE(region_hint, 'cn') <> 'lme'
+       ORDER BY trade_date ASC, priority ASC`,
+      [from, to],
+    )
+    const out: SocialInvRow[] = []
+    for (const row of rows) {
+      const product = String(row.product || "").toUpperCase()
+      if (!product || !sectorOfProduct(product)) continue
+      const value = n(row.value)
+      if (value == null || !Number.isFinite(value)) continue
+      out.push({
+        date: fmtIso(row.trade_date),
+        product,
+        value,
+        priority: Number(row.priority ?? 50),
+      })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/** Attach warehouse + forward-filled EDB profit onto existing day panels. */
+function attachFundamentals(
+  dates: string[],
+  panels: DayPanel[],
+  warehouse: WhRow[],
+  profit: ProfitRow[],
+  socialInv: SocialInvRow[] = [],
+): void {
+  const whByDate = new Map<string, Record<string, number>>()
+  for (const row of warehouse) {
+    const m = whByDate.get(row.date) ?? {}
+    m[row.product] = row.vol
+    whByDate.set(row.date, m)
+  }
+  const profitByDate = new Map<string, Record<string, number>>()
+  for (const row of profit) {
+    const m = profitByDate.get(row.date) ?? {}
+    m[row.product] = row.value
+    profitByDate.set(row.date, m)
+  }
+  // Best (lowest) priority series per product per date
+  const socialByDate = new Map<string, Record<string, { value: number; priority: number }>>()
+  for (const row of socialInv) {
+    const m = socialByDate.get(row.date) ?? {}
+    const prev = m[row.product]
+    if (!prev || row.priority < prev.priority) m[row.product] = { value: row.value, priority: row.priority }
+    socialByDate.set(row.date, m)
+  }
+  let lastProfit: Record<string, number> = {}
+  let lastSocial: Record<string, number> = {}
+  for (let i = 0; i < dates.length; i++) {
+    const d = dates[i]
+    const panel = panels[i]
+    panel.warehouse = whByDate.get(d) ?? {}
+    const dayP = profitByDate.get(d)
+    if (dayP) lastProfit = { ...lastProfit, ...dayP }
+    panel.profit = { ...lastProfit }
+    const dayS = socialByDate.get(d)
+    if (dayS) {
+      const next = { ...lastSocial }
+      for (const [prod, v] of Object.entries(dayS)) next[prod] = v.value
+      lastSocial = next
+    }
+    panel.socialInv = { ...lastSocial }
+  }
 }
 
 function buildPanels(
@@ -620,7 +775,7 @@ export const WIND_GTJAQH_FACTOR_MAP: Partial<Record<FuturesStyleFactorKey, strin
   report_profit: "GTJAQH009.WI", // 利润
   report_long_rule: "GTJAQH010.WI", // 长期规则动量
   report_pv_corr: "GTJAQH011.WI", // 量价相关性
-  report_basis: "GTJAQH012.WI", // 基差
+  report_basis: "GTJAQH012.WI", // 基差(近远月)
   report_cs_long: "GTJAQH013.WI", // 截面动量 → UI「长期截面」
 }
 
@@ -706,7 +861,8 @@ function windSeriesOnDates(
 let REPORT_FIT = {
   basisTopFrac: 0.2,
   basisScale: 0.1,
-  // round12 CE: 5-leg blend (pow1.25 secNegZ L185 + negSlope L250@{0.2,0.15,0.12} + negZ L100)
+  // 2026-10-27 cs_long push: 3-leg blend beats simple L120 (3m 0.333/0.776, 1y 0.679/0.944 vs 0.211/0.639, 0.637/0.930)
+  // PRIOR simple path kept as flags: L120 top0.15 negZfalse demean secNeutral scale-1, blend disabled
   csLongL: 120,
   csLongR2: 0.15,
   csLongTopFrac: 0.15,
@@ -715,14 +871,12 @@ let REPORT_FIT = {
   csLongSectorNeutral: true,
   csLongScale: -1.0,
   csLongBlend: {
-    enabled: false,
-    scale: 1.8787244025697993,
+    enabled: true,
+    scale: 1,
     legs: [
-      { kind: "neg_z" as const, L: 185, topFrac: 0.15, sectorNeutral: true, powerDaily: 1.25, weight: 0.3639555533765323 },
-      { kind: "neg_slope" as const, L: 250, topFrac: 0.2, sectorNeutral: false, power: 1, weight: -0.6373164850616742 },
-      { kind: "neg_slope" as const, L: 250, topFrac: 0.15, sectorNeutral: false, power: 1, weight: 0.8327017069261762 },
-      { kind: "neg_z" as const, L: 100, topFrac: 0.2, sectorNeutral: false, power: 1, weight: 0.07272317876321709 },
-      { kind: "neg_slope" as const, L: 250, topFrac: 0.12, sectorNeutral: false, power: 1, weight: -0.2479341337315459 },
+      { kind: "neg_slope" as const, L: 120, topFrac: 0.15, sectorNeutral: true, powerDaily: 1, weight: 0.5 },
+      { kind: "z" as const, L: 120, topFrac: 0.2, sectorNeutral: false, powerDaily: 1, weight: 0.25 },
+      { kind: "neg_z" as const, L: 250, topFrac: 0.2, sectorNeutral: true, powerDaily: 1, weight: 0.25 },
     ],
   },
   // round14 CE: 8-leg multi-field shock blend (ret~0.56 lvl~0.90)
@@ -753,10 +907,61 @@ let REPORT_FIT = {
   longRuleVolL: 40,
   longRuleVolCap: 1.2,
   longRuleScale: -0.7,
+  // inventory: 2026-10-27 expand EDB social (22 products) — social L5 beats warehouse on corr_ret
+  // 3m corr_ret 0.422 vs warehouse 0.358; 1y corr_ret 0.341 vs 0.110 (lvl still weaker than warehouse)
+  // warehouse / socialBlend kept as flags; Wind GTJAQH007 calibration only
+  // 2026-10-27 push2: invRetBlend retune 3m~0.657; prior 3-leg~0.649; profitRetBlend 3-leg~0.489 vs 0.433
+  invKind: "invRetBlend" as const,
   invTopFrac: 0.25,
-  invScale: 0.4,
-  profitTopFrac: 0.25,
-  profitScale: 0.1,
+  invScale: 0.2,
+  invWhL: 5,
+  invWhL2: 1,
+  invWhWeight: 0.55,
+  invSocialL: 5,
+  invSocialL2: 1,
+  invSocialWeight: 0.7,
+  invLag: 0,
+  invZWin: 60,
+  invMinCov: 6,
+  invDoiFallback: true,
+  invFlip: false,
+  // PRIOR_LIVE_FLAGS (kept for rollback; not active)
+  // prior push1 invRetBlend 3-leg: socialL5 w0.6 + socialL10 lag1 w0.2 + whL5 w0.2 → 3m 0.649/0.826
+  // prior push1 profitRetBlend 2-leg: L30 top0.35 s0.08 ⊕ L20 top0.2 s0.05 → 3m 0.433/0.699
+  // prior invRetBlend 2-leg: social L5 top0.2 scale0.3 lag1 w0.3 + social L5 top0.3 scale0.15 lag0 w0.7 → 3m 0.611/0.819
+  // prior profitKind carryMom L30 top0.3 scale0.05 → 3m 0.341/0.523, 1y 0.204/0.857
+  // closer: 3-leg social+warehouse (3m corr_ret 0.649 vs prior 0.611)
+  // push2: 3-leg retune (3m 0.657/0.808, 1y 0.418/0.702) vs prior 0.649/0.826
+  invRetBlend: {
+    enabled: true,
+    scale: 1,
+    legs: [
+      { invKind: "social" as const, invSocialL: 5, invTopFrac: 0.3, invScale: 0.1, invLag: 0, weight: 0.3 },
+      { invKind: "warehouse" as const, invWhL: 5, invTopFrac: 0.35, invScale: 0.15, invLag: 0, weight: 0.3 },
+      { invKind: "social" as const, invSocialL: 10, invTopFrac: 0.4, invScale: 0.1, invLag: 2, weight: 0.4 },
+    ],
+  },
+  // closeness: carryMom L30 top0.3 lifts 3m corr_ret 0.275→0.341 and 1y 0.107→0.204
+  // closer: 2-leg multi-horizon carryMom (3m corr_ret 0.433 vs L30-only 0.341)
+  profitKind: "profitRetBlend" as const,
+  profitTopFrac: 0.3,
+  profitLevelTopFrac: 0.35,
+  profitMomL: 30,
+  profitMomWeight: 0.5,
+  profitScale: 0.05,
+  // push2: 3-leg carryMom+blend (3m 0.489/0.709) vs prior 2-leg 0.433/0.699
+  profitRetBlend: {
+    enabled: true,
+    scale: 1,
+    legs: [
+      { profitKind: "carryMom" as const, profitMomL: 30, profitTopFrac: 0.4, profitScale: 0.05, weight: 0.4 },
+      { profitKind: "carryMom" as const, profitMomL: 20, profitTopFrac: 0.35, profitScale: 0.03, weight: 0.1 },
+      { profitKind: "carryMomBlend" as const, profitMomL: 20, profitTopFrac: 0.2, profitLevelTopFrac: 0.35, profitMomWeight: 0.4, profitScale: 0.08, weight: 0.5 },
+    ],
+  },
+  profitEdbL: 20,
+  profitEdbWeight: 0.55,
+  profitFlip: false,
 }
 
 /** Calibration-only: shallow-merge knobs (and nested blend objects). Do not use in UI path. */
@@ -773,6 +978,14 @@ export function setReportFitOverride(partial: Record<string, unknown> | null) {
   if (partial.pvBlend && typeof partial.pvBlend === "object") {
     next.pvBlend = { ...(REPORT_FIT as any).pvBlend, ...(partial as any).pvBlend }
     if ((partial as any).pvBlend.legs) next.pvBlend.legs = (partial as any).pvBlend.legs
+  }
+  if (partial.invRetBlend && typeof partial.invRetBlend === "object") {
+    next.invRetBlend = { ...(REPORT_FIT as any).invRetBlend, ...(partial as any).invRetBlend }
+    if ((partial as any).invRetBlend.legs) next.invRetBlend.legs = (partial as any).invRetBlend.legs
+  }
+  if (partial.profitRetBlend && typeof partial.profitRetBlend === "object") {
+    next.profitRetBlend = { ...(REPORT_FIT as any).profitRetBlend, ...(partial as any).profitRetBlend }
+    if ((partial as any).profitRetBlend.legs) next.profitRetBlend.legs = (partial as any).profitRetBlend.legs
   }
   REPORT_FIT = next
 }
@@ -801,11 +1014,14 @@ function computeDailyFactorReturns(
   const volHist: Record<string, number[]> = {}
   const amtHist: Record<string, number[]> = {}
   const oiHist: Record<string, (number | null)[]> = {}
+  const whHist: Record<string, (number | null)[]> = {}
+  const profitHist: Record<string, (number | null)[]> = {}
+  const socialInvHist: Record<string, (number | null)[]> = {}
 
   for (let i = 0; i < dates.length; i++) {
     const panel = panels[i]
     for (const p of panel.products) {
-      if (!closeHist[p]) { closeHist[p] = []; retHist[p] = []; carryHist[p] = []; dOiHist[p] = []; volHist[p] = []; amtHist[p] = []; oiHist[p] = [] }
+      if (!closeHist[p]) { closeHist[p] = []; retHist[p] = []; carryHist[p] = []; dOiHist[p] = []; volHist[p] = []; amtHist[p] = []; oiHist[p] = []; whHist[p] = []; profitHist[p] = []; socialInvHist[p] = [] }
       while (closeHist[p].length < i) {
         const prevClose = closeHist[p].length ? closeHist[p][closeHist[p].length - 1] : NaN
         closeHist[p].push(Number.isFinite(prevClose) ? prevClose : NaN)
@@ -815,6 +1031,9 @@ function computeDailyFactorReturns(
         volHist[p].push(volHist[p].length ? volHist[p][volHist[p].length - 1] : 0)
         amtHist[p].push(amtHist[p].length ? amtHist[p][amtHist[p].length - 1] : 0)
         oiHist[p].push(null)
+        whHist[p].push(null)
+        profitHist[p].push(null)
+        socialInvHist[p].push(null)
       }
       closeHist[p].push(panel.close[p])
       retHist[p].push(panel.ret[p] ?? null)
@@ -823,6 +1042,9 @@ function computeDailyFactorReturns(
       volHist[p].push(panel.volume[p] ?? 0)
       amtHist[p].push(panel.amount[p] ?? 0)
       oiHist[p].push(panel.oi[p] ?? null)
+      whHist[p].push(panel.warehouse?.[p] ?? null)
+      profitHist[p].push(panel.profit?.[p] ?? null)
+      socialInvHist[p].push(panel.socialInv?.[p] ?? null)
     }
 
     if (i + 1 >= dates.length) continue
@@ -1148,20 +1370,394 @@ function computeDailyFactorReturns(
     // 中期动量: MA20 vs MA60, vol-scaled TS.
     out.report_mid_mom[i + 1] = maCrossTsReturn(products, closeHist, retHist, i, nextRet, 20, 60)
 
-    // 库存 proxy (no fundamental inventory feed): long contracts with falling OI / short rising OI
-    {
+
+    function inventoryCsReturn(
+      kindLocal: string,
+      opts: {
+        L?: number; L2?: number; wWh?: number; socL?: number; socL2?: number; socW?: number;
+        invLag?: number; zWin?: number; topFrac?: number; scale?: number; flip?: boolean;
+      },
+    ): number | null {
+      const L = Math.max(1, Number(opts.L ?? 5) | 0)
+      const L2 = Math.max(1, Number(opts.L2 ?? 1) | 0)
+      const wWh = Number(opts.wWh ?? 0.65)
+      const socL = Math.max(1, Number(opts.socL ?? L) | 0)
+      const socL2 = Math.max(1, Number(opts.socL2 ?? 1) | 0)
+      const socW = Number(opts.socW ?? 0.7)
+      const invLag = Math.max(0, Number(opts.invLag ?? 0) | 0)
+      const zWin = Math.max(5, Number(opts.zWin ?? 60) | 0)
+      const topFrac = Number(opts.topFrac ?? 0.25)
+      const scale = Number(opts.scale ?? 0.2)
+      const flip = !!opts.flip
+      const idx = Math.max(0, i - invLag)
       const scores: Array<{ product: string; score: number }> = []
       for (const p of products) {
-        const d = panel.dOi[p]
-        if (d != null && Number.isFinite(d)) scores.push({ product: p, score: -d })
+        const dOi = panels[idx]?.dOi?.[p]
+        const dOiScore = dOi != null && Number.isFinite(dOi) ? -dOi : null
+        const hist = whHist[p]
+        const sh = socialInvHist[p]
+        const whPct = (lag: number): number | null => {
+          if (!hist || idx - lag < 0) return null
+          const cur = hist[idx], prev = hist[idx - lag]
+          if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
+          return -(cur / prev - 1)
+        }
+        const socPct = (lag: number): number | null => {
+          if (!sh || idx - lag < 0) return null
+          const cur = sh[idx], prev = sh[idx - lag]
+          if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
+          return -(cur / prev - 1)
+        }
+        const levelZ = (series: (number | null)[] | undefined, win: number): number | null => {
+          if (!series) return null
+          const xs: number[] = []
+          for (let k = idx - win + 1; k <= idx; k++) {
+            if (k < 0) continue
+            const v = series[k]
+            if (v != null && Number.isFinite(v)) xs.push(v)
+          }
+          if (xs.length < Math.max(5, Math.floor(win * 0.5))) return null
+          const mu = xs.reduce((a, b) => a + b, 0) / xs.length
+          const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
+          const cur = series[idx]
+          if (!(sd > 1e-12) || cur == null || !Number.isFinite(cur)) return null
+          return -((cur - mu) / sd)
+        }
+        let whScore: number | null = null
+        if (kindLocal === "warehouse" || kindLocal === "socialBlend" || kindLocal === "warehouseZ" || kindLocal === "warehouseMulti") {
+          if (kindLocal === "warehouseZ") whScore = levelZ(hist, L)
+          else if (kindLocal === "warehouseMulti") {
+            const a = whPct(L), b = whPct(L2)
+            whScore = a != null && b != null ? wWh * a + (1 - wWh) * b : (a ?? b)
+          } else whScore = whPct(L)
+        }
+        let socialScore: number | null = null
+        if (kindLocal === "social" || kindLocal === "socialBlend" || kindLocal === "socialZ" || kindLocal === "socialMulti") {
+          if (kindLocal === "socialZ") socialScore = levelZ(sh, zWin)
+          else if (kindLocal === "socialMulti") {
+            const a = socPct(socL), b = socPct(socL2)
+            socialScore = a != null && b != null ? socW * a + (1 - socW) * b : (a ?? b)
+          } else socialScore = socPct(socL)
+        }
+        let score: number | null = null
+        if (kindLocal === "dOi") score = dOiScore
+        else if (kindLocal === "warehouse" || kindLocal === "warehouseZ" || kindLocal === "warehouseMulti") score = whScore
+        else if (kindLocal === "social" || kindLocal === "socialZ" || kindLocal === "socialMulti") score = socialScore
+        else if (kindLocal === "socialBlend") score = (socialScore != null && whScore != null) ? wWh * socialScore + (1 - wWh) * whScore : (socialScore ?? whScore ?? dOiScore)
+        else score = dOiScore
+        if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
       }
-      const r = crossSectionLs(scores, nextRet, true, (REPORT_FIT as any).invTopFrac ?? 0.2)
-      out.report_inventory[i + 1] = r == null ? null : r * ((REPORT_FIT as any).invScale ?? 0.5)
+      if (scores.length < 6 && kindLocal !== "dOi") {
+        for (const p of products) {
+          const d = panels[idx]?.dOi?.[p]
+          if (d != null && Number.isFinite(d) && !scores.some((s) => s.product === p)) scores.push({ product: p, score: -d })
+        }
+      }
+      let r = crossSectionLs(scores, nextRet, true, topFrac)
+      if (r != null && flip) r = -r
+      return r == null ? null : r * scale
     }
-    // 利润 proxy: long high carry (backwardation) / short low — industry "processing margin" often tracks term structure
+
+    // 库存: warehouse / social / socialZ / socialMulti / socialBlend / warehouse* / dOi
     {
-      const r = crossSectionLs(carryScores, nextRet, true, (REPORT_FIT as any).profitTopFrac ?? 0.15)
-      out.report_profit[i + 1] = r == null ? null : r * ((REPORT_FIT as any).profitScale ?? 0.4)
+      const kind = String((REPORT_FIT as any).invKind ?? "dOi")
+      if (kind === "invRetBlend" && (REPORT_FIT as any).invRetBlend?.enabled && (REPORT_FIT as any).invRetBlend?.legs?.length) {
+        const blend = (REPORT_FIT as any).invRetBlend
+        let acc = 0, wsum = 0, any = false
+        for (const leg of blend.legs) {
+          const rr = inventoryCsReturn(String(leg.invKind ?? "social"), {
+            L: leg.invWhL, L2: leg.invWhL2, wWh: leg.invWhWeight,
+            socL: leg.invSocialL, socL2: leg.invSocialL2, socW: leg.invSocialWeight,
+            invLag: leg.invLag, zWin: leg.invZWin,
+            topFrac: leg.invTopFrac, scale: leg.invScale, flip: leg.invFlip,
+          })
+          const w = Number(leg.weight ?? 1)
+          if (rr != null && Number.isFinite(rr)) { acc += w * rr; wsum += Math.abs(w); any = true }
+        }
+        out.report_inventory[i + 1] = any && wsum > 0 ? (acc / wsum) * Number(blend.scale ?? 1) : null
+      } else {
+      const L = Math.max(1, Number((REPORT_FIT as any).invWhL ?? 5) | 0)
+      const L2 = Math.max(1, Number((REPORT_FIT as any).invWhL2 ?? 1) | 0)
+      const wWh = Number((REPORT_FIT as any).invWhWeight ?? 0.65)
+      const socL = Math.max(1, Number((REPORT_FIT as any).invSocialL ?? L) | 0)
+      const socL2 = Math.max(1, Number((REPORT_FIT as any).invSocialL2 ?? 1) | 0)
+      const invLag = Math.max(0, Number((REPORT_FIT as any).invLag ?? 0) | 0)
+      const zWin = Math.max(5, Number((REPORT_FIT as any).invZWin ?? 60) | 0)
+      const minCov = Math.max(4, Number((REPORT_FIT as any).invMinCov ?? 6) | 0)
+      const useDoiFallback = (REPORT_FIT as any).invDoiFallback !== false
+      const scores: Array<{ product: string; score: number }> = []
+      const idx = Math.max(0, i - invLag)
+      for (const p of products) {
+        const dOi = panels[idx]?.dOi?.[p]
+        const dOiScore = dOi != null && Number.isFinite(dOi) ? -dOi : null
+        const hist = whHist[p]
+        const sh = socialInvHist[p]
+        const whPct = (lag: number): number | null => {
+          if (!hist || idx - lag < 0) return null
+          const cur = hist[idx]
+          const prev = hist[idx - lag]
+          if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
+          return -(cur / prev - 1)
+        }
+        const socPct = (lag: number): number | null => {
+          if (!sh || idx - lag < 0) return null
+          const cur = sh[idx]
+          const prev = sh[idx - lag]
+          if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
+          return -(cur / prev - 1)
+        }
+        const levelZ = (series: (number | null)[] | undefined, win: number): number | null => {
+          if (!series) return null
+          const xs: number[] = []
+          for (let k = idx - win + 1; k <= idx; k++) {
+            if (k < 0) continue
+            const v = series[k]
+            if (v != null && Number.isFinite(v)) xs.push(v)
+          }
+          if (xs.length < Math.max(5, Math.floor(win * 0.5))) return null
+          const mu = xs.reduce((a, b) => a + b, 0) / xs.length
+          const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
+          const cur = series[idx]
+          if (!(sd > 1e-12) || cur == null || !Number.isFinite(cur)) return null
+          return -((cur - mu) / sd)
+        }
+        let whScore: number | null = null
+        if (kind === "warehouse" || kind === "warehouseBlend" || kind === "warehouseZ" || kind === "warehouseMulti" || kind === "socialBlend") {
+          if (kind === "warehouseZ") whScore = levelZ(hist, L)
+          else if (kind === "warehouseMulti") {
+            const a = whPct(L)
+            const b = whPct(L2)
+            if (a != null && b != null) whScore = wWh * a + (1 - wWh) * b
+            else whScore = a ?? b
+          } else {
+            whScore = whPct(L)
+          }
+        }
+        let socialScore: number | null = null
+        if (kind === "social" || kind === "socialBlend" || kind === "socialZ" || kind === "socialMulti") {
+          if (kind === "socialZ") socialScore = levelZ(sh, zWin)
+          else if (kind === "socialMulti") {
+            const a = socPct(socL)
+            const b = socPct(socL2)
+            const w = Number((REPORT_FIT as any).invSocialWeight ?? 0.7)
+            if (a != null && b != null) socialScore = w * a + (1 - w) * b
+            else socialScore = a ?? b
+          } else {
+            socialScore = socPct(socL)
+          }
+        }
+        let score: number | null = null
+        if (kind === "dOi") score = dOiScore
+        else if (kind === "warehouse" || kind === "warehouseZ" || kind === "warehouseMulti") score = whScore
+        else if (kind === "social" || kind === "socialZ" || kind === "socialMulti") score = socialScore
+        else if (kind === "socialBlend") {
+          // wWh = weight on SOCIAL (legacy naming)
+          if (socialScore != null && whScore != null) score = wWh * socialScore + (1 - wWh) * whScore
+          else score = socialScore ?? whScore ?? dOiScore
+        } else if (kind === "warehouseBlend") {
+          if (whScore != null && dOiScore != null) score = wWh * whScore + (1 - wWh) * dOiScore
+          else score = whScore ?? dOiScore
+        } else {
+          score = dOiScore
+        }
+        if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
+      }
+      if (useDoiFallback && scores.length < minCov && kind !== "dOi") {
+        for (const p of products) {
+          const d = panels[idx]?.dOi?.[p]
+          if (d != null && Number.isFinite(d) && !scores.some((s) => s.product === p)) {
+            scores.push({ product: p, score: -d })
+          }
+        }
+      }
+      let r = crossSectionLs(scores, nextRet, true, (REPORT_FIT as any).invTopFrac ?? 0.2)
+      if (r != null && (REPORT_FIT as any).invFlip) r = -r
+      out.report_inventory[i + 1] = r == null ? null : r * ((REPORT_FIT as any).invScale ?? 0.5)
+      }
+    }
+
+    function profitCsReturn(opts: {
+      kind?: string; momL?: number; edbL?: number; wE?: number; wMom?: number;
+      topMom?: number; topLvl?: number; scale?: number; flip?: boolean;
+    }): number | null {
+      const kind = String(opts.kind ?? "carryMom")
+      const L = Math.max(5, Number(opts.edbL ?? 20) | 0)
+      const momL = Math.max(1, Number(opts.momL ?? 20) | 0)
+      const wE = Number(opts.wE ?? 0.55)
+      const wMom = Number(opts.wMom ?? 0.5)
+      const topMom = Number(opts.topMom ?? 0.2)
+      const topLvl = Number(opts.topLvl ?? 0.3)
+      const scale = Number(opts.scale ?? 0.08)
+      const flip = !!opts.flip
+      const carryMap = new Map(carryScores.map((s) => [s.product, s.score]))
+      const momScores: Array<{ product: string; score: number }> = []
+      if (kind === "carryMom" || kind === "carryMomBlend" || kind === "edbMomBlend") {
+        for (const p of products) {
+          const hist = carryHist[p]
+          if (!hist || i - momL < 0) continue
+          const cur = hist[i], prev = hist[i - momL]
+          if (cur == null || prev == null || !Number.isFinite(cur) || !Number.isFinite(prev)) continue
+          momScores.push({ product: p, score: cur - prev })
+        }
+      }
+      let r: number | null = null
+      if (kind === "carry") r = crossSectionLs(carryScores, nextRet, true, topLvl)
+      else if (kind === "carryMom") r = crossSectionLs(momScores, nextRet, true, topMom)
+      else if (kind === "carryMomBlend") {
+        const rMom = crossSectionLs(momScores, nextRet, true, topMom)
+        const rLvl = crossSectionLs(carryScores, nextRet, true, topLvl)
+        if (rMom != null && rLvl != null) r = wMom * rMom + (1 - wMom) * rLvl
+        else r = rMom ?? rLvl
+      } else {
+        const scores: Array<{ product: string; score: number }> = []
+        const momMap = new Map(momScores.map((s) => [s.product, s.score]))
+        for (const p of products) {
+          const carry = carryMap.get(p)
+          const cMom = momMap.get(p)
+          let edbScore: number | null = null
+          let edbMomScore: number | null = null
+          const hist = profitHist[p]
+          if (hist) {
+            const cur = hist[i]
+            if (cur != null && Number.isFinite(cur)) {
+              const xs: number[] = []
+              for (let k = i - L + 1; k <= i; k++) {
+                if (k < 0) continue
+                const v = hist[k]
+                if (v != null && Number.isFinite(v)) xs.push(v)
+              }
+              if (xs.length >= Math.max(4, Math.floor(L * 0.4))) {
+                const mu = xs.reduce((a, b) => a + b, 0) / xs.length
+                const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
+                if (sd > 1e-12) edbScore = (cur - mu) / sd
+                else edbScore = cur - mu
+              } else edbScore = cur
+              if (i - L >= 0) {
+                const prev = hist[i - L]
+                if (prev != null && Number.isFinite(prev)) edbMomScore = cur - prev
+              }
+            }
+          }
+          let score: number | null = null
+          if (kind === "edb") score = edbScore
+          else if (kind === "edbMom") score = edbMomScore
+          else if (kind === "edbBlend") score = (edbScore != null && carry != null) ? wE * edbScore + (1 - wE) * carry : (edbScore ?? carry ?? null)
+          else if (kind === "edbMomBlend") score = (edbMomScore != null && cMom != null) ? wE * edbMomScore + (1 - wE) * cMom : (edbMomScore ?? cMom ?? edbScore ?? carry ?? null)
+          else score = carry ?? null
+          if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
+        }
+        const topUse = (kind === "edbMom" || kind === "edbMomBlend") ? topMom : topLvl
+        r = crossSectionLs(scores, nextRet, true, topUse)
+      }
+      if (r != null && flip) r = -r
+      return r == null ? null : r * scale
+    }
+
+    // 利润: carry | carryMom | carryMomBlend | edb | edbMom | edbBlend | edbMomBlend
+    {
+      const kind = String((REPORT_FIT as any).profitKind ?? "carry")
+      if (kind === "profitRetBlend" && (REPORT_FIT as any).profitRetBlend?.enabled && (REPORT_FIT as any).profitRetBlend?.legs?.length) {
+        const blend = (REPORT_FIT as any).profitRetBlend
+        let acc = 0, wsum = 0, ok = 0
+        for (const leg of blend.legs) {
+          const rr = profitCsReturn({
+            kind: String(leg.profitKind ?? "carryMom"),
+            momL: leg.profitMomL, edbL: leg.profitEdbL,
+            wE: leg.profitEdbWeight, wMom: leg.profitMomWeight,
+            topMom: leg.profitTopFrac, topLvl: leg.profitLevelTopFrac ?? leg.profitTopFrac,
+            scale: leg.profitScale, flip: leg.profitFlip,
+          })
+          const w = Number(leg.weight ?? 1)
+          if (rr != null && Number.isFinite(rr)) { acc += w * rr; wsum += Math.abs(w); ok++ }
+        }
+        // require all legs present (matches offline mix); partial coverage dilutes corr_ret
+        out.report_profit[i + 1] = ok === blend.legs.length && wsum > 0 ? (acc / wsum) * Number(blend.scale ?? 1) : null
+      } else {
+      const L = Math.max(5, Number((REPORT_FIT as any).profitEdbL ?? 20) | 0)
+      const momL = Math.max(1, Number((REPORT_FIT as any).profitMomL ?? 20) | 0)
+      const wE = Number((REPORT_FIT as any).profitEdbWeight ?? 0.55)
+      const wMom = Number((REPORT_FIT as any).profitMomWeight ?? 0.5)
+      const topMom = Number((REPORT_FIT as any).profitTopFrac ?? 0.15)
+      const topLvl = Number((REPORT_FIT as any).profitLevelTopFrac ?? (REPORT_FIT as any).profitTopFrac ?? 0.3)
+      const scale = Number((REPORT_FIT as any).profitScale ?? 0.4)
+
+      const carryMap = new Map(carryScores.map((s) => [s.product, s.score]))
+      const momScores: Array<{ product: string; score: number }> = []
+      if (kind === "carryMom" || kind === "carryMomBlend" || kind === "edbMomBlend") {
+        for (const p of products) {
+          const hist = carryHist[p]
+          if (!hist || i - momL < 0) continue
+          const cur = hist[i]
+          const prev = hist[i - momL]
+          if (cur == null || prev == null || !Number.isFinite(cur) || !Number.isFinite(prev)) continue
+          momScores.push({ product: p, score: cur - prev })
+        }
+      }
+
+      let r: number | null = null
+      if (kind === "carry") {
+        r = crossSectionLs(carryScores, nextRet, true, topLvl)
+      } else if (kind === "carryMom") {
+        r = crossSectionLs(momScores, nextRet, true, topMom)
+      } else if (kind === "carryMomBlend") {
+        const rMom = crossSectionLs(momScores, nextRet, true, topMom)
+        const rLvl = crossSectionLs(carryScores, nextRet, true, topLvl)
+        if (rMom != null && rLvl != null) r = wMom * rMom + (1 - wMom) * rLvl
+        else r = rMom ?? rLvl
+      } else {
+        // edb / edbMom / edbBlend / edbMomBlend
+        const scores: Array<{ product: string; score: number }> = []
+        const momMap = new Map(momScores.map((s) => [s.product, s.score]))
+        for (const p of products) {
+          const carry = carryMap.get(p)
+          const cMom = momMap.get(p)
+          let edbScore: number | null = null
+          let edbMomScore: number | null = null
+          const hist = profitHist[p]
+          if (hist) {
+            const cur = hist[i]
+            if (cur != null && Number.isFinite(cur)) {
+              const xs: number[] = []
+              for (let k = i - L + 1; k <= i; k++) {
+                if (k < 0) continue
+                const v = hist[k]
+                if (v != null && Number.isFinite(v)) xs.push(v)
+              }
+              if (xs.length >= Math.max(4, Math.floor(L * 0.4))) {
+                const mu = xs.reduce((a, b) => a + b, 0) / xs.length
+                const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
+                if (sd > 1e-12) edbScore = (cur - mu) / sd
+                else edbScore = cur - mu
+              } else {
+                edbScore = cur
+              }
+              if (i - L >= 0) {
+                const prev = hist[i - L]
+                if (prev != null && Number.isFinite(prev)) edbMomScore = cur - prev
+              }
+            }
+          }
+          let score: number | null = null
+          if (kind === "edb") score = edbScore
+          else if (kind === "edbMom") score = edbMomScore
+          else if (kind === "edbBlend") {
+            if (edbScore != null && carry != null) score = wE * edbScore + (1 - wE) * carry
+            else score = edbScore ?? carry ?? null
+          } else if (kind === "edbMomBlend") {
+            // blend EDB margin delta with carry momentum
+            if (edbMomScore != null && cMom != null) score = wE * edbMomScore + (1 - wE) * cMom
+            else score = edbMomScore ?? cMom ?? edbScore ?? carry ?? null
+          } else {
+            score = carry ?? null
+          }
+          if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
+        }
+        const topUse = (kind === "edbMom" || kind === "edbMomBlend") ? topMom : topLvl
+        r = crossSectionLs(scores, nextRet, true, topUse)
+      }
+      if (r != null && (REPORT_FIT as any).profitFlip) r = -r
+      out.report_profit[i + 1] = r == null ? null : r * scale
+      }
     }
 
 
@@ -1211,6 +1807,8 @@ export type FuturesStyleReturnsPayload = {
   source: {
     prices: string
     oiCarry: string
+    warehouse?: string
+    profit?: string
     note: string
   }
   cards: Array<{ key: FuturesStyleFactorKey; name: string; value: number; sector: FactorMeta["sector"] }>
@@ -1278,12 +1876,16 @@ export async function buildFuturesStyleReturns(
   opts?: { auto?: boolean; minDate?: string | null; maxDate?: string | null },
 ): Promise<FuturesStyleReturnsPayload> {
   const lookbackFrom = shiftDate(from, -320) // need ≥195 trading days warm-up for report CS/rules
-  const [prices, contracts] = await Promise.all([
+  const [prices, contracts, warehouse, profit, socialInv] = await Promise.all([
     loadAksharePrices(lookbackFrom, to),
     loadContractLegs(lookbackFrom, to),
+    loadWarehouseReceipts(lookbackFrom, to),
+    loadEdbIndustryProfit(lookbackFrom, to),
+    loadEdbCommodityInventory(lookbackFrom, to),
   ])
 
   const { dates: allDates, panels } = buildPanels(prices, contracts, sector)
+  attachFundamentals(allDates, panels, warehouse, profit, socialInv)
   const dailyFrac = computeDailyFactorReturns(allDates, panels)
 
   // Optional offline overlay (USE_WIND_GTJAQH=true only). Default path is REPORT_FIT above.
@@ -1426,10 +2028,12 @@ export async function buildFuturesStyleReturns(
     source: {
       prices: "raw_akshare_futures_daily (AkShare main continuous)",
       oiCarry: "raw_futures_contracts_daily (EMQuant OI-ranked near/far)",
+      warehouse: "raw_futures_warehouse_receipts_daily (Choice FTREGORDERVOL)",
+      profit: "raw_edb_industry_profit_daily (Choice EDB EMI margins)",
       note:
         USE_WIND_GTJAQH && windTable?.maxDate
           ? `DEBUG overlay: Wind GTJAQH*.WI from data/gtjaqh_closes.csv thru ${windTable.maxDate} (not production).`
-          : "CTA-report factors: REPORT_FIT price/OI reconstructions (AkShare+EMQuant). Wind CSV is calibration-only, not live chart source. 库存/利润 need local proxies or stay empty.",
+          : "CTA-report factors: REPORT_FIT reconstructions (AkShare+EMQuant + Choice 仓单/EDB利润 when available). Wind CSV calibration-only.",
     },
     cards,
     daily,
@@ -1450,11 +2054,15 @@ export async function calibLoadPanels(from: string, to: string, sector: FuturesS
   const lookbackFrom = shiftDate(from, -420)
   const key = `${lookbackFrom}|${to}|${sector}`
   if (_calibCache?.key === key) return _calibCache
-  const [prices, contracts] = await Promise.all([
+  const [prices, contracts, warehouse, profit, socialInv] = await Promise.all([
     loadAksharePrices(lookbackFrom, to),
     loadContractLegs(lookbackFrom, to),
+    loadWarehouseReceipts(lookbackFrom, to),
+    loadEdbIndustryProfit(lookbackFrom, to),
+    loadEdbCommodityInventory(lookbackFrom, to),
   ])
   const { dates, panels } = buildPanels(prices, contracts, sector)
+  attachFundamentals(dates, panels, warehouse, profit, socialInv)
   _calibCache = { key, dates, panels }
   return _calibCache
 }

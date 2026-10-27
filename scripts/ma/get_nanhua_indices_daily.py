@@ -8,7 +8,7 @@ nightly_etl.py can parse and upsert the records.
 
 Usage
 -----
-  python get_nanhua_indices_daily.py                        # yesterday (default)
+  python get_nanhua_indices_daily.py                        # today (default)
   python get_nanhua_indices_daily.py 20250101               # single date
   python get_nanhua_indices_daily.py 20250101 20260321      # date range (backfill)
 
@@ -267,8 +267,9 @@ def main():
         start_date = _parse_date(args[0])
         end_date   = _parse_date(args[1]) if len(args) > 1 else _fmt(today)
     else:
-        yesterday  = today - timedelta(days=1)
-        start_date = end_date = _fmt(yesterday)
+        # Default to calendar today (not yesterday). Overnight/post-close callers
+        # that omit args must still request the same-day EmQuant bar when published.
+        start_date = end_date = _fmt(today)
 
     username = os.environ.get("EMQ_USERNAME")
     password = os.environ.get("EMQ_PASSWORD")

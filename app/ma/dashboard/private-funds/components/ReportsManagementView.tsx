@@ -19,6 +19,9 @@ import { canAccessPfInvestmentPool } from "@/lib/permissions"
 
 type ScopeTab = "team" | "mine"
 type ViewMode = "table" | "images"
+type TitleNameMode = "short" | "full"
+
+const TITLE_NAME_MODE_STORAGE_KEY = "pf-reports-title-name-mode"
 
 type WeeklyReportRow = {
   id: string
@@ -34,6 +37,10 @@ type WeeklyReportRow = {
   navDaysBehindNextWeek?: number | null
   product_name?: string
   beian_hao?: string | null
+  /** Metadata short name when available; null if only one form exists. */
+  short_name?: string | null
+  /** Metadata full / legal name when available; null if only one form exists. */
+  full_name?: string | null
   isCustomFund?: boolean
   source?: "managed" | "extra" | "mine"
   download?: { png: string; pdf: string }
@@ -86,6 +93,35 @@ function formatNavDaysBehind(n?: number | null): string {
   if (n == null || Number.isNaN(n)) return "—"
   if (n <= 0) return "已最新"
   return `缺${n}日`
+}
+
+
+function readStoredTitleNameMode(): TitleNameMode {
+  try {
+    const raw = localStorage.getItem(TITLE_NAME_MODE_STORAGE_KEY)
+    if (raw === "full" || raw === "short") return raw
+  } catch {
+    /* ignore */
+  }
+  return "short"
+}
+
+/**
+ * Resolve title for the current name mode.
+ * Prefer metadata short/full fields; if only one form exists, both modes show that form.
+ * Fall back to stored title / product_name (never invent a name).
+ */
+function resolveReportTitle(
+  row: Pick<WeeklyReportRow, "title" | "product_name" | "short_name" | "full_name">,
+  mode: TitleNameMode,
+): string {
+  const stored = (row.title || row.product_name || "").trim()
+  const shortName = (row.short_name || "").trim()
+  const fullName = (row.full_name || "").trim()
+  if (mode === "short") {
+    return shortName || fullName || stored
+  }
+  return fullName || shortName || stored
 }
 
 function withInlinePng(url: string | undefined): string | undefined {
@@ -478,6 +514,7 @@ export function ReportsManagementView() {
   const [keyword, setKeyword] = useState("")
   const [onlyCustomFunds, setOnlyCustomFunds] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>("table")
+  const [titleNameMode, setTitleNameMode] = useState<TitleNameMode>("short")
   const [newReportOpen, setNewReportOpen] = useState(false)
   const [addProductOpen, setAddProductOpen] = useState(false)
 
@@ -494,7 +531,19 @@ export function ReportsManagementView() {
   const [zipBusy, setZipBusy] = useState(false)
   const [zipMessage, setZipMessage] = useState<string | null>(null)
 
-  const mapApiRow = useCallback((r: Record<string, unknown>, kind: ScopeTab): WeeklyReportRow => {
+  useEffect(() => {
+    setTitleNameMode(readStoredTitleNameMode())
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TITLE_NAME_MODE_STORAGE_KEY, titleNameMode)
+    } catch {
+      /* ignore */
+    }
+  }, [titleNameMode])
+
+    const mapApiRow = useCallback((r: Record<string, unknown>, kind: ScopeTab): WeeklyReportRow => {
     const download = r.download as { png?: string; pdf?: string } | undefined
     return {
       id: String(r.id || r.reportId || ""),
@@ -510,6 +559,8 @@ export function ReportsManagementView() {
       navDaysBehindNextWeek: (r.navDaysBehindNextWeek as number | null | undefined) ?? null,
       product_name: (r.product_name as string | undefined) || undefined,
       beian_hao: (r.beian_hao as string | null | undefined) ?? null,
+      short_name: (r.short_name as string | null | undefined) ?? null,
+      full_name: (r.full_name as string | null | undefined) ?? null,
       isCustomFund: r.isCustomFund === true || r.source === "extra",
       source: (r.source as WeeklyReportRow["source"] | undefined) ?? undefined,
       download: download?.png || download?.pdf ? { png: download.png || "", pdf: download.pdf || "" } : undefined,
@@ -627,7 +678,7 @@ export function ReportsManagementView() {
     }
     if (!q) return rows
     return rows.filter((r) => {
-      const hay = [r.title, r.product_name, r.templateName, r.creator, r.typeLabel, r.weekStart, r.weekEnd, r.latestNavDate]
+      const hay = [r.title, r.product_name, r.short_name, r.full_name, r.templateName, r.creator, r.typeLabel, r.weekStart, r.weekEnd, r.latestNavDate]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
@@ -802,6 +853,32 @@ export function ReportsManagementView() {
             className="w-full h-9 pl-8 pr-3 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
+                <div className="inline-flex h-9 rounded-md border border-border overflow-hidden shrink-0" title="标题显示简称或全称">
+          <button
+            type="button"
+            onClick={() => setTitleNameMode("short")}
+            className={[
+              "px-3 text-sm",
+              titleNameMode === "short"
+                ? "bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400"
+                : "bg-background hover:bg-muted text-zinc-600",
+            ].join(" ")}
+          >
+            简称
+          </button>
+          <button
+            type="button"
+            onClick={() => setTitleNameMode("full")}
+            className={[
+              "px-3 text-sm border-l border-border",
+              titleNameMode === "full"
+                ? "bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400"
+                : "bg-background hover:bg-muted text-zinc-600",
+            ].join(" ")}
+          >
+            全称
+          </button>
+        </div>
         <button
           type="button"
           onClick={() => setOnlyCustomFunds((v) => !v)}
@@ -933,7 +1010,7 @@ export function ReportsManagementView() {
                     className="rounded-lg border border-border bg-muted/10 overflow-hidden"
                   >
                     <div className="px-3 py-2 border-b flex items-center gap-2 min-w-0">
-                      <div className="text-sm font-medium truncate flex-1 min-w-0">{r.title}</div>
+                      <div className="text-sm font-medium truncate flex-1 min-w-0">{resolveReportTitle(r, titleNameMode)}</div>
                       {pngHref ? (
                         <a
                           href={pngHref}
@@ -954,7 +1031,7 @@ export function ReportsManagementView() {
                     <div className="bg-white">
                       {png ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={png} alt={r.title} className="w-full bg-white" />
+                        <img src={png} alt={resolveReportTitle(r, titleNameMode)} className="w-full bg-white" />
                       ) : (
                         <div className="h-40 flex items-center justify-center text-xs text-zinc-400">无预览</div>
                       )}
@@ -1019,7 +1096,7 @@ export function ReportsManagementView() {
                       className="border-b border-border last:border-0 hover:bg-muted/30"
                     >
                       <td className="px-3 py-3 text-center text-zinc-500 text-xs">{i + 1}</td>
-                      <td className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-200">{r.title}</td>
+                      <td className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-200">{resolveReportTitle(r, titleNameMode)}</td>
                       <td className="px-3 py-3 text-zinc-500 text-xs whitespace-nowrap">
                         {formatReportWeek(r.weekStart, r.weekEnd)}
                       </td>
@@ -1047,7 +1124,7 @@ export function ReportsManagementView() {
                         </span>
                       </td>
                       <td className="px-3 py-3 text-center">
-                        <ReportPreviewThumb pngUrl={r.download?.png} title={r.title} />
+                        <ReportPreviewThumb pngUrl={r.download?.png} title={resolveReportTitle(r, titleNameMode)} />
                       </td>
                       <td className="px-3 py-3 text-center text-xs space-x-2">
                         {r.download?.pdf ? (

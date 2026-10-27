@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso, n } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import {
+  buildNhciLagMeta,
+  loadMomNhciAsOf,
+  momNhciFreshnessToken,
+} from "@/lib/server/mom-nhci-freshness"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -53,14 +58,43 @@ async function _GET(req: Request) {
         code,
         name: NH_NAMES[code] ?? code,
         data: grouped.get(code) ?? [],
+        asOf: (grouped.get(code) ?? []).at(-1)?.date ?? null,
       }))
       .filter(s => s.data.length > 0)
 
-    return NextResponse.json({ ok: true, series })
+    const asOf = await loadMomNhciAsOf()
+    const lag = buildNhciLagMeta(asOf, to)
+    // Fail loudly when caller asked for NHCI through `to` but DB has no bar
+    // on/after that session — rolling-vol was silently truncating the latest day.
+    if (lag.lagging && codes.includes("NHCI.NH")) {
+      const nhciSeries = series.find(s => s.code === "NHCI.NH")
+      const seriesEnd = nhciSeries?.asOf ?? lag.nhciAsOf
+      console.warn(
+        `[benchmark] NHCI lag: positionAsOf=${lag.positionAsOf} nhciAsOf=${seriesEnd} requestedTo=${to}`,
+      )
+      return NextResponse.json({
+        ok: true,
+        series,
+        meta: {
+          ...lag,
+          nhciAsOf: seriesEnd,
+          lagging: true,
+          lagReason: lag.lagReason,
+        },
+      })
+    }
+
+    return NextResponse.json({
+      ok: true,
+      series,
+      meta: { ...lag, lagging: false, lagReason: null },
+    })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
 
-export const GET = withMomCache("benchmark", _GET)
+export const GET = withMomCache("benchmark", _GET, {
+  freshness: momNhciFreshnessToken,
+})

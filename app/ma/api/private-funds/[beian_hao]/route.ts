@@ -11,7 +11,7 @@ import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { canonicalizeFundRouteId, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import { seriesBorrowedFromShareClassFamily } from "@/lib/server/fund-nav-series"
-import { lookupAmacFundMetadata, lookupAmacFundName } from "@/lib/server/amac-fund-metadata"
+import { lookupAmacFundMetadata, lookupAmacFundName, lookupAmacWorkingState } from "@/lib/server/amac-fund-metadata"
 import { preferAmacOfficialName } from "@/lib/server/fund-name-match"
 import { preferOfficialManagerName } from "@/lib/server/manager-name-canonical"
 import { ensureShareClassBeianProduct } from "@/lib/server/share-class-product"
@@ -399,7 +399,7 @@ export async function GET(
       const cached = await lookupListCacheFundHeader(rawId)
       if (cached) {
         const payload = buildDetailHeaderFromListCache(rawId, cached)
-        const [teamBenchmark, navCache, manualOperationDate, inceptionDate] = await Promise.all([
+        const [teamBenchmark, navCache, manualOperationDate, inceptionDate, workingState] = await Promise.all([
           loadTeamBenchmark(
             [payload.info.beian_hao, rawId].filter(Boolean),
           ).catch(() => null),
@@ -409,6 +409,7 @@ export async function GET(
           ).catch(() => null),
           loadManualOperationDate([payload.info.beian_hao, rawId]),
           lookupProductInceptionDate(payload.info.beian_hao || rawId).catch(() => null),
+          lookupAmacWorkingState(payload.info.beian_hao || rawId).catch(() => null),
         ])
         const headerSeries = sanitizeDetailNavSeries(clipRowsOnOrAfterInception(
           navCache && isDetailNavCacheFresh(navCache, cached)
@@ -425,6 +426,7 @@ export async function GET(
             team_benchmark: teamBenchmark,
             operation_date: manualOperationDate,
             inception_date: inceptionDate,
+            working_state: workingState,
           },
           metrics: headerPerf ? { ...payload.metrics, ...headerPerf } : payload.metrics,
         })
@@ -472,9 +474,10 @@ export async function GET(
       && detailNavCacheMatchesSeed({ nav_series: memorySeries }, cacheKey)
     ) {
       const body = sanitizeDetailBody(cachedDetail as Parameters<typeof sanitizeDetailBody>[0])
-      const [teamBenchmark, manualOperationDate] = await Promise.all([
+      const [teamBenchmark, manualOperationDate, workingState] = await Promise.all([
         loadTeamBenchmark([cacheKey, rawId].filter(Boolean)).catch(() => null),
         loadManualOperationDate([cacheKey, beian_hao, rawId]),
+        lookupAmacWorkingState(cacheKey || rawId).catch(() => null),
       ])
       if (body && typeof body === "object" && "info" in body && body.info && typeof body.info === "object") {
         const cachedInfo = body.info as {
@@ -495,6 +498,10 @@ export async function GET(
               officialName && storedName && officialName !== storedName ? storedName : null,
             team_benchmark: teamBenchmark ?? cachedInfo.team_benchmark ?? null,
             operation_date: manualOperationDate,
+            working_state:
+              workingState
+              ?? (cachedInfo as { working_state?: string | null }).working_state
+              ?? null,
           },
         }
         return NextResponse.json(alignDetailSeriesToInception(response))
@@ -854,6 +861,7 @@ export async function GET(
             amacResolved?.manager_name,
           ) || info.manager,
         manager_registration_no: amacResolved?.registration_no ?? null,
+        working_state: amacResolved?.working_state ?? null,
         ret_1w: info.ret_1w ?? pctFromCache(listHeader?.ret_1w) ?? null,
         ret_1m: info.ret_1m ?? pctFromCache(listHeader?.ret_1m) ?? null,
         ret_3m: info.ret_3m ?? pctFromCache(listHeader?.ret_3m) ?? null,

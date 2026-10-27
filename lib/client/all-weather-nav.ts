@@ -100,12 +100,25 @@ export function allWeatherAnchorRows<T extends AllWeatherLiveRow>(rows: T[], asO
 export function allWeatherPositionDailyPnl(
   row: AllWeatherLiveRow,
   markOf: (symbol: string | undefined, fallback: number) => number,
+  now = new Date(),
 ) {
   if (!row.lots || !row.multiplier) return 0
   const prev = row.prevPrice > 0 ? row.prevPrice : row.price
   if (!(prev > 0)) return 0
   const mark = markOf(row.symbol, row.price)
-  return (mark - prev) * row.lots * row.multiplier
+  const live = (mark - prev) * row.lots * row.multiplier
+  const bookDaily = row.bookDaily ?? row.dailyPnl ?? 0
+  // After the bell, SimNow/Sina often reprint last == pre_settle (== prevPrice),
+  // which would force 当日盈亏 to 0. Prefer the locked book day P/L then.
+  if (
+    row.symbol &&
+    !isLiveSessionFor(row.symbol, now) &&
+    Math.abs(live) < 1e-6 &&
+    Math.abs(bookDaily) > 1e-6
+  ) {
+    return bookDaily
+  }
+  return live
 }
 
 export function allWeatherLiveDailyPnl(

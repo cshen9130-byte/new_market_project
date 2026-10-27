@@ -24,6 +24,7 @@ const SUB_SECTOR_COLORS: Record<string, string> = {
 }
 
 type BarMode = "大类" | "板块" | "细分"
+type SleeveMode = "all" | "quant" | "subjective"
 type SortCol = "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"
 type Sort = { col: SortCol; dir: "asc" | "desc" } | null
 
@@ -37,22 +38,26 @@ interface SectorBarRow {
   netMv: number; netPctNorm: number
 }
 
-export default function SectorPositionCharts({ height = 300, capturing = false }: { height?: number; capturing?: boolean }) {
+export default function SectorPositionCharts({ height = 300, capturing = false, enableSleeveFilter = true }: { height?: number; capturing?: boolean; enableSleeveFilter?: boolean }) {
   const [series,     setSeries]     = useState<ExposureRow[]>([])
   const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
   const [loading,    setLoading]    = useState(true)
 
+  const [sleeve,  setSleeve]  = useState<SleeveMode>("all")
   const [mode,    setMode]    = useState<BarMode>("板块")
   const [date,    setDate]    = useState<string>("")
   const [sort,    setSort]    = useState<Sort>({ col: "longMv", dir: "desc" })
 
   useEffect(() => {
-    let done = 0
-    const finish = () => { if (++done >= 1) setLoading(false) }
-
-    fetch("/ma/api/mom-analysis/category-exposure")
+    let cancelled = false
+    setLoading(true)
+    const qs = new URLSearchParams()
+    if (enableSleeveFilter && sleeve !== "all") qs.set("sleeve", sleeve)
+    const q = qs.toString()
+    fetch("/ma/api/mom-analysis/category-exposure" + (q ? "?" + q : ""))
       .then(r => r.json())
       .then(j => {
+        if (cancelled) return
         if (j.ok) {
           const expSeries: ExposureRow[] = j.series ?? []
           setSeries(expSeries)
@@ -62,11 +67,17 @@ export default function SectorPositionCharts({ height = 300, capturing = false }
             if (Number.isFinite(eq) && eq > 0) map.set(d.date, eq)
           }
           setCapitalMap(map)
+        } else {
+          setSeries([])
+          setCapitalMap(new Map())
         }
       })
-      .catch(() => {})
-      .finally(finish)
-  }, [])
+      .catch(() => {
+        if (!cancelled) { setSeries([]); setCapitalMap(new Map()) }
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [sleeve, enableSleeveFilter])
 
   // ── VaR timeseries ──────────────────────────────────────────────────────
   const [varMode,      setVarMode]      = useState<BarMode>("板块")
@@ -92,18 +103,43 @@ export default function SectorPositionCharts({ height = 300, capturing = false }
   const [cvarLoading,  setCvarLoading]  = useState(true)
 
   useEffect(() => {
-    fetch("/ma/api/mom-analysis/var-sector-timeseries?corrDays=252")
+    let cancelled = false
+    setVarLoading(true)
+    const qs = new URLSearchParams({ corrDays: "252" })
+    if (enableSleeveFilter && sleeve !== "all") qs.set("sleeve", sleeve)
+    fetch("/ma/api/mom-analysis/var-sector-timeseries?" + qs.toString())
       .then(r => r.json())
-      .then(j => { if (j.ok) { setVarDates(j.dates ?? []); setVarCatData(j.catData ?? {}); setVarSecData(j.sectorData ?? {}); setVarSubData(j.subSectorData ?? {}) } })
-      .catch(() => {}).finally(() => setVarLoading(false))
-  }, [])
+      .then(j => {
+        if (cancelled) return
+        if (j.ok) { setVarDates(j.dates ?? []); setVarCatData(j.catData ?? {}); setVarSecData(j.sectorData ?? {}); setVarSubData(j.subSectorData ?? {}) }
+        else { setVarDates([]); setVarCatData({}); setVarSecData({}); setVarSubData({}) }
+      })
+      .catch(() => {
+        if (!cancelled) { setVarDates([]); setVarCatData({}); setVarSecData({}); setVarSubData({}) }
+      })
+      .finally(() => { if (!cancelled) setVarLoading(false) })
+    return () => { cancelled = true }
+  }, [sleeve, enableSleeveFilter])
 
   useEffect(() => {
-    fetch("/ma/api/mom-analysis/marginal-vol-timeseries")
+    let cancelled = false
+    setMvLoading(true)
+    const qs = new URLSearchParams()
+    if (enableSleeveFilter && sleeve !== "all") qs.set("sleeve", sleeve)
+    const q = qs.toString()
+    fetch("/ma/api/mom-analysis/marginal-vol-timeseries" + (q ? "?" + q : ""))
       .then(r => r.json())
-      .then(j => { if (j.ok) { setMvDates(j.dates ?? []); setMvCatData(j.catData ?? {}); setMvSecData(j.sectorData ?? {}); setMvSubData(j.subSectorData ?? {}) } })
-      .catch(() => {}).finally(() => setMvLoading(false))
-  }, [])
+      .then(j => {
+        if (cancelled) return
+        if (j.ok) { setMvDates(j.dates ?? []); setMvCatData(j.catData ?? {}); setMvSecData(j.sectorData ?? {}); setMvSubData(j.subSectorData ?? {}) }
+        else { setMvDates([]); setMvCatData({}); setMvSecData({}); setMvSubData({}) }
+      })
+      .catch(() => {
+        if (!cancelled) { setMvDates([]); setMvCatData({}); setMvSecData({}); setMvSubData({}) }
+      })
+      .finally(() => { if (!cancelled) setMvLoading(false) })
+    return () => { cancelled = true }
+  }, [sleeve, enableSleeveFilter])
 
   useEffect(() => {
     fetch("/ma/api/mom-analysis/cvar-sector-timeseries")
@@ -400,6 +436,19 @@ export default function SectorPositionCharts({ height = 300, capturing = false }
             >{m === "细分" ? "细分板块" : m === "大类" ? "大类资产" : "板块"}</button>
           ))}
         </div>
+        {enableSleeveFilter && (
+          <div className="flex text-xs border rounded overflow-hidden">
+            {([["all","全部"],["quant","量化"],["subjective","主观"]] as const).map(([val, label]) => (
+              <button
+                key={val}
+                onClick={() => setSleeve(val)}
+                className={`px-2.5 py-0.5 transition-colors ${
+                  sleeve === val ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading ? (

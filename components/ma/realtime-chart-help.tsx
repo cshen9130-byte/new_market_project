@@ -78,6 +78,17 @@ export function HelpTodayClose() {
   )
 }
 
+export function HelpSettlement() {
+  return (
+    <RealtimeChartHelp title="结算价">
+      <p>中金所官方当日结算价（今结算）。收盘后从交易所日行情 CSV 取数；盘中尚未公布时显示 --。</p>
+      <Formula>差异 = 结算价 − 今收盘价</Formula>
+      <Formula>差异% = (结算价 − 今收盘价) / 今收盘价 × 100</Formula>
+    </RealtimeChartHelp>
+  )
+}
+
+
 export function HelpBasisPoints() {
   return (
     <RealtimeChartHelp title="基差怎么算">

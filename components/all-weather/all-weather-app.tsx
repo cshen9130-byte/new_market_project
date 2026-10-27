@@ -488,7 +488,10 @@ export function AllWeatherApp() {
     const bookFp = rows.map((p) => `${p.symbol}:${p.price}`).join("|")
     if (bookFp !== bookFingerprintRef.current) {
       bookFingerprintRef.current = bookFp
-      frozenMarksRef.current = {}
+      // Keep locked marks after close so a book refresh cannot drop 当日盈亏 to 0
+      // via SimNow/Sina reprinting last == pre_settle.
+      const anyLive = rows.some((r) => r.symbol && isLiveSessionFor(r.symbol))
+      if (anyLive) frozenMarksRef.current = {}
     }
     frozenMarksRef.current = allWeatherFrozenMarks(frozenMarksRef.current, rows, quotes)
     const marks = frozenMarksRef.current

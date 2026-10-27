@@ -3,6 +3,7 @@ import type { CtpTick } from "@/lib/client/ctp-market"
 import { getCffexKline } from "@/lib/server/cffex-kline"
 import { sinaGet } from "@/lib/server/sina-fetch"
 import { parseSinaFuturesHq } from "@/lib/server/sina-futures-hq"
+import { getCffexDailySettles } from "@/lib/server/cffex-daily-settle"
 
 const EM_UT = "b2884a393a59ad64002292a3e90d46a5"
 const EM_UA =
@@ -161,6 +162,27 @@ export async function getCffexListedQuotes() {
         }
       }),
     )
+
+    const asOfPreview = pickAsOf(next)
+    try {
+      const daily = await getCffexDailySettles(asOfPreview)
+      if (daily) {
+        for (const [symbol, row] of Object.entries(daily.rows)) {
+          if (row.settlement == null || row.settlement <= 0) continue
+          const prev = next[symbol] || emptyTick(symbol)
+          next[symbol] = {
+            ...prev,
+            symbol,
+            settlement: row.settlement,
+            last: prev.last ?? row.close,
+            pre_settlement: prev.pre_settlement ?? row.preSettlement,
+            trade_date: prev.trade_date ?? daily.asOf,
+          }
+        }
+      }
+    } catch {
+      // settle optional
+    }
 
     const missingPx = symbols.filter((symbol) => next[symbol]?.last == null || next[symbol]?.pre_close == null)
     await Promise.all(

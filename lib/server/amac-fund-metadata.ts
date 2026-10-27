@@ -27,6 +27,8 @@ export type AmacFundMetadata = {
   put_on_record_date: string | null
   mgmt_scale: string | null
   registration_no: string | null
+  /** AMAC 协会运作状态，如 正在运作 / 提前清算 */
+  working_state: string | null
 }
 
 /** Resolve official AMAC `fund_no` from a product name when the route id is not a code. */
@@ -399,6 +401,7 @@ export async function lookupAmacFundMetadata(
       put_on_record_date: string | null
       mgmt_scale: string | null
       registration_no: string | null
+      working_state: string | null
     }>(
       `SELECT
          NULLIF(BTRIM(a.fund_name), '') AS fund_name,
@@ -407,7 +410,8 @@ export async function lookupAmacFundMetadata(
          a.establish_date::text AS establish_date,
          a.put_on_record_date::text AS put_on_record_date,
          COALESCE(d_reg.mgmt_scale_range, d_name.mgmt_scale_range, d_fuzzy.mgmt_scale_range) AS mgmt_scale,
-         COALESCE(d_reg.registration_no, d_name.registration_no, d_fuzzy.registration_no) AS registration_no
+         COALESCE(d_reg.registration_no, d_name.registration_no, d_fuzzy.registration_no) AS registration_no,
+         NULLIF(BTRIM(a.working_state), '') AS working_state
        FROM amac_private_funds a
        LEFT JOIN amac_manager_details d_reg
          ON d_reg.registration_no = $3
@@ -440,6 +444,7 @@ export async function lookupAmacFundMetadata(
         put_on_record_date: fmtDate(row.put_on_record_date),
         mgmt_scale: row.mgmt_scale?.trim() || null,
         registration_no: row.registration_no?.trim() || null,
+        working_state: row.working_state?.trim() || null,
       }
     }
 
@@ -470,6 +475,7 @@ export async function lookupAmacFundMetadata(
         put_on_record_date: fmtDate(row.put_on_record_date),
         mgmt_scale: null,
         registration_no: null,
+        working_state: null,
       }
     }
   } catch {
@@ -495,6 +501,7 @@ export async function lookupAmacFundMetadata(
           put_on_record_date: null,
           mgmt_scale: byReg.mgmt_scale?.trim() || null,
           registration_no: byReg.registration_no?.trim() || null,
+          working_state: null,
         }
       }
     }
@@ -510,6 +517,7 @@ export async function lookupAmacFundMetadata(
           put_on_record_date: null,
           mgmt_scale: byName.mgmt_scale?.trim() || null,
           registration_no: byName.registration_no?.trim() || null,
+          working_state: null,
         }
       }
     }
@@ -518,4 +526,33 @@ export async function lookupAmacFundMetadata(
   }
 
   return null
+}
+
+/** Cheap AMAC 协会运作状态 lookup for detail header tags (e.g. 提前清算). */
+export async function lookupAmacWorkingState(beianHao: string): Promise<string | null> {
+  const code = beianHao.trim()
+  if (!code) return null
+  const candidates = amacFundNoCandidates(code)
+  try {
+    const rows = await query<{ working_state: string | null }>(
+      `SELECT NULLIF(BTRIM(working_state), '') AS working_state
+       FROM amac_private_funds
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(fund_no)) = UPPER($2) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [candidates, code],
+    )
+    if (rows[0]?.working_state) return rows[0].working_state
+    const futures = await query<{ working_state: string | null }>(
+      `SELECT NULLIF(BTRIM(working_state), '') AS working_state
+       FROM amac_futures_products
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+       ORDER BY CASE WHEN UPPER(BTRIM(fund_no)) = UPPER($2) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [candidates, code],
+    )
+    return futures[0]?.working_state ?? null
+  } catch {
+    return null
+  }
 }

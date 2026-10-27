@@ -186,6 +186,33 @@ export function nearestCffexExpiry(now = new Date()) {
  * expiry week, so using the literal next 3rd Friday (often 1–3 days) makes
  * annualized basis explode. Use the next month once inside the roll window.
  */
+/** True when a CFFEX index futures symbol's 3rd-Friday expiry is already past. */
+export function isCffexIndexContractExpired(symbol: string, now = new Date()): boolean {
+  const days = calendarDaysToCffexExpiry(symbol, now)
+  return days != null && days < 0
+}
+
+export function parseBondFuturesMonth(symbol: string) {
+  const m = /^(T|TF|TS|TL)(\d{2})(\d{2})$/i.exec(symbol.trim())
+  if (!m) return null
+  return { product: m[1].toUpperCase(), year: 2000 + Number(m[2]), month: Number(m[3]) }
+}
+
+/** True when a CFFEX treasury futures symbol's 2nd-Friday expiry is already past. */
+export function isCffexBondContractExpired(symbol: string, now = new Date()): boolean {
+  const parsed = parseBondFuturesMonth(symbol)
+  if (!parsed) return false
+  const expiry = cffexSecondFriday(parsed.year, parsed.month)
+  return shanghaiTodayUtc(now) > expiry.getTime()
+}
+
+/** Index or bond specific-month contract that is past its exchange expiry. */
+export function isCffexContractExpired(symbol: string, now = new Date()): boolean {
+  if (parseIndexFuturesMonth(symbol)) return isCffexIndexContractExpired(symbol, now)
+  if (parseBondFuturesMonth(symbol)) return isCffexBondContractExpired(symbol, now)
+  return false
+}
+
 export const CFFEX_ROLL_DAYS = 7
 
 export function dominantCffexExpiry(now = new Date()) {

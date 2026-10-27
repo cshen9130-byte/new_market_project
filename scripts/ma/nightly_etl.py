@@ -534,7 +534,7 @@ def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
         )
     conn.commit()
     log.info("NHCI: upserted %d rows (max date now %s).", len(records), max(r[0] for r in records))
-    clear_mom_file_cache("quant-vs-subjective", "warm-cache")
+    clear_mom_file_cache("quant-vs-subjective", "warm-cache", "benchmark", "product-nav")
     return len(records)
 
 
@@ -714,7 +714,7 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
         )
     conn.commit()
     log.info("NH indices: upserted %d rows (max date %s).", len(records), max(r[0] for r in records))
-    clear_mom_file_cache("quant-vs-subjective", "warm-cache")
+    clear_mom_file_cache("quant-vs-subjective", "warm-cache", "benchmark", "product-nav")
     return len(records)
 
 
@@ -4671,6 +4671,143 @@ def is_market_data_current(cur_max: date | None, *, as_of: date | None = None) -
 
 JOB_NAME = "nightly_etl"
 
+
+
+def position_asof_date(conn) -> date | None:
+    """Latest MOM trade date from settlement / position tables (chart as-of)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MAX(d) FROM (
+              SELECT "交易日期"::date AS d FROM mom_daily_reports WHERE "交易日期" IS NOT NULL
+              UNION ALL
+              SELECT "交易日期"::date AS d FROM mom_position_details WHERE "交易日期" IS NOT NULL
+            ) s
+            """
+        )
+        row = cur.fetchone()
+    return row[0] if (row and row[0]) else None
+
+
+def assert_nhci_aligned_with_positions(conn) -> None:
+    """Loud failure when positions are ahead of usable NHCI.NH.
+
+    Rolling-vol joins product returns to NHCI by date; a silent one-day lag
+    truncates 南华商品 / 波动比率 on the latest session even though product vol
+    renders. Prefer failing the nanhua group so cron/post-close retries.
+    """
+    pos = position_asof_date(conn)
+    nhci = max_valid_close_date(conn, "raw_nanhua_indices_daily", extra_where="code = 'NHCI.NH'")
+    if nhci is None:
+        nhci = max_date(conn, "raw_nhci_daily")
+    target = market_data_target_date()
+    if pos is None:
+        log.warning("NHCI align check: no MOM positions yet (nhci=%s target=%s)", nhci, target)
+        return
+    if nhci is None or nhci < pos:
+        raise RuntimeError(
+            f"NHCI.NH as-of {nhci} lags MOM positions as-of {pos} "
+            f"(market target {target}). EmQuant same-day settle missing or fetch empty; "
+            "post-close nanhua group must retry — do not treat as success."
+        )
+    log.info("NHCI aligned: nhci=%s positions=%s target=%s", nhci, pos, target)
+
+
+def step_warehouse_receipts(conn, *, force: bool = False) -> int:
+    """Incremental Choice FTREGORDERVOL -> raw_futures_warehouse_receipts_daily."""
+    from datetime import date as _date, timedelta as _td
+    cur_max = max_date(conn, "raw_futures_warehouse_receipts_daily")
+    today = _date.today()
+    if force or cur_max is None:
+        start = _date(2025, 1, 1)
+        log.info("Warehouse receipts: full/forced from %s", start)
+    else:
+        # overlap a few days for revisions / late publishes
+        start = cur_max - _td(days=5)
+        log.info("Warehouse receipts: incremental from %s (max_in_db=%s)", start, cur_max)
+    end = today
+    out_path = "/tmp/wh_receipts_etl.json"
+    result = run_script(
+        "fetch_futures_warehouse_receipts_daily.py",
+        extra_args=[start.isoformat(), end.isoformat(), "--upsert"],
+        extra_env={"WH_JSON_OUT": out_path},
+        timeout=900,
+        log_stderr=True,
+    )
+    if not result or result.get("error"):
+        raise RuntimeError(f"warehouse receipts fetch failed: {result}")
+    n = int(result.get("upserted") or result.get("count") or 0)
+    log.info(
+        "Warehouse receipts: upserted=%s count=%s non_null=%s %s->%s",
+        result.get("upserted"), result.get("count"), result.get("non_null"),
+        result.get("start_date"), result.get("end_date"),
+    )
+    return n
+
+
+
+def step_edb_commodity_inventory(conn, *, force: bool = False) -> int:
+    """Incremental Choice EDB commodity inventory -> raw_edb_commodity_inventory_daily."""
+    from datetime import date as _date, timedelta as _td
+    cur_max = max_date(conn, "raw_edb_commodity_inventory_daily")
+    today = _date.today()
+    if force or cur_max is None:
+        start = _date(2025, 1, 1)
+        log.info("EDB commodity inventory: full/forced from %s", start)
+    else:
+        start = cur_max - _td(days=21)
+        log.info("EDB commodity inventory: incremental from %s (max_in_db=%s)", start, cur_max)
+    end = today
+    out_path = "/tmp/edb_inv_etl.json"
+    result = run_script(
+        "fetch_edb_commodity_inventory_daily.py",
+        extra_args=[start.isoformat(), end.isoformat(), "--upsert"],
+        extra_env={"INV_JSON_OUT": out_path},
+        timeout=600,
+        log_stderr=True,
+    )
+    if not result or result.get("error"):
+        raise RuntimeError(f"edb commodity inventory fetch failed: {result}")
+    n = int(result.get("upserted") or result.get("count") or 0)
+    log.info(
+        "EDB commodity inventory: upserted=%s count=%s non_null=%s ok=%s %s->%s",
+        result.get("upserted"), result.get("count"), result.get("non_null"),
+        result.get("ok_codes"), result.get("start_date"), result.get("end_date"),
+    )
+    return n
+
+
+def step_edb_industry_profit(conn, *, force: bool = False) -> int:
+    """Incremental Choice EDB EMI margins -> raw_edb_industry_profit_daily."""
+    from datetime import date as _date, timedelta as _td
+    cur_max = max_date(conn, "raw_edb_industry_profit_daily")
+    today = _date.today()
+    if force or cur_max is None:
+        start = _date(2025, 1, 1)
+        log.info("EDB industry profit: full/forced from %s", start)
+    else:
+        start = cur_max - _td(days=14)  # weekly series; keep longer overlap
+        log.info("EDB industry profit: incremental from %s (max_in_db=%s)", start, cur_max)
+    end = today
+    out_path = "/tmp/edb_profit_etl.json"
+    result = run_script(
+        "fetch_edb_industry_profit_daily.py",
+        extra_args=[start.isoformat(), end.isoformat(), "--upsert"],
+        extra_env={"PROFIT_JSON_OUT": out_path},
+        timeout=600,
+        log_stderr=True,
+    )
+    if not result or result.get("error"):
+        raise RuntimeError(f"edb industry profit fetch failed: {result}")
+    n = int(result.get("upserted") or result.get("count") or 0)
+    log.info(
+        "EDB industry profit: upserted=%s count=%s non_null=%s ok=%s %s->%s",
+        result.get("upserted"), result.get("count"), result.get("non_null"),
+        result.get("ok_codes"), result.get("start_date"), result.get("end_date"),
+    )
+    return n
+
+
 def step_afre(conn, *, force: bool = False) -> int:
     """Refresh 社融存量同比 CSV via Choice EDB (feeds regime + money-credit)."""
     log.info("Fetching AFRE (社融存量同比) …")
@@ -5514,6 +5651,9 @@ def step_warm_mom_cache() -> int:
 # that actually runs every day.
 MACRO_STEPS = [
     "nhci",
+    "edb_commodity_inventory",
+    "warehouse_receipts",
+    "edb_industry_profit",
     "nanhua_indices",
     "akshare_futures_daily",
     "futures_rollover_dates",
@@ -5559,6 +5699,9 @@ NANHUA_STEPS = [
 
 FUTURES_STEPS = [
     "nhci",
+    "edb_commodity_inventory",
+    "warehouse_receipts",
+    "edb_industry_profit",
     "nanhua_indices",
     "akshare_futures_daily",
     "futures_rollover_dates",
@@ -5592,6 +5735,9 @@ ORDERED_STEPS = [
     "nanhua_indices",              # all 17 NH sub-indices OHLCV
     "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
     "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded (EmQuant)
+    "warehouse_receipts",          # Choice FTREGORDERVOL registered warehouse receipts
+    "edb_industry_profit",         # Choice EDB EMI processing margins
+    "edb_commodity_inventory",     # Choice EDB social/exchange inventory
     # Continuous futures BEFORE option IV — MOM VaR depends on this table. option_iv
     # has hung for hours on AkShare; it must not gate market-data catchup.
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
@@ -5777,6 +5923,9 @@ def main():
         "predict_market_cluster":          lambda: step_predict_market_cluster(conn, None, freq="daily",   force=force),
         "predict_market_cluster_weekly":   lambda: step_predict_market_cluster(conn, None, freq="weekly",  force=force),
         "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
+        "warehouse_receipts":              lambda: step_warehouse_receipts(conn, force=force),
+        "edb_industry_profit":             lambda: step_edb_industry_profit(conn, force=force),
+        "edb_commodity_inventory":         lambda: step_edb_commodity_inventory(conn, force=force),
         "afre":                            lambda: step_afre(conn, force=force),
         "regime_indicators":               lambda: step_regime_indicators(conn, force=force),
         "regime_similarity":               lambda: step_regime_similarity(conn),
@@ -5834,6 +5983,25 @@ def main():
             log.error("  ✗  %-24s %s", step_name, exc)
             errors.append(step_name)
             log_run(conn, JOB_NAME, step_name, "failed", td, error=str(exc))
+
+    # After NHCI/Nanhua steps: detect position↔NHCI lag.
+    # Hard-fail ONLY for --group nanhua (afternoon catch-up) so retries continue.
+    # Overnight full/macro runs often finish before EmQuant publishes same-day
+    # settle — warn there, do not fail the whole pipeline.
+    if (
+        args.group == "nanhua"
+        or "nanhua_indices" in steps_to_run
+        or "nhci" in steps_to_run
+    ):
+        try:
+            assert_nhci_aligned_with_positions(conn)
+        except RuntimeError as align_err:
+            if args.group == "nanhua":
+                log.error("%s", align_err)
+                errors.append("nhci_position_align")
+                log_run(conn, JOB_NAME, "nhci_position_align", "failed", td, error=str(align_err))
+            else:
+                log.warning("%s (non-fatal for group=%s)", align_err, args.group)
 
     conn.close()
 

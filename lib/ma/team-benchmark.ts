@@ -16,7 +16,7 @@ export function normalizeBenchmarkKey(raw: string | null | undefined): string {
   if (!text) return ""
   if (text.includes("沪深300全收益")) return "H00300.CSI"
   if (text.includes("中证1000") || text.includes("1000指增")) return "IM"
-  if (text.includes("中证2000")) return "IM"
+  if (text.includes("中证2000")) return "932000.CSI"
   if (text.includes("中证800")) return "000906.SH"
   if (text.includes("中证A500") || text.includes("中证a500") || text.includes("A500指增")) return "000510.SH"
   if (text.includes("中证500") || text.includes("500指增")) return "IC"
@@ -47,6 +47,7 @@ function strategyDefaultBenchmarkKey(parts: Array<string | null | undefined>): s
   // Otherwise 1000指增 / 500指增 all resolve to 沪深300.
   // A500指增 contains "500指增", so the longer label is checked first.
   if (/1000指增|中证1000/.test(text)) return "IM"
+  if (/2000指增|中证2000/.test(text)) return "932000.CSI"
   if (/A500指增|中证A500/i.test(text)) return "000510.SH"
   if (/500指增|中证500/.test(text)) return "IC"
   if (/300指增|沪深300/.test(text)) return "IF"

@@ -3,7 +3,53 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
-import { FuturesStyleCalcHelp } from "./FuturesStyleCalcHelp"
+import { FuturesStyleCalcHelp, FuturesStyleFactorHelp, FuturesStyleFactorHelpPanel } from "./FuturesStyleCalcHelp"
+
+/** localStorage key for Futures Style factor visibility prefs */
+const VISIBLE_FACTORS_STORAGE_KEY = "futures_style_visible_factor_keys"
+
+/**
+ * 国君 CTA 周报「报告名六因子」(REPORT_FIT 本地重构，非 Wind GTJAQH*.WI 实盘):
+ * 基差 / 长期截面 / 量价相关性 / 长期规则 / 库存 / 利润
+ * + 同属 CTA/REPORT_FIT 的基差动量、中期动量 → 默认共 8 个 (<10)
+ */
+const GUOJUN_CTA_SIX_KEYS = [
+  "report_basis",
+  "report_cs_long",
+  "report_pv_corr",
+  "report_long_rule",
+  "report_inventory",
+  "report_profit",
+] as const
+
+const DEFAULT_VISIBLE_FACTOR_KEYS: string[] = [
+  ...GUOJUN_CTA_SIX_KEYS,
+  "report_basis_mom",
+  "report_mid_mom",
+]
+
+function loadVisibleFactorKeys(): string[] {
+  if (typeof window === "undefined") return [...DEFAULT_VISIBLE_FACTOR_KEYS]
+  try {
+    const raw = localStorage.getItem(VISIBLE_FACTORS_STORAGE_KEY)
+    if (!raw) return [...DEFAULT_VISIBLE_FACTOR_KEYS]
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return [...DEFAULT_VISIBLE_FACTOR_KEYS]
+    const keys = parsed.filter((k): k is string => typeof k === "string" && k.length > 0)
+    return keys.length > 0 ? keys : [...DEFAULT_VISIBLE_FACTOR_KEYS]
+  } catch {
+    return [...DEFAULT_VISIBLE_FACTOR_KEYS]
+  }
+}
+
+function saveVisibleFactorKeys(keys: string[]) {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(VISIBLE_FACTORS_STORAGE_KEY, JSON.stringify(keys))
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 const SECTOR_TABS = [
   { key: "all", label: "全部" },
@@ -201,6 +247,14 @@ export function FuturesStyleView() {
   const [hiddenCumulativeSeries, setHiddenCumulativeSeries] = useState<Set<string>>(new Set())
   const [selectAllCumulativeSeries, setSelectAllCumulativeSeries] = useState(true)
 
+  /** Keys of factors shown on cards / charts / interval table (persisted). */
+  const [visibleFactorKeys, setVisibleFactorKeys] = useState<string[]>(DEFAULT_VISIBLE_FACTOR_KEYS)
+  const [prefsHydrated, setPrefsHydrated] = useState(false)
+  const [manageOpen, setManageOpen] = useState(false)
+  const [draftVisibleKeys, setDraftVisibleKeys] = useState<string[]>(DEFAULT_VISIBLE_FACTOR_KEYS)
+  /** Which factor's calc help is shown in the manage modal panel. */
+  const [manageHelpKey, setManageHelpKey] = useState<string>(GUOJUN_CTA_SIX_KEYS[0])
+
   const [payload, setPayload] = useState<ApiPayload | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -287,17 +341,55 @@ export function FuturesStyleView() {
     }
   }, [activeSector, rangeAuto, appliedFrom, appliedTo])
 
+  // Hydrate visibility prefs once on mount (avoid SSR / hydration mismatch)
+  useEffect(() => {
+    const keys = loadVisibleFactorKeys()
+    setVisibleFactorKeys(keys)
+    setDraftVisibleKeys(keys)
+    setPrefsHydrated(true)
+  }, [])
+
+  const allFactorCatalog = useMemo(() => {
+    if (!payload) return [] as Array<{ key: string; name: string }>
+    const map = new Map<string, string>()
+    for (const c of payload.cards) {
+      if (c.key) map.set(c.key, c.name)
+    }
+    for (const s of payload.daily) {
+      if (s.key && !map.has(s.key)) map.set(s.key, s.name)
+    }
+    for (const s of payload.cumulative) {
+      if (s.key && !map.has(s.key)) map.set(s.key, s.name)
+    }
+    for (const row of payload.interval) {
+      if (row.key && !map.has(row.key)) map.set(row.key, row.name)
+    }
+    return Array.from(map.entries()).map(([key, name]) => ({ key, name }))
+  }, [payload])
+
+  const visibleKeySet = useMemo(() => new Set(visibleFactorKeys), [visibleFactorKeys])
+
+  const isFactorVisible = useCallback(
+    (key: string) => {
+      if (!prefsHydrated) return DEFAULT_VISIBLE_FACTOR_KEYS.includes(key)
+      return visibleKeySet.has(key)
+    },
+    [prefsHydrated, visibleKeySet],
+  )
+
   const chartDates = payload?.dates ?? []
   const latestDate = chartDates[chartDates.length - 1] ?? appliedTo
 
   const chartSeries = useMemo(
     () =>
-      (payload?.daily ?? []).map((s) => ({
-        name: s.name,
-        color: s.color,
-        data: s.data,
-      })),
-    [payload],
+      (payload?.daily ?? [])
+        .filter((s) => isFactorVisible(s.key))
+        .map((s) => ({
+          name: s.name,
+          color: s.color,
+          data: s.data,
+        })),
+    [payload, isFactorVisible],
   )
 
   const chartOption = useMemo(() => {
@@ -405,28 +497,36 @@ export function FuturesStyleView() {
     }
   }, [chartDates, chartSeries, hiddenSeries])
 
-  const cardValues = payload?.cards ?? []
+  const cardValues = useMemo(
+    () => (payload?.cards ?? []).filter((c) => isFactorVisible(c.key)),
+    [payload, isFactorVisible],
+  )
 
   const intervalTableRows = useMemo(
     () =>
-      (payload?.interval ?? []).map((factor, index) => ({
-        index: index + 1,
-        name: factor.name,
-        returns: factor.returns,
-      })),
-    [payload],
+      (payload?.interval ?? [])
+        .filter((factor) => isFactorVisible(factor.key))
+        .map((factor, index) => ({
+          index: index + 1,
+          name: factor.name,
+          returns: factor.returns,
+        })),
+    [payload, isFactorVisible],
   )
 
   const statsCutoff = latestDate
 
   const cumulativeSeries = useMemo(
     () =>
-      (payload?.cumulative ?? []).map((s) => ({
-        name: s.name,
-        color: s.color,
-        data: s.data,
-      })),
-    [payload],
+      (payload?.cumulative ?? [])
+        .filter((s) => isFactorVisible(s.key))
+        .map((s) => ({
+          key: s.key,
+          name: s.name,
+          color: s.color,
+          data: s.data,
+        })),
+    [payload, isFactorVisible],
   )
 
   const cumulativeChartOption = useMemo(() => {
@@ -555,6 +655,59 @@ export function FuturesStyleView() {
     [],
   )
 
+  /** Cumulative series for the factor focused in 管理因子 (even if currently unchecked). */
+  const manageFocusSeries = useMemo(() => {
+    const row = (payload?.cumulative ?? []).find((s) => s.key === manageHelpKey)
+    if (!row) return null
+    return { key: row.key, name: row.name, color: row.color, data: row.data }
+  }, [payload, manageHelpKey])
+
+  const manageFocusChartOption = useMemo(() => {
+    if (!manageFocusSeries || chartDates.length === 0) return null
+    return buildSingleFactorCumulativeOption(
+      manageFocusSeries.name,
+      manageFocusSeries.color,
+      chartDates,
+      manageFocusSeries.data,
+    )
+  }, [manageFocusSeries, chartDates])
+
+  const openManageFactors = useCallback(() => {
+    const draft = [...visibleFactorKeys]
+    setDraftVisibleKeys(draft)
+    const preferred =
+      draft.find((k) => (GUOJUN_CTA_SIX_KEYS as readonly string[]).includes(k)) ??
+      draft[0] ??
+      GUOJUN_CTA_SIX_KEYS[0]
+    setManageHelpKey(preferred)
+    setManageOpen(true)
+  }, [visibleFactorKeys])
+
+  const toggleDraftKey = useCallback((key: string) => {
+    setDraftVisibleKeys((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    )
+  }, [])
+
+  const handleManageSelectAll = useCallback(() => {
+    setDraftVisibleKeys(allFactorCatalog.map((f) => f.key))
+  }, [allFactorCatalog])
+
+  const handleManageResetDefault = useCallback(() => {
+    setDraftVisibleKeys([...DEFAULT_VISIBLE_FACTOR_KEYS])
+  }, [])
+
+  const handleManageApply = useCallback(() => {
+    const next = draftVisibleKeys.length > 0 ? [...draftVisibleKeys] : [...DEFAULT_VISIBLE_FACTOR_KEYS]
+    setVisibleFactorKeys(next)
+    saveVisibleFactorKeys(next)
+    setHiddenSeries(new Set())
+    setSelectAllSeries(true)
+    setHiddenCumulativeSeries(new Set())
+    setSelectAllCumulativeSeries(true)
+    setManageOpen(false)
+  }, [draftVisibleKeys])
+
   return (
     <div className="flex flex-col gap-4 -m-1">
       <div className="rounded-lg border border-zinc-100 bg-white px-4 py-3">
@@ -588,6 +741,17 @@ export function FuturesStyleView() {
           >
             最新
           </button>
+          <button
+            type="button"
+            onClick={openManageFactors}
+            className="h-8 min-w-[4rem] px-4 rounded-sm border border-zinc-200 bg-white text-sm text-zinc-700 hover:bg-zinc-50 transition-colors"
+            title="选择页面展示的风格因子"
+          >
+            管理因子
+          </button>
+          <span className="text-xs text-zinc-400 shrink-0">
+            显示 {visibleFactorKeys.length} 个因子
+          </span>
           {rangeAuto && (
             <span className="text-xs text-emerald-600 shrink-0">自动跟踪最新数据</span>
           )}
@@ -625,6 +789,13 @@ export function FuturesStyleView() {
           <span className="text-sm font-semibold text-zinc-800">最新风格因子收益</span>
           <span className="text-sm text-zinc-400">{latestDate}</span>
           <FuturesStyleCalcHelp section="latest" />
+          <button
+            type="button"
+            onClick={openManageFactors}
+            className="ml-auto h-7 px-3 rounded-sm border border-zinc-200 bg-white text-xs text-zinc-600 hover:bg-zinc-50 transition-colors"
+          >
+            管理因子
+          </button>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {cardValues.map((card) => (
@@ -824,7 +995,7 @@ export function FuturesStyleView() {
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {cumulativeSeries.map((series) => (
                   <div
-                    key={series.name}
+                    key={series.key || series.name}
                     className="rounded-lg border border-zinc-100 bg-zinc-50/40 px-3 pt-3 pb-1"
                   >
                     <div className="flex items-center gap-2 mb-1 min-h-[1.25rem]">
@@ -835,6 +1006,7 @@ export function FuturesStyleView() {
                       <span className="text-xs font-medium text-zinc-700 truncate" title={series.name}>
                         {series.name}
                       </span>
+                      <FuturesStyleFactorHelp factorKey={series.key} displayName={series.name} />
                       <span
                         className={[
                           "ml-auto text-xs tabular-nums font-semibold shrink-0",
@@ -866,6 +1038,176 @@ export function FuturesStyleView() {
           </>
         )}
       </div>
+
+      {manageOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="futures-style-manage-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setManageOpen(false)
+          }}
+        >
+          <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-lg border border-zinc-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-zinc-100">
+              <div>
+                <h2 id="futures-style-manage-title" className="text-sm font-semibold text-zinc-800">
+                  管理因子
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  勾选控制页面展示；点击因子名称查看右侧计算说明与累计走势。默认保留国君 CTA 六因子等共 {DEFAULT_VISIBLE_FACTOR_KEYS.length} 个
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManageOpen(false)}
+                className="h-7 w-7 rounded border border-zinc-200 text-zinc-500 hover:bg-zinc-50 text-sm"
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </div>
+            <div className="px-4 py-2 flex flex-wrap items-center gap-2 border-b border-zinc-50">
+              <button
+                type="button"
+                onClick={handleManageSelectAll}
+                className="h-7 px-3 rounded-sm border border-zinc-200 bg-white text-xs text-zinc-700 hover:bg-zinc-50"
+              >
+                全选
+              </button>
+              <button
+                type="button"
+                onClick={() => setDraftVisibleKeys([])}
+                className="h-7 px-3 rounded-sm border border-zinc-200 bg-white text-xs text-zinc-700 hover:bg-zinc-50"
+              >
+                全不选
+              </button>
+              <button
+                type="button"
+                onClick={handleManageResetDefault}
+                className="h-7 px-3 rounded-sm border border-red-200 bg-red-50 text-xs text-red-600 hover:bg-red-100"
+              >
+                恢复默认
+              </button>
+              <span className="text-xs text-zinc-400 ml-auto">
+                已选 {draftVisibleKeys.length} / {allFactorCatalog.length || "—"}
+              </span>
+            </div>
+            <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 overflow-hidden">
+              <div className="overflow-y-auto px-4 py-3 border-b md:border-b-0 md:border-r border-zinc-100">
+                {allFactorCatalog.length === 0 ? (
+                  <div className="text-sm text-zinc-400 py-8 text-center">请先加载数据后再管理因子</div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2">
+                    {allFactorCatalog.map((f) => {
+                      const checked = draftVisibleKeys.includes(f.key)
+                      const isCore = (GUOJUN_CTA_SIX_KEYS as readonly string[]).includes(f.key)
+                      const isHelpActive = manageHelpKey === f.key
+                      return (
+                        <div
+                          key={f.key}
+                          className={[
+                            "flex items-center gap-2 rounded border px-2.5 py-2 transition-colors",
+                            isHelpActive
+                              ? "border-red-400 bg-red-50 ring-1 ring-red-200"
+                              : checked
+                                ? "border-red-200 bg-red-50/40"
+                                : "border-zinc-100 bg-white hover:bg-zinc-50",
+                          ].join(" ")}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleDraftKey(f.key)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-3.5 w-3.5 accent-red-500 shrink-0"
+                            aria-label={`显示 ${f.name}`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setManageHelpKey(f.key)}
+                            className="flex-1 min-w-0 text-left"
+                            title="查看计算说明"
+                          >
+                            <span className="text-sm text-zinc-700 truncate block">{f.name}</span>
+                          </button>
+                          {isCore && (
+                            <span className="text-[10px] text-red-500 border border-red-200 rounded px-1 shrink-0">
+                              国君
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="min-h-0 flex flex-col overflow-hidden bg-zinc-50/40">
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+                  <div className="text-[11px] font-medium text-zinc-500 mb-2 tracking-wide">
+                    计算说明
+                  </div>
+                  <FuturesStyleFactorHelpPanel
+                    factorKey={manageHelpKey}
+                    displayName={allFactorCatalog.find((f) => f.key === manageHelpKey)?.name}
+                  />
+                </div>
+                <div className="shrink-0 border-t border-zinc-100 bg-white px-4 pt-3 pb-2">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[11px] font-medium text-zinc-500 tracking-wide">累计收益走势</span>
+                    {manageFocusSeries && (
+                      <>
+                        <span className="text-xs text-zinc-700 truncate">{manageFocusSeries.name}</span>
+                        <span
+                          className={[
+                            "ml-auto text-xs tabular-nums font-semibold shrink-0",
+                            (manageFocusSeries.data.at(-1) ?? 0) > 0
+                              ? "text-red-500"
+                              : (manageFocusSeries.data.at(-1) ?? 0) < 0
+                                ? "text-green-600"
+                                : "text-zinc-500",
+                          ].join(" ")}
+                        >
+                          {formatReturnPct(manageFocusSeries.data.at(-1) ?? 0)}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {!manageFocusChartOption || chartDates.length === 0 ? (
+                    <div className="flex items-center justify-center h-[180px] text-xs text-zinc-400">
+                      {loading ? "加载中…" : "暂无该因子累计序列"}
+                    </div>
+                  ) : (
+                    <ReactECharts
+                      option={manageFocusChartOption}
+                      style={{ height: 180, width: "100%" }}
+                      notMerge
+                      lazyUpdate
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-zinc-100">
+              <button
+                type="button"
+                onClick={() => setManageOpen(false)}
+                className="h-8 px-4 rounded-sm border border-zinc-200 bg-white text-sm text-zinc-700 hover:bg-zinc-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleManageApply}
+                className="h-8 px-4 rounded-sm border border-red-500 bg-red-500 text-sm text-white hover:bg-red-600"
+              >
+                应用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

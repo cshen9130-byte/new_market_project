@@ -105,6 +105,7 @@ interface Props {
 export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "", allAccounts = false, onSelectAccount }: Props) {
   const isAccount = variant === "account"
   const [allData, setAllData] = useState<NavPoint[]>([])
+  const [nhciLagMeta, setNhciLagMeta] = useState<{ lagging?: boolean; nhciAsOf?: string | null; positionAsOf?: string | null } | null>(null)
   const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
   const [turnoverSeries, setTurnoverSeries] = useState<TurnoverPoint[]>([])
   const [holdingSeries, setHoldingSeries] = useState<HoldingPoint[]>([])
@@ -196,6 +197,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
       }
       const series = json.series?.[0]
       setBenchmarkData(series?.data ?? [])
+      setNhciLagMeta(json.meta ?? null)
     } catch {
       setBenchmarkData([])
     } finally {
@@ -1541,6 +1543,11 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
           <CardHeader className="pb-2 pt-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">{volWindow}日滚动波动率（年化）</CardTitle>
+              {nhciLagMeta?.lagging && (
+                <p className="mt-1 text-[11px] text-amber-700">
+                  {"南华商品 NHCI（"}{nhciLagMeta.nhciAsOf || "缺失"}{"）落后持仓日（"}{nhciLagMeta.positionAsOf || "?"}{"），最新日波动比率可能截断。"}
+                </p>
+              )}
               <div className="flex gap-1">
                 {([5, 10, 20] as const).map((w) => (
                   <button key={w} onClick={() => setVolWindow(w)}

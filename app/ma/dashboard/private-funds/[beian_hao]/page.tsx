@@ -249,6 +249,8 @@ interface FundInfo {
   ret_1y:         string | null
   sharpe_1y:      string | null
   calmar_1y:      string | null
+  /** AMAC 协会运作状态（如 提前清算） */
+  working_state?: string | null
 }
 
 interface Metrics {
@@ -276,6 +278,7 @@ interface DetailData {
 const BENCHMARK_OPTIONS = [
   { key: "", label: "不显示" },
   { key: "IM", label: "中证1000" },
+  { key: "932000.CSI", label: "中证2000" },
   { key: "IC", label: "中证500" },
   { key: "IF", label: "沪深300" },
   { key: "IH", label: "上证50" },
@@ -2031,10 +2034,21 @@ export default function PrivateFundDetailPage() {
             </span>
           ))}
 
+          {/* AMAC 运作状态：提前清算 */}
+          {info.working_state === "提前清算" && (
+            <span
+              className="px-1.5 py-0.5 rounded whitespace-nowrap text-xs font-medium"
+              style={{ backgroundColor: "#fef2f2", color: "#dc2626", border: "1px solid #fca5a5" }}
+              title="中基协运作状态：提前清算"
+            >
+              提前清算
+            </span>
+          )}
+
           {/* ── 池 ── */}
           {fundPools.length > 0 && (
             <>
-              {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3 || fundTags.length > 0) && (
+              {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3 || fundTags.length > 0 || info.working_state === "提前清算") && (
                 <span className="text-zinc-300 select-none mx-0.5">|</span>
               )}
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-500 flex-shrink-0"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>

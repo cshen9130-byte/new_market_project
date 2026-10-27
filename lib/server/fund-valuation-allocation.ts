@@ -3223,9 +3223,10 @@ async function enrichCachedFundStrategies(
 ): Promise<FundValuationAllocationResult> {
   const rows = result.fund_holdings ?? []
   if (rows.length === 0) return result
-  const needsLookup = rows.some((row) => !("strategyL1" in row) || !("strategyL3" in row))
-  if (!needsLookup) return result
 
+  // Always re-read type6 company strategy. Cached snapshots embed strategyL1/L2/L3 +
+  // fundStrategy at compute time; skipping when those keys exist left FOF底层 stuck on
+  // the old label after writeCompanyStrategyAcrossShareClasses (detail page was already live).
   const beianCodes = rows
     .map((row) => row.beianHao ?? row.valuationCode)
     .filter((v): v is string => Boolean(v))
@@ -3242,12 +3243,14 @@ async function enrichCachedFundStrategies(
     const strategyL1 = strategyRow?.l1?.trim() || row.strategyL1 || fromPath[0] || null
     const strategyL2 = strategyRow?.l2?.trim() || row.strategyL2 || fromPath[1] || null
     const strategyL3 = strategyRow?.l3?.trim() || row.strategyL3 || null
+    const liveLabel = formatFundStrategy(strategyL1, strategyL2)
     return {
       ...row,
       strategyL1,
       strategyL2,
       strategyL3,
-      fundStrategy: row.fundStrategy ?? formatFundStrategy(strategyL1, strategyL2),
+      // Prefer live L1/L2 label so company strategy edits win over stale snapshot text.
+      fundStrategy: liveLabel ?? row.fundStrategy ?? null,
     }
   })
   return { ...result, fund_holdings }

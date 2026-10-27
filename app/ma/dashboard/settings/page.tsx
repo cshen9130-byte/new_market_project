@@ -46,6 +46,7 @@ interface CommonBenchmark { type: string; name: string }
 const BENCHMARK_TYPE_OPTIONS = ["基准指数", "指数", "私募指数", "自定义"]
 const BENCHMARK_NAME_OPTIONS = [
   "中证1000",
+  "中证2000",
   "中证500",
   "沪深300",
   "上证50",
@@ -71,6 +72,7 @@ const BENCHMARK_NAME_OPTIONS = [
 
 const DEFAULT_COMMON_BENCHMARKS: CommonBenchmark[] = [
   { type: "基准指数", name: "中证1000" },
+  { type: "基准指数", name: "中证2000" },
   { type: "基准指数", name: "中证500" },
   { type: "基准指数", name: "沪深300" },
   { type: "基准指数", name: "上证50" },

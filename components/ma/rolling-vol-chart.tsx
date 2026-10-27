@@ -6,36 +6,55 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface NavPoint { date: string; dailyReturn: number }
 interface BmPoint  { date: string; close: number }
+interface NhciLagMeta {
+  positionAsOf?: string | null
+  nhciAsOf?: string | null
+  lagging?: boolean
+  lagReason?: string | null
+}
 
 export default function RollingVolChart({ height = 260 }: { height?: number }) {
   const [navData,  setNavData]  = useState<NavPoint[]>([])
   const [bmData,   setBmData]   = useState<BmPoint[]>([])
+  const [lagMeta,  setLagMeta]  = useState<NhciLagMeta | null>(null)
   const [volWindow, setVolWindow] = useState<5 | 10 | 20>(20)
 
   useEffect(() => {
-    fetch("/ma/api/mom-analysis/product-nav")
-      .then((r) => r.json())
-      .then((j) => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const navRes = await fetch("/ma/api/mom-analysis/product-nav")
+        const j = await navRes.json()
         const rows: NavPoint[] = (j.data ?? []).map((p: { date: string; dailyReturn: number }) => ({
           date: p.date,
           dailyReturn: p.dailyReturn,
         }))
+        if (cancelled) return
         setNavData(rows)
-
-        // fetch benchmark once we know the date range
         if (rows.length === 0) return
+
         const from = rows[0].date
         const to   = rows[rows.length - 1].date
         const params = new URLSearchParams({ from, to, codes: "NHCI.NH" })
-        fetch(`/ma/api/mom-analysis/benchmark?${params}`)
-          .then((r) => r.json())
-          .then((bj) => {
-            const series = bj.series?.[0]
-            setBmData(series?.data ?? [])
-          })
-          .catch(() => {})
-      })
-      .catch(() => {})
+        const bj = await (await fetch(`/ma/api/mom-analysis/benchmark?${params}`)).json()
+        if (cancelled) return
+        const series = bj.series?.[0]
+        setBmData(series?.data ?? [])
+        setLagMeta(bj.meta ?? null)
+        // If API reports lag, force a nocache re-read once in case file cache was
+        // written before NHCI advanced (freshness token should usually prevent this).
+        if (bj.meta?.lagging) {
+          const fresh = await (await fetch(`/ma/api/mom-analysis/benchmark?${params}&nocache=1`)).json()
+          if (cancelled) return
+          const s2 = fresh.series?.[0]
+          setBmData(s2?.data ?? [])
+          setLagMeta(fresh.meta ?? bj.meta)
+        }
+      } catch {
+        /* non-fatal */
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
   const option = (() => {
@@ -46,10 +65,11 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
     const fundVol: [string, number][] = []
     for (let i = start; i < navData.length; i++) {
       const w = Math.min(WINDOW, i)
-      const slice = navData.slice(i - w, i).map((p) => p.dailyReturn)
-      const mu  = slice.reduce((s, r) => s + r, 0) / w
-      const vol = w > 1
-        ? Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (w - 1)) * ANN
+      // Include return on day i so product vol aligns with NHCI window ending at i.
+      const slice = navData.slice(i - w + 1, i + 1).map((p) => p.dailyReturn)
+      const mu  = slice.reduce((s, r) => s + r, 0) / slice.length
+      const vol = slice.length > 1
+        ? Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (slice.length - 1)) * ANN
         : 0
       fundVol.push([navData[i].date, parseFloat((vol * 100).toFixed(4))])
     }
@@ -126,6 +146,13 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
     }
   })()
 
+  const latestNav = navData.at(-1)?.date
+  const latestBm = bmData.at(-1)?.date
+  const showLag =
+    !!lagMeta?.lagging ||
+    (!!latestNav && !!latestBm && latestBm < latestNav) ||
+    (!!latestNav && bmData.length > 0 && !latestBm)
+
   return (
     <Card>
       <CardHeader className="pb-2 pt-3">
@@ -147,6 +174,15 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
             ))}
           </div>
         </div>
+        {showLag && (
+          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+            南华商品 NHCI 未对齐最新持仓日
+            {latestNav ? `（产品 ${latestNav}` : "（产品 ?"}
+            {latestBm ? ` / NHCI ${latestBm}` : " / NHCI 缺失"}
+            {lagMeta?.positionAsOf ? `；持仓截止 ${lagMeta.positionAsOf}` : ""}
+            ）。EmQuant 当日结算未入库或缓存未失效时会截断波动比率——请等待盘后 NHCI 抓取或检查 nanhua ETL。
+          </p>
+        )}
       </CardHeader>
       <CardContent className="pt-0">
         {navData.length === 0 ? (

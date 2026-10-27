@@ -63,19 +63,22 @@ export async function registerBackgroundJobs(): Promise<void> {
   // 邮箱结算文件) then copy NAV into 直投产品. Sync is also run at the end of
   // every ETL; this tick is the daily catch-up if 17:00 fetch/ETL was skipped.
   
-  // 17:45 Beijing weekdays: post-close NHCI / Nanhua composite catch-up.
-  // Overnight 01:00/02:30 often finishes before EmQuant publishes the same-day
-  // settle, leaving MOM 简报 on the prior session until a manual --force.
-  cron.schedule("45 17 * * 1-5", () => {
-    void (async () => {
-      try {
-        const { runScheduledNanhuaPostcloseEtl } = await import("./nanhua-postclose-etl-job")
-        runScheduledNanhuaPostcloseEtl()
-      } catch (e) {
-        console.error("[nanhua-postclose-etl] scheduler error:", e)
-      }
-    })()
-  })
+  // Afternoon NHCI / Nanhua catch-up (positions often ahead of EmQuant same-day).
+  // Overnight 01:00/02:30 often finishes before EmQuant publishes; a single 17:45
+  // tick still missed publish and a false success suppressed retries for 4h.
+  for (const expr of ["35 15 * * 1-5", "30 16 * * 1-5", "45 17 * * 1-5", "0 19 * * 1-5"] as const) {
+    cron.schedule(expr, () => {
+      void (async () => {
+        try {
+          const { runScheduledNanhuaPostcloseEtl } = await import("./nanhua-postclose-etl-job")
+          runScheduledNanhuaPostcloseEtl()
+        } catch (e) {
+          console.error("[nanhua-postclose-etl] scheduler error:", e)
+        }
+      })()
+    }, { timezone: "Asia/Shanghai" })
+  }
+
 
 cron.schedule("30 18 * * 1-5", () => {
     void (async () => {

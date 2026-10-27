@@ -49,7 +49,7 @@ function rememberValuationMemoryCache(key: string, data: unknown): void {
   if (oldest != null) valuationMemCache.delete(oldest)
 }
 
-function dropValuationMemoryCache(beianHaos: string[]): void {
+export function forgetValuationMemoryCache(beianHaos: string[]): void {
   const codes = new Set(beianHaos.map((c) => c.trim().toUpperCase()).filter(Boolean))
   if (codes.size === 0) {
     valuationMemCache.clear()
@@ -116,7 +116,7 @@ export async function readValuationCacheIfFresh<T>(
 
 export async function invalidateValuationCache(beianHaos: string[]): Promise<void> {
   const codes = [...new Set(beianHaos.map((c) => c.trim().toUpperCase()).filter(Boolean))]
-  dropValuationMemoryCache(codes)
+  forgetValuationMemoryCache(codes)
   if (codes.length === 0) return
   await query(
     `DELETE FROM ops_valuation_precomputed_cache WHERE beian_hao = ANY($1::text[])`,

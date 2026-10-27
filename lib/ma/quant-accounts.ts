@@ -43,3 +43,41 @@ export type SleeveGroup = "quant" | "subjective"
 export function sleeveGroup(account: string): SleeveGroup {
   return isQuantAccount(account) ? "quant" : "subjective"
 }
+
+export type SleeveFilter = "all" | "quant" | "subjective"
+
+/** Accept all / quant / subjective (also 全部 / 量化 / 主观). Default all. */
+export function parseSleeveParam(raw: string | null | undefined): SleeveFilter {
+  const v = String(raw ?? "").trim().toLowerCase()
+  if (v === "quant" || v === "量化") return "quant"
+  if (v === "subjective" || v === "subj" || v === "主观") return "subjective"
+  return "all"
+}
+
+// Split so the pattern is not a char-class escape hazard in some editors.
+const NON_DIGIT_CLASS = "[^" + "0-9]"
+
+/**
+ * SQL CASE expression classifying an account column as 'quant' | 'subjective',
+ * matching MOM quant-vs-subjective / jiaama-only partitioning.
+ */
+export function sleeveSql(quantIds: number[], accountCol = `"账户"`): string {
+  if (!quantIds.length) return "'subjective'"
+  const list = quantIds.map((id) => "'" + id + "'").join(",")
+  const digits = "regexp_replace(TRIM(" + accountCol + "), '" + NON_DIGIT_CLASS + "', '', 'g')"
+  const norm = "COALESCE(NULLIF(TRIM(LEADING '0' FROM " + digits + "), ''), '0')"
+  return (
+    "CASE WHEN " + digits + " = '' THEN 'subjective' " +
+    "WHEN " + norm + " IN (" + list + ") THEN 'quant' ELSE 'subjective' END"
+  )
+}
+
+/** AND-clause filtering to one sleeve, or empty string for all. */
+export function sleeveFilterSql(
+  sleeve: SleeveFilter,
+  quantIds: number[],
+  accountCol = `"账户"`,
+): string {
+  if (sleeve === "all") return ""
+  return " AND (" + sleeveSql(quantIds, accountCol) + ") = '" + sleeve + "'"
+}

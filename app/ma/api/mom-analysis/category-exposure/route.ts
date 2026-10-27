@@ -3,6 +3,7 @@ import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
 import { momAccountEqualsSql, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { getPrefix } from "@/lib/server/prod-utils"
+import { parseQuantIdList, parseSleeveParam, sleeveFilterSql } from "@/lib/ma/quant-accounts"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -142,6 +143,10 @@ async function _GET(req: Request) {
   }
   const accountSql = account ? ACCOUNT_SQL : ""
   const params = account ? [account] : []
+  const url = new URL(req.url)
+  const sleeve = parseSleeveParam(url.searchParams.get("sleeve"))
+  const quantIds = parseQuantIdList(url.searchParams.get("quantIds"))
+  const sleeveSqlClause = sleeveFilterSql(sleeve, quantIds)
   try {
     const rows = await query<{
       date: string
@@ -170,7 +175,7 @@ async function _GET(req: Request) {
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
          AND TRIM("账户"::text) NOT LIKE '%国信%'
-         AND TRIM("账户"::text) <> '665300200077'${accountSql}
+         AND TRIM("账户"::text) <> '665300200077'${accountSql}${sleeveSqlClause}
        GROUP BY "交易日期"::date, UPPER(TRIM("合约"))
        ORDER BY "交易日期"::date`,
       params,
@@ -186,7 +191,7 @@ async function _GET(req: Request) {
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
          AND TRIM("账户"::text) NOT LIKE '%国信%'
-         AND TRIM("账户"::text) <> '665300200077'${accountSql}
+         AND TRIM("账户"::text) <> '665300200077'${accountSql}${sleeveSqlClause}
        GROUP BY "交易日期"::date
        ORDER BY "交易日期"::date`,
       params,

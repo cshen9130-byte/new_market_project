@@ -65,6 +65,16 @@ export type AutoWeeklyListItem = AutoWeeklyReportRecord & {
   download: { png: string; pdf: string }
   /** True for 自建基金 / extra strategy series (not 在管产品). */
   isCustomFund: boolean
+  /**
+   * Metadata short / display name when present (e.g. private_fund_info_bfl.short_name).
+   * Null when only one name form exists in metadata.
+   */
+  short_name: string | null
+  /**
+   * Metadata full / legal fund name when present (e.g. AMAC fund_name / product_name).
+   * Null when only one name form exists in metadata.
+   */
+  full_name: string | null
 }
 
 type AutoWeeklyIndex = {
@@ -215,13 +225,128 @@ export function isAutoWeeklyCustomFund(
   return false
 }
 
-export function enrichAutoWeeklyListItem(row: AutoWeeklyReportRecord, latestNavDate?: string | null): AutoWeeklyListItem {
+function reportNameLookupKey(row: {
+  product_name: string
+  beian_hao: string | null
+}): string {
+  const code = (row.beian_hao || "").trim().toUpperCase()
+  if (code) return `beian:${code}`
+  return `name:${(row.product_name || "").trim()}`
+}
+
+/**
+ * Batch-load short vs full fund names from existing product metadata.
+ * Does not invent names by stripping legal suffixes — only reuses stored fields.
+ */
+export async function lookupAutoWeeklyTitleNames(
+  rows: Array<{ product_name: string; beian_hao: string | null }>,
+): Promise<Map<string, { short_name: string | null; full_name: string | null }>> {
+  const out = new Map<string, { short_name: string | null; full_name: string | null }>()
+  const codes = [
+    ...new Set(
+      rows
+        .map((r) => (r.beian_hao || "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  ]
+  if (codes.length === 0) return out
+
+  type NameRow = {
+    code: string
+    product_name: string | null
+    short_name: string | null
+    pri: number
+  }
+
+  const meta = await query<NameRow>(
+    `SELECT code, product_name, short_name, pri FROM (
+       SELECT UPPER(BTRIM(beian_hao)) AS code,
+              NULLIF(BTRIM(product_name), '') AS product_name,
+              NULLIF(BTRIM(short_name), '') AS short_name,
+              0 AS pri
+       FROM private_fund_info_bfl
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       UNION ALL
+       SELECT UPPER(BTRIM(beian_hao)),
+              NULLIF(BTRIM(product_name), ''),
+              NULLIF(BTRIM(short_name), ''),
+              1
+       FROM ops_managed_products_list_cache
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       UNION ALL
+       SELECT UPPER(BTRIM(register_number)),
+              NULLIF(BTRIM(fund_name), ''),
+              NULLIF(BTRIM(fund_short_name), ''),
+              2
+       FROM type6_ops_team_full
+       WHERE UPPER(BTRIM(register_number)) = ANY($1::text[])
+       UNION ALL
+       SELECT UPPER(BTRIM(beian_hao)),
+              NULLIF(BTRIM(product_name), ''),
+              NULL,
+              3
+       FROM private_fund_info
+       WHERE UPPER(BTRIM(beian_hao)) = ANY($1::text[])
+       UNION ALL
+       SELECT UPPER(BTRIM(fund_no)),
+              NULLIF(BTRIM(fund_name), ''),
+              NULL,
+              4
+       FROM amac_private_funds
+       WHERE UPPER(BTRIM(fund_no)) = ANY($1::text[])
+     ) t
+     ORDER BY pri ASC`,
+    [codes],
+  ).catch(() => [] as NameRow[])
+
+  const byCode = new Map<string, { short_name: string | null; full_name: string | null }>()
+  for (const row of meta) {
+    const code = (row.code || "").trim().toUpperCase()
+    if (!code) continue
+    const prev = byCode.get(code) ?? { short_name: null, full_name: null }
+    const product = (row.product_name || "").trim() || null
+    const short = (row.short_name || "").trim() || null
+    // short_name: prefer earlier sources (bfl / cache / type6).
+    if (!prev.short_name && short && short !== product) prev.short_name = short
+    if (!prev.short_name && short) prev.short_name = short
+    // full_name: prefer later official sources (private_fund_info / AMAC) over catalog labels.
+    // pri 3-4 overwrite; pri 0-2 only fill when empty.
+    if (product) {
+      if (row.pri >= 3 || !prev.full_name) prev.full_name = product
+    }
+    byCode.set(code, prev)
+  }
+
+  for (const row of rows) {
+    const key = reportNameLookupKey(row)
+    const code = (row.beian_hao || "").trim().toUpperCase()
+    if (!code) continue
+    const names = byCode.get(code)
+    if (!names) continue
+    let short_name = names.short_name
+    let full_name = names.full_name
+    // If metadata only has one form, leave the other null so UI shows the same for both modes.
+    if (short_name && full_name && short_name === full_name) {
+      short_name = null
+    }
+    out.set(key, { short_name, full_name })
+  }
+  return out
+}
+
+export function enrichAutoWeeklyListItem(
+  row: AutoWeeklyReportRecord,
+  latestNavDate?: string | null,
+  names?: { short_name: string | null; full_name: string | null } | null,
+): AutoWeeklyListItem {
   const liveNav = (latestNavDate ?? row.latestNavDate ?? null) || null
   return {
     ...row,
     latestNavDate: liveNav,
     navDaysBehindNextWeek: daysBehindNextWeeklyReport(liveNav),
     isCustomFund: isAutoWeeklyCustomFund(row),
+    short_name: names?.short_name ?? null,
+    full_name: names?.full_name ?? null,
     download: {
       png: `/ma/api/reports/auto-weekly/download?id=${encodeURIComponent(row.reportId)}&format=png&token=${buildReportDownloadToken(row.reportId, "png")}`,
       pdf: `/ma/api/reports/auto-weekly/download?id=${encodeURIComponent(row.reportId)}&format=pdf&token=${buildReportDownloadToken(row.reportId, "pdf")}`,
@@ -229,14 +354,15 @@ export function enrichAutoWeeklyListItem(row: AutoWeeklyReportRecord, latestNavD
   }
 }
 
-/** Attach live Postgres latest NAV dates for list responses. */
+/** Attach live Postgres latest NAV dates + short/full title names for list responses. */
 export async function enrichAutoWeeklyListItems(
   rows: AutoWeeklyReportRecord[],
 ): Promise<AutoWeeklyListItem[]> {
+  const nameMap = await lookupAutoWeeklyTitleNames(rows)
   return Promise.all(
     rows.map(async (row) => {
       const live = await lookupProductLatestNavDate(row.product_name, row.beian_hao)
-      return enrichAutoWeeklyListItem(row, live)
+      return enrichAutoWeeklyListItem(row, live, nameMap.get(reportNameLookupKey(row)) ?? null)
     }),
   )
 }

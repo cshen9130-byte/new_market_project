@@ -1,4 +1,11 @@
 import { pickContractsByTenor } from "@/lib/all-weather/contract-tenor"
+import {
+  listedCffexBondContracts,
+  listedCffexIndexContracts,
+  isCffexContractExpired,
+  CFFEX_BOND_PRODUCTS,
+  CFFEX_INDEX_PRODUCTS,
+} from "@/lib/client/cffex-expiry"
 import { loadLiveStrategySnapshot } from "@/lib/all-weather/live-universe"
 import type { ContractTenor } from "@/lib/all-weather/setup"
 import { loadStrategySnapshot } from "@/lib/all-weather/universe"
@@ -7,6 +14,41 @@ const SINA_HQ = "https://hq.sinajs.cn/list="
 const SINA_HEADERS = {
   Referer: "https://finance.sina.com.cn/",
   "User-Agent": "Mozilla/5.0",
+}
+
+
+const INDEX_ASSETS = new Set<string>(CFFEX_INDEX_PRODUCTS)
+const BOND_ASSETS = new Set<string>(CFFEX_BOND_PRODUCTS)
+
+/** Calendar front / following month even when Sina OI quotes are unavailable. */
+export function calendarContractsForTenor(
+  assets: string[],
+  tenor: ContractTenor,
+  now = new Date(),
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const asset of assets) {
+    if (INDEX_ASSETS.has(asset)) {
+      const listed = listedCffexIndexContracts(asset, now)
+      const picked = tenor === "following" ? listed[3] ?? listed[2] : listed[0]
+      if (picked) out[asset] = picked
+      continue
+    }
+    if (BOND_ASSETS.has(asset)) {
+      const listed = listedCffexBondContracts(asset, now)
+      const picked = tenor === "following" ? listed[1] : listed[0]
+      if (picked) out[asset] = picked
+    }
+  }
+  return out
+}
+
+function dropExpiredContracts(contracts: Record<string, string>, now = new Date()) {
+  const out: Record<string, string> = {}
+  for (const [asset, contract] of Object.entries(contracts)) {
+    if (contract && !isCffexContractExpired(contract, now)) out[asset] = contract
+  }
+  return out
 }
 
 function sinaContinuous(asset: string): string {

@@ -5,6 +5,7 @@ import { useMemo } from "react"
 import {
   HelpAnnualizedDiscount,
   HelpBasisPoints,
+  HelpSettlement,
   HelpTodayClose,
 } from "@/components/ma/realtime-chart-help"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -40,6 +41,12 @@ function fmtPrice(n: number | null | undefined) {
 function fmtInt(n: number | null | undefined) {
   if (n == null || Number.isNaN(n)) return "--"
   return Math.round(n).toLocaleString("zh-CN")
+}
+
+function fmtPct(n: number | null | undefined) {
+  if (n == null || Number.isNaN(n)) return "--"
+  const sign = n > 0 ? "+" : ""
+  return `${sign}${n.toFixed(2)}%`
 }
 
 function contractName(product: IndexProduct, symbol: string) {
@@ -82,7 +89,14 @@ export function IndexBasisContractsTable({
   const mergedQuotes = useMemo(() => {
     const next = { ...listedQuotes }
     for (const [symbol, quote] of Object.entries(quotes)) {
-      if (quote.last == null && quote.open_interest == null && quote.pre_close == null) continue
+      if (
+        quote.last == null &&
+        quote.open_interest == null &&
+        quote.pre_close == null &&
+        quote.settlement == null
+      ) {
+        continue
+      }
       next[symbol] = { ...next[symbol], ...quote }
     }
     return next
@@ -92,6 +106,7 @@ export function IndexBasisContractsTable({
     listedCffexIndexContracts(item.product).map((symbol) => {
       const quote = mergedQuotes[symbol]
       const close = quote?.last ?? null
+      const settlement = quote?.settlement ?? null
       const spot = spots[item.product]
       const spotPx = spot?.price ?? null
       const daysRaw = calendarDaysToCffexExpiry(symbol)
@@ -103,6 +118,10 @@ export function IndexBasisContractsTable({
           : days === 0
             ? 0
             : null
+      const settleDiff =
+        settlement != null && close != null && close !== 0 ? settlement - close : null
+      const settleDiffPct =
+        settleDiff != null && close != null && close !== 0 ? (settleDiff / close) * 100 : null
       return {
         product: item.product,
         symbol,
@@ -111,6 +130,9 @@ export function IndexBasisContractsTable({
         oi: quote?.open_interest ?? null,
         preClose: quote?.pre_close ?? null,
         close,
+        settlement,
+        settleDiff,
+        settleDiffPct,
         spotPx,
         basis,
         days,
@@ -129,9 +151,9 @@ export function IndexBasisContractsTable({
         <div>
           <div className="text-sm font-semibold">合约升贴水</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            中金所当前挂牌：近月 / 远月 / 当季 / 下季
+            中金所指数期货：近月 / 远月 / 当季 / 下季
             {asOf ? ` · 数据日期 ${asOf}（周${weekdayLabel(asOf)}）` : ""}
-            {stale ? " · 休市，以下为最近交易日收盘" : ""}
+            {stale ? " · 非今日（可能为最近交易日）" : ""}
           </p>
         </div>
       </div>
@@ -149,6 +171,14 @@ export function IndexBasisContractsTable({
                 <HelpTodayClose />
               </span>
             </TableHead>
+            <TableHead className="text-right">
+              <span className="inline-flex items-center justify-end gap-1">
+                结算价
+                <HelpSettlement />
+              </span>
+            </TableHead>
+            <TableHead className="text-right">差异</TableHead>
+            <TableHead className="text-right">差异%</TableHead>
             <TableHead className="text-right">现货指数价格</TableHead>
             <TableHead className="text-right">
               <span className="inline-flex items-center justify-end gap-1">
@@ -188,6 +218,27 @@ export function IndexBasisContractsTable({
               <TableCell className="text-right tabular-nums">{fmtInt(row.oi)}</TableCell>
               <TableCell className="text-right tabular-nums">{fmtPrice(row.preClose)}</TableCell>
               <TableCell className="text-right tabular-nums">{fmtPrice(row.close)}</TableCell>
+              <TableCell className="text-right tabular-nums">{fmtPrice(row.settlement)}</TableCell>
+              <TableCell
+                className={cn(
+                  "text-right tabular-nums",
+                  row.settleDiff != null && row.settleDiff > 0 && "text-red-600",
+                  row.settleDiff != null && row.settleDiff < 0 && "text-emerald-600",
+                )}
+              >
+                {row.settleDiff == null
+                  ? "--"
+                  : `${row.settleDiff > 0 ? "+" : ""}${fmtPrice(row.settleDiff)}`}
+              </TableCell>
+              <TableCell
+                className={cn(
+                  "text-right tabular-nums",
+                  row.settleDiffPct != null && row.settleDiffPct > 0 && "text-red-600",
+                  row.settleDiffPct != null && row.settleDiffPct < 0 && "text-emerald-600",
+                )}
+              >
+                {fmtPct(row.settleDiffPct)}
+              </TableCell>
               <TableCell className="text-right tabular-nums">{fmtPrice(row.spotPx)}</TableCell>
               <TableCell className="text-right tabular-nums">{fmtPrice(row.basis)}</TableCell>
               <TableCell className="text-right tabular-nums">{row.days == null ? "--" : row.days}</TableCell>

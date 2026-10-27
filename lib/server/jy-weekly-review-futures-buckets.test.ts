@@ -28,8 +28,22 @@ test("quant weekly categories are eight sheets, and 量价、商品 stay out", (
   assert.equal(QUANT_WEEKLY_CATEGORIES.length, 8)
   assert.deepEqual(futuresWeeklyCategories(fund("时序")), [QUANT_WEEKLY_CATEGORIES[0]])
   assert.deepEqual(futuresWeeklyCategories(fund("时序,量价")), [])
-  assert.deepEqual(futuresWeeklyCategories(fund("时序,截面")), [])
-  assert.deepEqual(futuresWeeklyCategories(fund("时序,混合")), [QUANT_WEEKLY_CATEGORIES[2]])
+  assert.deepEqual(futuresWeeklyCategories(fund("时序,截面")), [
+    QUANT_WEEKLY_CATEGORIES[0],
+    QUANT_WEEKLY_CATEGORIES[1],
+  ])
+  assert.deepEqual(futuresWeeklyCategories(fund("时序,混合")), [
+    QUANT_WEEKLY_CATEGORIES[0],
+    QUANT_WEEKLY_CATEGORIES[2],
+  ])
+  assert.deepEqual(futuresWeeklyCategories(fund("截面,混合")), [
+    QUANT_WEEKLY_CATEGORIES[1],
+    QUANT_WEEKLY_CATEGORIES[2],
+  ])
+  assert.deepEqual(futuresWeeklyCategories(fund("截面,大厂")), [
+    QUANT_WEEKLY_CATEGORIES[1],
+    QUANT_WEEKLY_CATEGORIES[4],
+  ])
   assert.deepEqual(futuresWeeklyCategories(fund("混合")), [QUANT_WEEKLY_CATEGORIES[2]])
   assert.deepEqual(futuresWeeklyCategories(fund("商品")), [])
   assert.deepEqual(futuresWeeklyCategories(fund("大厂,商品")), [])
@@ -89,6 +103,41 @@ test("single bucket prefers the first matching category", () => {
   assert.equal(bucketForFuturesFund(fund("多板块", subjective)), SUBJECTIVE_WEEKLY_CATEGORIES[4])
   assert.equal(bucketForFuturesFund(fund("MOM", subjective)), SUBJECTIVE_WEEKLY_CATEGORIES[4])
   assert.equal(bucketForFuturesFund(fund("交易型", subjective)), "主观交易")
+})
+
+test("parenthetical notes never filter; every sheet is plain tag membership", () => {
+  // Titles still contain （…） hints, but membership is only the base tag.
+  assert.ok(QUANT_WEEKLY_CATEGORIES[0].includes("（"))
+  assert.ok(QUANT_WEEKLY_CATEGORIES[3].includes("（按交易频率）"))
+  assert.ok(QUANT_WEEKLY_CATEGORIES[4].includes("（按规模）"))
+  assert.ok(QUANT_WEEKLY_CATEGORIES[5].includes("（按品种）"))
+  assert.ok(QUANT_WEEKLY_CATEGORIES[6].includes("（按因子类型）"))
+  assert.ok(QUANT_WEEKLY_CATEGORIES[7].includes("（按方法论）"))
+  assert.ok(SUBJECTIVE_WEEKLY_CATEGORIES[4].includes("（包含MOM）"))
+
+  assert.deepEqual(futuresWeeklyCategories(fund("中高频")), [QUANT_WEEKLY_CATEGORIES[3]])
+  assert.deepEqual(futuresWeeklyCategories(fund("大厂")), [QUANT_WEEKLY_CATEGORIES[4]])
+  assert.deepEqual(futuresWeeklyCategories(fund("股指")), [QUANT_WEEKLY_CATEGORIES[5]])
+  assert.deepEqual(futuresWeeklyCategories(fund("基本面")), [QUANT_WEEKLY_CATEGORIES[6]])
+  assert.deepEqual(futuresWeeklyCategories(fund("机器学习")), [QUANT_WEEKLY_CATEGORIES[7]])
+  // No AUM / frequency / factor-type side channel: only the tag string matters.
+  assert.deepEqual(futuresWeeklyCategories(fund("时序,中高频,大厂,股指,基本面,机器学习")), [
+    QUANT_WEEKLY_CATEGORIES[0],
+    QUANT_WEEKLY_CATEGORIES[3],
+    QUANT_WEEKLY_CATEGORIES[4],
+    QUANT_WEEKLY_CATEGORIES[5],
+    QUANT_WEEKLY_CATEGORIES[6],
+    QUANT_WEEKLY_CATEGORIES[7],
+  ])
+  // 多板块 sheet includes MOM by explicit methodology, not by parsing （包含MOM）.
+  assert.deepEqual(futuresWeeklyCategories(fund("MOM", subjective)), [
+    SUBJECTIVE_WEEKLY_CATEGORIES[4],
+    SUBJECTIVE_WEEKLY_CATEGORIES[5],
+  ])
+  assert.deepEqual(futuresWeeklyCategories(fund("多板块,MOM", subjective)), [
+    SUBJECTIVE_WEEKLY_CATEGORIES[4],
+    SUBJECTIVE_WEEKLY_CATEGORIES[5],
+  ])
 })
 
 test("preview always lists quant and subjective sheets", () => {

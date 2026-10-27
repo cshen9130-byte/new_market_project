@@ -13,6 +13,7 @@ const BENCHMARKS = {
   IF: { label: "沪深300", source: "spot" as const, symbol: "IF" },
   IC: { label: "中证500", source: "spot" as const, symbol: "IC" },
   IM: { label: "中证1000", source: "spot" as const, symbol: "IM" },
+  "932000.CSI": { label: "中证2000", source: "ashare" as const, tsCode: "932000.CSI" },
   "000001.SH": { label: "上证指数", source: "ashare" as const, tsCode: "000001.SH" },
   "000906.SH": { label: "中证800", source: "ashare" as const, tsCode: "000906.SH" },
   "000903.SH": { label: "中证100", source: "ashare" as const, tsCode: "000903.SH" },

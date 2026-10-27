@@ -3,6 +3,7 @@ import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
 import { momAccountEqualsSql, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { getPrefix } from "@/lib/server/prod-utils"
+import { parseQuantIdList, parseSleeveParam, sleeveFilterSql } from "@/lib/ma/quant-accounts"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -165,6 +166,9 @@ async function _GET(req: Request) {
     ? ` AND ${momAccountEqualsSql(`"账户"`, 1)}`
     : ""
   const params = account ? [account] : []
+  const sleeve = parseSleeveParam(searchParams.get("sleeve"))
+  const quantIds = parseQuantIdList(searchParams.get("quantIds"))
+  const sleeveSqlClause = sleeveFilterSql(sleeve, quantIds)
 
   try {
     // 1. Fetch signed MV per contract per date
@@ -183,7 +187,7 @@ async function _GET(req: Request) {
          AND TRIM("账户"::text) NOT LIKE '%国信%'
          AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
-         AND TRIM("合约") NOT LIKE '%-%-%'${accountSql}
+         AND TRIM("合约") NOT LIKE '%-%-%'${accountSql}${sleeveSqlClause}
        GROUP BY "交易日期", UPPER(TRIM("合约"))
        ORDER BY 1`,
       params,

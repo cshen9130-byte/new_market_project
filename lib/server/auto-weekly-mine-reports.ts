@@ -11,6 +11,7 @@ import {
   AUTO_WEEKLY_TEMPLATE_NAME,
   autoWeeklyProductKey,
   enrichAutoWeeklyListItem,
+  lookupAutoWeeklyTitleNames,
   lookupProductLatestNavDate,
   persistAutoWeeklyReportFiles,
   type AutoWeeklyEtlItem,
@@ -193,10 +194,13 @@ export async function enrichMineWeeklyListItems(
   userId: string,
 ): Promise<AutoWeeklyListItem[]> {
   const rows = listMineWeeklyReports(userId)
+  const nameMap = await lookupAutoWeeklyTitleNames(rows)
   return Promise.all(
     rows.map(async (row) => {
       const live = await lookupProductLatestNavDate(row.product_name, row.beian_hao)
-      return enrichAutoWeeklyListItem(row, live)
+      const code = (row.beian_hao || "").trim().toUpperCase()
+      const key = code ? `beian:${code}` : `name:${(row.product_name || "").trim()}`
+      return enrichAutoWeeklyListItem(row, live, nameMap.get(key) ?? null)
     }),
   )
 }

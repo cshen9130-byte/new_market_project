@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
 import { getPrefix } from "@/lib/server/prod-utils"
+import { parseQuantIdList, parseSleeveParam, sleeveFilterSql } from "@/lib/ma/quant-accounts"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -188,6 +189,9 @@ function computeSectorMarginalVol(
 async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const volDays = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays") ?? "20", 10)))
+  const sleeve = parseSleeveParam(searchParams.get("sleeve"))
+  const quantIds = parseQuantIdList(searchParams.get("quantIds"))
+  const sleeveSqlClause = sleeveFilterSql(sleeve, quantIds)
 
   try {
     // 1. Fetch signed MV per contract per date
@@ -206,7 +210,7 @@ async function _GET(req: Request) {
          AND TRIM("账户"::text) NOT LIKE '%国信%'
          AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
-         AND TRIM("合约") NOT LIKE '%-%-%'
+         AND TRIM("合约") NOT LIKE '%-%-%'${sleeveSqlClause}
        GROUP BY "交易日期", UPPER(TRIM("合约"))
        ORDER BY 1`,
     )

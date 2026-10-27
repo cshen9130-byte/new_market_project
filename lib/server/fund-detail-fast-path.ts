@@ -309,6 +309,7 @@ export type DetailHeaderPayload = {
     ret_1y: string | null
     sharpe_1y: string | null
     calmar_1y: string | null
+    working_state?: string | null
   }
   nav_series: []
   nav_data_source: "platform"

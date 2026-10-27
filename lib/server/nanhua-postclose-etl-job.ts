@@ -4,6 +4,7 @@ import path from "path"
 import { promisify } from "util"
 import { configureEtlDbTimeout, loadProjectEnvFiles } from "@/lib/server/load-project-env"
 import { clearTodayMomCache } from "@/lib/server/mom-cache"
+import { loadMomNhciAsOf, nhciLagsPosition } from "@/lib/server/mom-nhci-freshness"
 import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 
 const execFileAsync = promisify(execFile)
@@ -119,14 +120,26 @@ export async function runNanhuaPostcloseEtl(options?: { force?: boolean }): Prom
 
   const lastSuccess = getLastSuccessAt()
   if (!options?.force && lastSuccess && Date.now() - lastSuccess < MIN_RERUN_MS) {
-    const skipped: NanhuaPostcloseEtlJobStatus = {
-      status: "skipped",
-      message: "skip: already ran within 4h",
-      startedAt: Date.now(),
-      finishedAt: Date.now(),
+    // Re-check DB: a prior "success" may have been recorded before this lag-aware
+    // gate, or positions may have advanced after NHCI aligned.
+    let stillLagging = false
+    try {
+      const asOf = await loadMomNhciAsOf()
+      stillLagging = nhciLagsPosition(asOf)
+    } catch {
+      stillLagging = false
     }
-    jobs.set(JOB_KEY, skipped)
-    return skipped
+    if (!stillLagging) {
+      const skipped: NanhuaPostcloseEtlJobStatus = {
+        status: "skipped",
+        message: "skip: already ran within 4h and NHCI aligned",
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+      }
+      jobs.set(JOB_KEY, skipped)
+      return skipped
+    }
+    console.log("[nanhua-postclose-etl] retrying within 4h because NHCI still lags positions")
   }
 
   if (process.env.NANHUA_POSTCLOSE_ETL_DISABLED === "1" && !options?.force) {
@@ -167,12 +180,31 @@ export async function runNanhuaPostcloseEtl(options?: { force?: boolean }): Prom
     // Drop stale MOM briefing / signal caches so 持仓截面 tracks new NHCI+positions.
     clearTodayMomCache("quant-vs-subjective")
     clearTodayMomCache("warm-cache")
+    // Rolling-vol chart reads these; omitting them left NHCI truncated after ETL.
+    clearTodayMomCache("benchmark")
+    clearTodayMomCache("product-nav")
 
     job.status = "done"
-    job.message = "ok"
     job.finishedAt = Date.now()
     job.exitCode = 0
-    setLastSuccessAt(job.finishedAt)
+    // Only mark success when NHCI has caught position as-of (or no positions yet).
+    // Otherwise afternoon retries (15:35/16:30/17:45/19:00) must keep running —
+    // EmQuant often publishes after the first post-close attempt.
+    try {
+      const asOf = await loadMomNhciAsOf()
+      if (nhciLagsPosition(asOf)) {
+        job.message = `partial: NHCI ${asOf.nhciAsOf || "null"} lags positions ${asOf.positionAsOf || "null"}`
+        // Do NOT setLastSuccessAt — allow next cron tick to retry within 4h.
+        console.warn(`[nanhua-postclose-etl] ${job.message}`)
+      } else {
+        job.message = `ok: NHCI ${asOf.nhciAsOf || "null"} aligned with positions ${asOf.positionAsOf || "null"}`
+        setLastSuccessAt(job.finishedAt)
+      }
+    } catch (e) {
+      job.message = "ok (as-of check failed)"
+      setLastSuccessAt(job.finishedAt)
+      console.warn("[nanhua-postclose-etl] as-of check failed:", e)
+    }
     return job
   } catch (err) {
     const e = err as { message?: string; code?: number; killed?: boolean; stdout?: string; stderr?: string }

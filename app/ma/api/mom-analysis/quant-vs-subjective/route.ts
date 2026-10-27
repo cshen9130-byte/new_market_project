@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { momNhciFreshnessToken } from "@/lib/server/mom-nhci-freshness"
 import { getPrefix } from "@/lib/server/prod-utils"
 import { isQuantAccountIn, parseQuantIdList, accountNumericId } from "@/lib/ma/quant-accounts"
 import {
@@ -799,21 +800,6 @@ async function _GET(req: Request) {
   }
 }
 
-async function quantVsSubjectiveFreshness(_req: Request): Promise<string> {
-  // Bust mid-day file cache when 持仓截面 or NHCI settles advance after the
-  // morning warm (overnight EmQuant often only has through the prior session).
-  const rows = await query<{ pos: string | null; nhci: string | null }>(
-    `SELECT
-       (SELECT MAX("交易日期"::date)::text FROM mom_position_details
-        WHERE "交易日期" IS NOT NULL AND ${ACCOUNT_EXCL}) AS pos,
-       (SELECT MAX(trade_date)::text FROM raw_nhci_daily
-        WHERE close IS NOT NULL AND close > 0) AS nhci`,
-  ).catch(() => [] as { pos: string | null; nhci: string | null }[])
-  const pos = rows[0]?.pos || ""
-  const nhci = rows[0]?.nhci || ""
-  return `${pos}_${nhci}`
-}
-
 export const GET = withMomCache("quant-vs-subjective-v12", _GET, {
-  freshness: quantVsSubjectiveFreshness,
+  freshness: momNhciFreshnessToken,
 })

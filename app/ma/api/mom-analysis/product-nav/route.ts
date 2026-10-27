@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { momNhciFreshnessToken } from "@/lib/server/mom-nhci-freshness"
 import { getMomSubAccountId } from "@/lib/server/mom-sub-account"
 
 export const runtime = "nodejs"
@@ -412,4 +413,6 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("product-nav", _GET)
+export const GET = withMomCache("product-nav", _GET, {
+  freshness: momNhciFreshnessToken,
+})

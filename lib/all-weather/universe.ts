@@ -2,7 +2,7 @@ import snapshot from "./strategy-snapshot.json"
 
 export const IM_SPEC = {
   asset: "IM",
-  refContract: "IM2609",
+  refContract: "IM2611",
   refPrice: 7000,
   multiplier: 200,
   marginRate: 0.12,

@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react"
 import dynamic from "next/dynamic"
 import { ChevronDown, Clock, Download, Info, Search, SquarePen } from "lucide-react"
+import { FundElementsAffordance } from "../../components/FundElementsAffordance"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 import { openFundCompareWithProducts } from "@/lib/ma-product-selection-actions"
 import { toggleIdsInSelection } from "@/lib/ma-product-selection-bag"
@@ -657,7 +658,7 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
             <SortTh label="市值" sortKey="marketValue" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
             <SortTh label="份额" sortKey="shares" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
             <th className="px-2 py-2 text-left font-semibold text-zinc-500 whitespace-nowrap min-w-[100px]">停牌信息</th>
-            <th className="px-2 py-2 text-center font-semibold text-zinc-500 w-12">操作</th>
+            <th className="px-2 py-2 text-center font-semibold text-zinc-500 w-16 whitespace-nowrap">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -697,15 +698,21 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
                     {row.suspensionInfo}
                   </td>
                   <td className="px-2 py-2 text-center">
-                    <a
-                      href={fundDetailHref(row)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center justify-center text-zinc-400 hover:text-zinc-600"
-                      title="查看详情"
-                    >
-                      <SquarePen className="h-3.5 w-3.5" />
-                    </a>
+                    <div className="inline-flex items-center justify-center gap-1.5">
+                      <FundElementsAffordance
+                        beianHao={row.beianHao || row.valuationCode}
+                        productName={row.fundName}
+                      />
+                      <a
+                        href={fundDetailHref(row)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center text-zinc-400 hover:text-zinc-600"
+                        title="查看详情"
+                      >
+                        <SquarePen className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
                   </td>
                 </tr>
               ))}

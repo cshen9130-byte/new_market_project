@@ -34,6 +34,8 @@ export type CtpTick = {
   open_interest: number | null
   pre_close: number | null
   pre_settlement: number | null
+  /** Today's official settlement */
+  settlement?: number | null
   pre_open_interest?: number | null
   average?: number | null
   turnover?: number | null
@@ -180,6 +182,7 @@ export function mergeQuoteTicks(prev: CtpTick, incoming: CtpTick): CtpTick {
     bid_volume: incoming.bid_volume ?? prev.bid_volume,
     ask_volume: incoming.ask_volume ?? prev.ask_volume,
     pre_settlement: incoming.pre_settlement ?? prev.pre_settlement,
+    settlement: incoming.settlement ?? prev.settlement,
     pre_close: incoming.pre_close ?? prev.pre_close,
     pre_open_interest: incoming.pre_open_interest ?? prev.pre_open_interest,
     average: incoming.average ?? prev.average,
