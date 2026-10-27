@@ -203,7 +203,7 @@ export async function getWeeklyReviewDataStatus(
   const today = shanghaiTodayIsoDate()
   const pools = normalizeWeeklyReviewPools(query.pools ?? ["jy"])
   const asOf = anchorWeekEnd(today, query.weekEnd)
-  const key = `ops-weekly-review-status:v6:${variant}:${asOf}:${pools.join(",")}`
+  const key = `ops-weekly-review-status:v7:${variant}:${asOf}:${pools.join(",")}`
   return serveOpsSnapshot(
     key,
     refresh,

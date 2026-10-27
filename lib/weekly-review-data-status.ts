@@ -84,6 +84,14 @@ export type WeeklyReviewDataStatus = {
   generated_at: string
 }
 
+/** Exact bucket labels hidden from 「近三周数据状态」, equity weekly Excel sheets, and attribution groups. */
+export const WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS = new Set([
+  "指数增强",
+  "股票对冲",
+  "股票多头",
+  "小市值指增",
+])
+
 export type StatusFundInput = {
   beian_hao: string
   name: string
@@ -139,15 +147,18 @@ export function buildWeeklyReviewDataStatus(args: {
   generatedAt: string
   modeFor?: (bucket: string) => WeeklyReviewMetricMode
 }): WeeklyReviewDataStatus {
+  const visibleFunds = args.funds.filter(
+    (fund) => !WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(fund.bucket),
+  )
   const byBucket = new Map<string, StatusFundInput[]>()
-  for (const fund of args.funds) {
+  for (const fund of visibleFunds) {
     const list = byBucket.get(fund.bucket) ?? []
     list.push(fund)
     byBucket.set(fund.bucket, list)
   }
-  const names = [...args.bucketOrder]
+  const names = args.bucketOrder.filter((name) => !WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(name))
   for (const name of [...byBucket.keys()].sort((a, b) => a.localeCompare(b, "zh"))) {
-    if (!names.includes(name)) names.push(name)
+    if (!names.includes(name) && !WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(name)) names.push(name)
   }
   const asOf = args.weeks[0]?.week_end ?? ""
   const modeFor = args.modeFor ?? (() => "absolute" as const)
@@ -195,7 +206,7 @@ export function buildWeeklyReviewDataStatus(args: {
   return {
     variant: args.variant,
     weeks: args.weeks.map((week) => ({ week_start: week.week_start, week_end: week.week_end })),
-    fund_count: new Set(args.funds.map((fund) => fund.beian_hao)).size,
+    fund_count: new Set(visibleFunds.map((fund) => fund.beian_hao)).size,
     categories,
     generated_at: args.generatedAt,
   }

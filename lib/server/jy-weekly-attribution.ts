@@ -18,6 +18,7 @@ import {
   weeklyReviewPoolFileLabel,
   weeklyReviewPoolScopePhrase,
 } from "@/lib/ma/weekly-review-pools"
+import { WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS } from "@/lib/weekly-review-data-status"
 import {
   computeStyleAttribution,
   type FactorDef,
@@ -824,6 +825,7 @@ export async function buildWeeklyAttributionPayload(weekEndRaw: string, poolsInp
   const fundByBeian = new Map(funds.map((f) => [f.beian_hao, f]))
   const groupsMap = new Map<string, FundMetrics[]>()
   for (const row of metrics) {
+    if (WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(row.bucket)) continue
     const list = groupsMap.get(row.bucket) ?? []
     list.push(row)
     groupsMap.set(row.bucket, list)

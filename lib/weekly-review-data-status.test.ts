@@ -115,3 +115,30 @@ test("category status counts missing products by update channel", () => {
   ])
   assert.equal(status.categories[1]?.missing_funds[0]?.nav_date, "2026-09-25")
 })
+
+test("hides 指数增强 / 股票对冲 / 股票多头 / 小市值指增 and keeps 股票市场中性", () => {
+  const status = buildWeeklyReviewDataStatus({
+    variant: "equity",
+    weeks,
+    bucketOrder: ["指数增强", "股票对冲", "股票多头", "小市值指增", "股票市场中性", "500指增"],
+    modeFor: () => "absolute",
+    generatedAt: "2026-10-19T01:00:00.000Z",
+    funds: [
+      { beian_hao: "H1", name: "隐1", bucket: "指数增强", nav_dates: ["2026-10-16"], source: "email", source_date: "2026-10-16" },
+      { beian_hao: "H2", name: "隐2", bucket: "股票对冲", nav_dates: [], source: "none", source_date: null },
+      { beian_hao: "H3", name: "隐3", bucket: "股票多头", nav_dates: [], source: "fof99", source_date: "2026-10-02" },
+      { beian_hao: "H4", name: "隐4", bucket: "小市值指增", nav_dates: ["2026-10-09"], source: "manual", source_date: "2026-10-09" },
+      { beian_hao: "K1", name: "中性", bucket: "股票市场中性", nav_dates: ["2026-10-16"], source: "email", source_date: "2026-10-16" },
+      { beian_hao: "K2", name: "五百", bucket: "500指增", nav_dates: [], source: "none", source_date: null },
+    ],
+  })
+
+  assert.deepEqual(
+    status.categories.map((category) => category.bucket),
+    ["股票市场中性", "500指增"],
+  )
+  assert.equal(status.fund_count, 2)
+  assert.equal(status.categories[0]?.total, 1)
+  assert.equal(status.categories[1]?.total, 1)
+  assert.equal(status.categories[1]?.weeks[0]?.missing, 1)
+})

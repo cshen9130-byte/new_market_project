@@ -16,6 +16,7 @@ import {
   weeklyReviewPoolScopePhrase,
   type WeeklyReviewPoolKey,
 } from "@/lib/ma/weekly-review-pools"
+import { WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS } from "@/lib/weekly-review-data-status"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { beianFamilyKey } from "@/lib/server/share-class-product"
 import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
@@ -668,6 +669,7 @@ export function previewWeeklyReview(funds: WeeklyReviewFund[]): WeeklyReviewGrou
   const counts = new Map<string, number>()
   for (const fund of funds) {
     const bucket = bucketForFund(fund)
+    if (WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(bucket)) continue
     counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
   }
   const known = BUCKET_ORDER.filter((b) => counts.has(b)).map((bucket) => ({
@@ -691,12 +693,13 @@ export async function buildWeeklyReviewPreview(weekEnd: string, poolsInput?: unk
   const equity = (await loadJyTrackingPoolFunds(poolsInput)).filter(isEquityFund)
   const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
   const funds = collapseWeeklyReviewFunds(equity, coverage)
+  const groups = previewWeeklyReview(funds)
   return {
     week_start: weekStart,
     week_end: end,
     as_of: asOf,
-    fund_count: funds.length,
-    groups: previewWeeklyReview(funds),
+    fund_count: groups.reduce((sum, group) => sum + group.count, 0),
+    groups,
   }
 }
 
@@ -1282,7 +1285,8 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
   const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw)
   const equity = (await loadJyTrackingPoolFunds(pools)).filter(isEquityFund)
   const coverage = await loadWeeklyReviewNavCoverage(equity, asOf)
-  const funds = collapseWeeklyReviewFunds(equity, coverage)
+  const collapsed = collapseWeeklyReviewFunds(equity, coverage)
+  const funds = collapsed.filter((fund) => !WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(bucketForFund(fund)))
   if (funds.length === 0) {
     throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可导出的股票策略产品`)
   }
@@ -1304,6 +1308,7 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
   const wb = XLSX.utils.book_new()
   const groups = new Map<string, FundMetrics[]>()
   for (const row of metrics) {
+    if (WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(row.bucket)) continue
     const list = groups.get(row.bucket) ?? []
     list.push(row)
     groups.set(row.bucket, list)
