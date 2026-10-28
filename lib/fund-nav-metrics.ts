@@ -1,3 +1,5 @@
+import { countChinaTradingDaysInclusive } from "@/lib/nav-trading-day"
+
 export interface NavMetricSlice {
   dates: string[]
   values: number[]
@@ -50,8 +52,6 @@ export function computeFundNavMetrics(slice: NavMetricSlice): FundNavMetrics | n
   if (dates.length < 2 || values.length < 2) return null
 
   const dateTs = dates.map((d) => new Date(d).getTime())
-  const totalDays = (dateTs[dateTs.length - 1] - dateTs[0]) / 86400000
-  const years = Math.max(totalDays / 365.25, 1 / 365)
 
   const gaps: number[] = []
   for (let i = 1; i < dateTs.length; i++) gaps.push((dateTs[i] - dateTs[i - 1]) / 86400000)
@@ -66,7 +66,8 @@ export function computeFundNavMetrics(slice: NavMetricSlice): FundNavMetrics | n
   if (rets.length < 1) return null
 
   const periodRet = values[values.length - 1] / values[0] - 1
-  const annRet = Math.pow(1 + periodRet, 1 / years) - 1
+  const nTd = Math.max(1, countChinaTradingDaysInclusive(dates[0], dates[dates.length - 1]))
+  const annRet = Math.pow(1 + periodRet, 252 / nTd) - 1
   const annVol = rets.length > 1 ? std(rets) * Math.sqrt(ppy) : NaN
   const sharpe = isFinite(annVol) && annVol > 0 ? (annRet - RF) / annVol : NaN
 

@@ -50,6 +50,29 @@ const NAV_FREQUENCY_OPTIONS = [
 
 type NavFrequency = (typeof NAV_FREQUENCY_OPTIONS)[number]["value"]
 
+/** Header slogan 波动档 — passed through as product_tagline. */
+const VOL_BAND_OPTIONS = [
+  { value: "低波动", label: "低波动 · 稳健运作 · 策略" },
+  { value: "中波动", label: "中波动 · 稳健运作 · 策略" },
+  { value: "高波动", label: "高波动 · 稳健运作 · 策略" },
+] as const
+
+type VolBand = (typeof VOL_BAND_OPTIONS)[number]["value"]
+
+function taglineFromVolBand(band: VolBand): string {
+  const hit = VOL_BAND_OPTIONS.find((item) => item.value === band)
+  return hit?.label ?? "低波动 · 稳健运作 · 策略"
+}
+
+function volBandFromTags(tags: string[], beianHao: string | null): VolBand {
+  const normalized = tags.map((t) => t.trim())
+  if (normalized.some((t) => t === "中波" || t === "中波动")) return "中波动"
+  if (normalized.some((t) => t === "高波" || t === "高波动")) return "高波动"
+  if (normalized.some((t) => t === "低波" || t === "低波动")) return "低波动"
+  if ((beianHao ?? "").trim().toUpperCase() === "SGM223") return "中波动"
+  return "低波动"
+}
+
 function userFetchHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {}
   try {
@@ -450,6 +473,7 @@ export function FofWeeklyReportDialog({
   const [weekEnd, setWeekEnd] = useState("")
   const [benchmarkKey, setBenchmarkKey] = useState("IF")
   const [navFrequency, setNavFrequency] = useState<NavFrequency>("weekly")
+  const [volBand, setVolBand] = useState<VolBand>("低波动")
   const [productSource, setProductSource] = useState<ProductSource>("managed")
   const [presets, setPresets] = useState<FofWeeklyReportPreset[]>([])
   const [selectedPresetName, setSelectedPresetName] = useState("")
@@ -472,6 +496,7 @@ export function FofWeeklyReportDialog({
       setWeekEnd("")
       setBenchmarkKey("IF")
       setNavFrequency("weekly")
+      setVolBand("低波动")
       setProductSource("managed")
       setSelectedPresetName("")
       setShowSavePresetModal(false)
@@ -529,11 +554,15 @@ export function FofWeeklyReportDialog({
       nav_frequency: navFrequency,
       savedAt: new Date().toISOString(),
     }
-    const next = upsertFofWeeklyReportPreset(preset)
-    setPresets(next)
-    setSelectedPresetName(name)
-    setPresetMessage(`已保存配置「${name}」`)
-    setError(null)
+    try {
+      const next = upsertFofWeeklyReportPreset(preset)
+      setPresets(next)
+      setSelectedPresetName(name)
+      setPresetMessage(`已保存配置「${name}」`)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存配置失败")
+    }
   }
 
   function handleDeletePreset() {
@@ -569,6 +598,30 @@ export function FofWeeklyReportDialog({
       })
       .catch(() => setNavRange({ start: null, end: null }))
   }, [beianHao, productName])
+
+  // Default 波动档 from product tags (低波/中波/高波); SGM223 → 中波动 when untagged.
+  useEffect(() => {
+    const code = (beianHao ?? "").trim()
+    if (!code) {
+      setVolBand("低波动")
+      return
+    }
+    let cancelled = false
+    fetch(`/ma/api/tracking-funds/fund-tags?beian_hao=${encodeURIComponent(code)}`)
+      .then(async (resp) => {
+        if (!resp.ok) return [] as string[]
+        const json = await resp.json()
+        return Array.isArray(json) ? (json as string[]) : []
+      })
+      .catch(() => [] as string[])
+      .then((tags) => {
+        if (cancelled) return
+        setVolBand(volBandFromTags(tags, code))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [beianHao])
 
   function handleFillLatestWeek() {
     if (!navRange.end) {
@@ -674,6 +727,7 @@ export function FofWeeklyReportDialog({
           report_title: reportTitle.trim() || productName.trim(),
           benchmark_key: benchmarkKey,
           nav_frequency: navFrequency,
+          product_tagline: taglineFromVolBand(volBand),
         }),
       })
       const json = await readJsonSafe(resp)
@@ -894,6 +948,29 @@ export function FofWeeklyReportDialog({
               </select>
               <p className="mt-1.5 text-xs text-zinc-400">
                 若原始净值为日频，选择周频/月频时将自动聚合后再计算业绩指标
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-sm font-medium">
+                <span className="text-red-500">*</span> 波动档 / 页眉标语
+              </label>
+              <select
+                value={volBand}
+                onChange={(e) => {
+                  setVolBand(e.target.value as VolBand)
+                  setResult(null)
+                }}
+                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {VOL_BAND_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-xs text-zinc-400">
+                默认取产品标签（低波/中波/高波）；可生成前手动改。SGM223 无标签时默认中波动。
               </p>
             </div>
 

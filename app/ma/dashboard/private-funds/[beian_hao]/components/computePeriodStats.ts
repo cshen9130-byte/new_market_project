@@ -1,5 +1,6 @@
 import { getNavFieldValue, type NavRow, type BenchmarkPoint } from "./shared"
 import { buildAlignedBenchmarkValues, formatDateRange } from "./performanceChartUtils"
+import { countChinaTradingDaysInclusive } from "@/lib/nav-trading-day"
 
 export interface PeriodStatBlock {
   periodRet: number
@@ -38,6 +39,8 @@ export function computePeriodStats(
   benchmarkData: BenchmarkPoint[],
   hasBenchmark: boolean,
   excessByDivision: boolean,
+  /** Optional inclusive trading-day span for annRet (e.g. operation date -> period end). Defaults to first/last NAV dates. */
+  annRange?: { startDate?: string | null; endDate?: string | null },
 ): PeriodStatsResult | null {
   if (rows.length < 3) return null
 
@@ -68,8 +71,6 @@ export function computePeriodStats(
 
   const navVals = rows.map((r) => getNavFieldValue(r, navType))
   const dateTsArr = rows.map((r) => new Date(r.price_date).getTime())
-  const totalDays = (dateTsArr[dateTsArr.length - 1] - dateTsArr[0]) / 86400000
-  const years = Math.max(totalDays / 365.25, 1 / 365)
 
   const gaps = []
   for (let i = 1; i < dateTsArr.length; i++) gaps.push((dateTsArr[i] - dateTsArr[i - 1]) / 86400000)
@@ -83,7 +84,16 @@ export function computePeriodStats(
   }
 
   const fundPeriodRet = navVals[navVals.length - 1] / navVals[0] - 1
-  const fundAnnRet = Math.pow(1 + fundPeriodRet, 1 / years) - 1
+  // AnnRet: (1+R)^(252/n)-1; n = trading days in the return span (not calendar/365.25, not weekly points).
+  // If annRange.startDate is before the first NAV (运作日 / 成立日), extend n to match 运作天数.
+  const firstNavDate = rows[0].price_date.slice(0, 10)
+  const lastNavDate = rows[rows.length - 1].price_date.slice(0, 10)
+  const rangeStart = (annRange?.startDate || "").slice(0, 10)
+  const rangeEnd = (annRange?.endDate || "").slice(0, 10)
+  const annStart = /^\d{4}-\d{2}-\d{2}$/.test(rangeStart) && rangeStart < firstNavDate ? rangeStart : firstNavDate
+  const annEnd = /^\d{4}-\d{2}-\d{2}$/.test(rangeEnd) && rangeEnd > lastNavDate ? rangeEnd : lastNavDate
+  const tradingDaysN = Math.max(1, countChinaTradingDaysInclusive(annStart, annEnd))
+  const fundAnnRet = Math.pow(1 + fundPeriodRet, 252 / tradingDaysN) - 1
   const fundAnnVol = fundRets.length > 1 ? _std(fundRets) * Math.sqrt(ppy) : NaN
   const RF = 0.02
   const fundSharpe = isFinite(fundAnnVol) && fundAnnVol > 0 ? (fundAnnRet - RF) / fundAnnVol : NaN
@@ -186,7 +196,7 @@ export function computePeriodStats(
 
       if (bLevels.length >= 2 && bRetsAl.length >= 2) {
         const bPeriodRet = bLevels[bLevels.length - 1].v / bLevels[0].v - 1
-        const bAnnRet = Math.pow(1 + bPeriodRet, 1 / years) - 1
+        const bAnnRet = Math.pow(1 + bPeriodRet, 252 / tradingDaysN) - 1
         const bAnnVol = _std(bRetsAl) * Math.sqrt(ppy)
         const bSharpe = isFinite(bAnnVol) && bAnnVol > 0 ? (bAnnRet - RF) / bAnnVol : NaN
 
@@ -253,13 +263,13 @@ export function computePeriodStats(
           : fRetsAl.map((r, i) => r - bRetsAl[i])
         const trackingError = excessRets.length > 1 ? _std(excessRets) * Math.sqrt(ppy) : NaN
         const excessAnnRet = excessByDivision
-          ? Math.pow((1 + fundPeriodRet) / (1 + bPeriodRet), 1 / years) - 1
+          ? Math.pow((1 + fundPeriodRet) / (1 + bPeriodRet), 252 / tradingDaysN) - 1
           : fundAnnRet - bAnnRet
         const infoRatio = isFinite(trackingError) && trackingError > 0 ? excessAnnRet / trackingError : NaN
 
         if (excessByDivision && excessRets.length >= 2) {
           const exPeriodRet = (1 + fundPeriodRet) / (1 + bPeriodRet) - 1
-          const exAnnRet = Math.pow(1 + exPeriodRet, 1 / years) - 1
+          const exAnnRet = Math.pow(1 + exPeriodRet, 252 / tradingDaysN) - 1
           const exAnnVol = _std(excessRets) * Math.sqrt(ppy)
           const exSharpe = isFinite(exAnnVol) && exAnnVol > 0 ? (exAnnRet - RF) / exAnnVol : NaN
 

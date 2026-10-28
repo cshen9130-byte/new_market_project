@@ -13,6 +13,15 @@ interface NhciLagMeta {
   lagReason?: string | null
 }
 
+/** Beijing calendar YYYY-MM-DD (cache / trade-date convention). */
+function todayCst(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+function maxDate(a: string, b: string): string {
+  return a >= b ? a : b
+}
+
 export default function RollingVolChart({ height = 260 }: { height?: number }) {
   const [navData,  setNavData]  = useState<NavPoint[]>([])
   const [bmData,   setBmData]   = useState<BmPoint[]>([])
@@ -34,7 +43,11 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
         if (rows.length === 0) return
 
         const from = rows[0].date
-        const to   = rows[rows.length - 1].date
+        // Do NOT cap NHCI at product last date: if product-nav cache/ETL lags,
+        // that cap blanked NHCI to the same early end (both lines stopped).
+        // Request through max(productLast, today) so each series keeps its own tip.
+        const productTo = rows[rows.length - 1].date
+        const to = maxDate(productTo, todayCst())
         const params = new URLSearchParams({ from, to, codes: "NHCI.NH" })
         const bj = await (await fetch(`/ma/api/mom-analysis/benchmark?${params}`)).json()
         if (cancelled) return
@@ -62,6 +75,7 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
     const start = navData.length <= volWindow ? 2 : WINDOW
     const ANN = Math.sqrt(252)
 
+    // Product vol is computed solely from product-nav — never trimmed to NHCI dates.
     const fundVol: [string, number][] = []
     for (let i = start; i < navData.length; i++) {
       const w = Math.min(WINDOW, i)
@@ -74,6 +88,7 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
       fundVol.push([navData[i].date, parseFloat((vol * 100).toFixed(4))])
     }
 
+    // NHCI vol uses its own closes through its true last bar (may lag or lead product).
     const bmVol: [string, number][] = []
     if (bmData.length > 2) {
       const bmStart = bmData.length <= volWindow ? 2 : WINDOW
@@ -87,6 +102,7 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
       }
     }
 
+    // Ratio only where both exist; missing NHCI must not drop product points.
     const ratioData: [string, number][] = (() => {
       const m = new Map(bmVol.map(([d, v]) => [d, v]))
       return fundVol
@@ -179,8 +195,8 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
             南华商品 NHCI 未对齐最新持仓日
             {latestNav ? `（产品 ${latestNav}` : "（产品 ?"}
             {latestBm ? ` / NHCI ${latestBm}` : " / NHCI 缺失"}
-            {lagMeta?.positionAsOf ? `；持仓截止 ${lagMeta.positionAsOf}` : ""}
-            ）。EmQuant 当日结算未入库或缓存未失效时会截断波动比率——请等待盘后 NHCI 抓取或检查 nanhua ETL。
+            {lagMeta?.positionAsOf ? `；持仓截至 ${lagMeta.positionAsOf}` : ""}
+            ）。EmQuant 当日结算未入库或缓存未失效时波动比率在共有日期上计算——产品线仍绘至其自身最新交易日。请等待盘后 NHCI 抓取或检查 nanhua ETL。
           </p>
         )}
       </CardHeader>

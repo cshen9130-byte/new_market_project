@@ -24,7 +24,7 @@ import {
   loadBasicinfoTrackByBeianKeys,
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
-import { loadFundNavRange, loadMergedFundNavRows, resolveFundNames } from "@/lib/server/fund-nav-series"
+import { loadFundNavRange, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { lookupManagedProductOverride, resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { sanitizeBeianCode } from "@/lib/server/sanitize-beian-code"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
@@ -169,10 +169,70 @@ export async function resolveProductPageInceptionDate(
   return null
 }
 
+/** 低波 / 中波 / 高波 → header slogan band. */
+export type ReportVolBand = "低波动" | "中波动" | "高波动"
+
+export const REPORT_VOL_BAND_OPTIONS: ReportVolBand[] = ["低波动", "中波动", "高波动"]
+
+const VOL_TAG_TO_BAND: Record<string, ReportVolBand> = {
+  低波: "低波动",
+  低波动: "低波动",
+  中波: "中波动",
+  中波动: "中波动",
+  高波: "高波动",
+  高波动: "高波动",
+}
+
+export function volBandFromProductTags(tags: Array<string | null | undefined>): ReportVolBand | null {
+  for (const raw of tags) {
+    const key = (raw ?? "").trim()
+    const band = VOL_TAG_TO_BAND[key]
+    if (band) return band
+  }
+  return null
+}
+
+export function buildReportTagline(volBand: ReportVolBand, strategyPhrase: string): string {
+  const phrase = (strategyPhrase || "策略").trim() || "策略"
+  return `${volBand} · 稳健运作 · ${phrase}`
+}
+
 export function reportProductTagline(strategyPhrase: string, override?: string | null): string {
   const custom = override?.trim() ?? ""
   if (custom && custom !== LEGACY_STRONG_STOCK_TAGLINE) return custom
-  return `低波动 · 稳健运作 · ${strategyPhrase}`
+  return buildReportTagline("低波动", strategyPhrase)
+}
+
+/** Prefer explicit override, else ops_fund_tags 低/中/高波, else 低波动. */
+export async function resolveReportProductTagline(
+  beianHao: string,
+  strategyPhrase: string,
+  override?: string | null,
+): Promise<string> {
+  const custom = override?.trim() ?? ""
+  if (custom && custom !== LEGACY_STRONG_STOCK_TAGLINE) return custom
+
+  const code = beianHao.trim()
+  if (code) {
+    try {
+      const rows = await query<{ tag_name: string }>(
+        `SELECT tag_name
+         FROM ops_fund_tags
+         WHERE UPPER(BTRIM(beian_hao)) = UPPER($1)
+         ORDER BY created_at ASC`,
+        [code],
+      )
+      const fromTags = volBandFromProductTags(rows.map((r) => r.tag_name))
+      if (fromTags) return buildReportTagline(fromTags, strategyPhrase)
+    } catch (err) {
+      console.warn("[fof-weekly-report] vol-band tag lookup failed:", err)
+    }
+    // Known product default when tags are missing (金舆凯玺二号).
+    if (code.toUpperCase() === "SGM223") {
+      return buildReportTagline("中波动", strategyPhrase)
+    }
+  }
+  return buildReportTagline("低波动", strategyPhrase)
 }
 
 export async function resolveReportStrategyPhrase(
@@ -754,9 +814,10 @@ export async function buildFofWeeklyNavCsv(
     )
   }
 
-  // Same merge path as the fund detail page: managed seed + team/email after seed end.
-  // Do not return seed-only — that caps the series at the xlsx rebuild date (e.g. SBPU97 → 2026-06-23).
-  const legacyRows = await loadMergedFundNavRows(beian_hao, product_name, short_name)
+  // Same tip as the fund detail page (platform/email merge + valuation/FOF extend).
+  // Raw loadMergedFundNavRows alone can freeze behind the detail tip (e.g. SGM223).
+  const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  const legacyRows = await loadDetailNavSeriesFast({ beian_hao, product_name, short_name })
   return buildNavRowsWithBenchmark(legacyRowsToNavCsvInput(legacyRows), benchmarkKey)
 }
 
@@ -998,7 +1059,11 @@ export async function generateFofWeeklyReport(
     [names.product_name, names.short_name, product_name, reportTitle],
     customFund,
   )
-  const productTagline = reportProductTagline(strategyPhrase, input.product_tagline)
+  const productTagline = await resolveReportProductTagline(
+    beian_hao,
+    strategyPhrase,
+    input.product_tagline,
+  )
   const pythonStartedAt = Date.now()
   const { executable: pythonExe, prefixArgs } = await findPython(SCRIPT_DIR)
   console.log(

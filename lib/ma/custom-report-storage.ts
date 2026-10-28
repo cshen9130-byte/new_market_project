@@ -46,29 +46,104 @@ export function loadCustomReports(): SavedCustomReport[] {
   }
 }
 
+/** Soft cap: localStorage is ~5MB; generated report metadata accumulates quickly. */
+const MAX_STORED_CUSTOM_REPORTS = 80
+
+function isQuotaExceededError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  const e = err as { name?: string; code?: number | string }
+  return (
+    e.name === "QuotaExceededError"
+    || e.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    || e.code === 22
+    || e.code === 1014
+  )
+}
+
+/** Drop heavy optional fields when fighting quota; keep enough to list/reopen. */
+function slimReport(report: SavedCustomReport): SavedCustomReport {
+  return {
+    id: report.id,
+    title: report.title,
+    templateId: report.templateId,
+    templateName: report.templateName,
+    inputValues: report.inputValues,
+    createdAt: report.createdAt,
+    updatedAt: report.updatedAt,
+    creator: report.creator,
+    source: report.source,
+    typeLabel: report.typeLabel,
+    importKey: report.importKey,
+  }
+}
+
+function writeReportsPayload(reports: SavedCustomReport[]): void {
+  localStorage.setItem(CUSTOM_REPORTS_STORAGE_KEY, JSON.stringify(reports))
+}
+
+/**
+ * Persist reports to localStorage without throwing on quota.
+ * Caps length, then progressively slims / prunes older rows if setItem fails.
+ */
 export function saveCustomReports(reports: SavedCustomReport[]): void {
   if (typeof window === "undefined") return
-  localStorage.setItem(CUSTOM_REPORTS_STORAGE_KEY, JSON.stringify(reports))
+  let next = reports.slice(0, MAX_STORED_CUSTOM_REPORTS)
+  try {
+    writeReportsPayload(next)
+    return
+  } catch (err) {
+    if (!isQuotaExceededError(err)) throw err
+  }
+
+  // Retry 1: slim download URLs (tokens) off every row.
+  next = next.map(slimReport)
+  try {
+    writeReportsPayload(next)
+    return
+  } catch (err) {
+    if (!isQuotaExceededError(err)) throw err
+  }
+
+  // Retry 2: keep newest half, slim.
+  next = next.slice(0, Math.max(10, Math.floor(next.length / 2)))
+  try {
+    writeReportsPayload(next)
+    return
+  } catch (err) {
+    if (!isQuotaExceededError(err)) throw err
+  }
+
+  // Last resort: clear key and keep a small newest head so generate UX does not fail.
+  try {
+    localStorage.removeItem(CUSTOM_REPORTS_STORAGE_KEY)
+    writeReportsPayload(next.slice(0, 10).map(slimReport))
+  } catch {
+    try {
+      localStorage.removeItem(CUSTOM_REPORTS_STORAGE_KEY)
+    } catch {
+      /* ignore — caller must not fail generation because of client cache */
+    }
+  }
 }
 
 export function upsertCustomReport(report: SavedCustomReport): SavedCustomReport[] {
   const all = loadCustomReports()
+  let next: SavedCustomReport[]
   const byId = all.findIndex((r) => r.id === report.id)
   if (byId >= 0) {
-    const next = all.map((r, i) => (i === byId ? report : r))
-    saveCustomReports(next)
-    return next
-  }
-  if (report.importKey) {
+    next = all.map((r, i) => (i === byId ? report : r))
+  } else if (report.importKey) {
     const byKey = all.findIndex((r) => r.importKey === report.importKey)
     if (byKey >= 0) {
       const merged = { ...all[byKey], ...report, id: all[byKey].id }
-      const next = all.map((r, i) => (i === byKey ? merged : r))
-      saveCustomReports(next)
-      return next
+      next = all.map((r, i) => (i === byKey ? merged : r))
+    } else {
+      next = [report, ...all]
     }
+  } else {
+    next = [report, ...all]
   }
-  const next = [report, ...all]
+  // Never throw on quota — generation dialogs call this after a successful render.
   saveCustomReports(next)
   return next
 }

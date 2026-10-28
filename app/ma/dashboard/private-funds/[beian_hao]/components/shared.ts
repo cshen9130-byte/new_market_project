@@ -1,5 +1,5 @@
 import type { FundNavMetrics, MetricKey } from "@/lib/fund-nav-metrics"
-import { filterWeekendNavRows, isWeekendIsoDate } from "@/lib/nav-trading-day"
+import { countChinaTradingDaysInclusive, filterWeekendNavRows, isWeekendIsoDate } from "@/lib/nav-trading-day"
 
 export const RED   = "rgb(239,68,68)"
 export const GREEN = "rgb(34,197,94)"
@@ -86,10 +86,8 @@ export function computeHeadlineRiskMetrics(
     if (i > 0 && values[i - 1] > 0) rets.push(values[i] / values[i - 1] - 1)
   }
 
-  const start = new Date(`${dates[0]}T00:00:00`).getTime()
-  const end = new Date(`${dates[dates.length - 1]}T00:00:00`).getTime()
-  const years = Math.max((end - start) / 86_400_000 / 365.25, 1 / 365.25)
-  const annRet = Math.pow(values[values.length - 1] / values[0], 1 / years) - 1
+  const nTd = Math.max(1, countChinaTradingDaysInclusive(dates[0], dates[dates.length - 1]))
+  const annRet = Math.pow(values[values.length - 1] / values[0], 252 / nTd) - 1
 
   let sharpe: string | null = null
   if (rets.length > 1) {
@@ -119,7 +117,9 @@ export function filterPointsByFrequency<T extends { d: string }>(
   pts: T[],
   freq: NavFrequencyFilter,
 ): T[] {
-  const trading = pts.filter((p) => !isWeekendIsoDate(p.d))
+  const trading = pts
+    .filter((p) => !isWeekendIsoDate(p.d))
+    .sort((a, b) => a.d.localeCompare(b.d))
   if (!trading.length || freq === "全部" || freq === "日频") return trading
 
   const bucketKey = (dateStr: string): string =>
@@ -127,24 +127,49 @@ export function filterPointsByFrequency<T extends { d: string }>(
 
   const byBucket = new Map<string, T>()
   for (const p of trading) byBucket.set(bucketKey(p.d), p)
-  return [...byBucket.values()].sort((a, b) => a.d.localeCompare(b.d))
+  const sampled = [...byBucket.values()].sort((a, b) => a.d.localeCompare(b.d))
+  // Match report apply_nav_frequency: keep first trading-day anchor for weekly/monthly.
+  if ((freq === "周频" || freq === "月频") && trading.length && sampled.length) {
+    const first = trading[0]
+    if (first.d !== sampled[0].d) {
+      return [first, ...sampled.filter((p) => p.d !== first.d)]
+    }
+  }
+  return sampled
 }
 
 /** Keep the last NAV point per bucket for the selected frequency. */
 export function filterNavRowsByFrequency(rows: NavRow[], freq: NavFrequencyFilter): NavRow[] {
   // Always drop custody weekend forward-fills before frequency bucketing.
-  const tradingRows = filterWeekendNavRows(rows)
+  const tradingRows = [...filterWeekendNavRows(rows)].sort((a, b) =>
+    a.price_date.localeCompare(b.price_date),
+  )
   if (!tradingRows.length || freq === "全部") return tradingRows
 
+  // Daily: one point per calendar day (already trading-day filtered).
+  if (freq === "日频") {
+    const byDay = new Map<string, NavRow>()
+    for (const row of tradingRows) byDay.set(row.price_date.slice(0, 10), row)
+    return [...byDay.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  }
+
   const bucketKey = (row: NavRow): string => {
-    if (freq === "日频") return row.price_date.slice(0, 10)
     if (freq === "月频") return row.price_date.slice(0, 7)
     return weekBucketKey(row.price_date)
   }
 
   const byBucket = new Map<string, NavRow>()
   for (const row of tradingRows) byBucket.set(bucketKey(row), row)
-  return [...byBucket.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  const sampled = [...byBucket.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  // Match report apply_nav_frequency: prepend first trading-day NAV when bucketing
+  // would otherwise drop the inception/first point (mid-week / mid-month start).
+  if ((freq === "周频" || freq === "月频") && tradingRows.length && sampled.length) {
+    const first = tradingRows[0]
+    if (first.price_date !== sampled[0].price_date) {
+      return [first, ...sampled.filter((row) => row.price_date !== first.price_date)]
+    }
+  }
+  return sampled
 }
 
 /** Daily 涨跌幅 (percentage points) for the selected NAV type vs the prior row in the series. */

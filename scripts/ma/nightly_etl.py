@@ -4746,6 +4746,38 @@ def step_warehouse_receipts(conn, *, force: bool = False) -> int:
 
 
 
+
+def step_edb_commodity_spot(conn, *, force: bool = False) -> int:
+    """Incremental Choice EDB commodity spot -> raw_edb_commodity_spot_daily."""
+    from datetime import date as _date, timedelta as _td
+    cur_max = max_date(conn, "raw_edb_commodity_spot_daily")
+    today = _date.today()
+    if force or cur_max is None:
+        start = _date(2024, 1, 2)
+        log.info("EDB commodity spot: full/forced from %s", start)
+    else:
+        start = cur_max - _td(days=14)
+        log.info("EDB commodity spot: incremental from %s (max_in_db=%s)", start, cur_max)
+    end = today
+    out_path = "/tmp/edb_spot_etl.json"
+    result = run_script(
+        "fetch_edb_commodity_spot_daily.py",
+        extra_args=[start.isoformat(), end.isoformat(), "--upsert"],
+        extra_env={"SPOT_JSON_OUT": out_path},
+        timeout=600,
+        log_stderr=True,
+    )
+    if not result or result.get("error"):
+        raise RuntimeError(f"edb commodity spot fetch failed: {result}")
+    n = int(result.get("upserted") or result.get("count") or 0)
+    log.info(
+        "EDB commodity spot: upserted=%s count=%s non_null=%s ok=%s %s->%s",
+        result.get("upserted"), result.get("count"), result.get("non_null"),
+        result.get("ok_codes"), result.get("start_date"), result.get("end_date"),
+    )
+    return n
+
+
 def step_edb_commodity_inventory(conn, *, force: bool = False) -> int:
     """Incremental Choice EDB commodity inventory -> raw_edb_commodity_inventory_daily."""
     from datetime import date as _date, timedelta as _td
@@ -5651,6 +5683,7 @@ def step_warm_mom_cache() -> int:
 # that actually runs every day.
 MACRO_STEPS = [
     "nhci",
+    "edb_commodity_spot",
     "edb_commodity_inventory",
     "warehouse_receipts",
     "edb_industry_profit",
@@ -5699,6 +5732,7 @@ NANHUA_STEPS = [
 
 FUTURES_STEPS = [
     "nhci",
+    "edb_commodity_spot",
     "edb_commodity_inventory",
     "warehouse_receipts",
     "edb_industry_profit",
@@ -5737,6 +5771,7 @@ ORDERED_STEPS = [
     "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded (EmQuant)
     "warehouse_receipts",          # Choice FTREGORDERVOL registered warehouse receipts
     "edb_industry_profit",         # Choice EDB EMI processing margins
+    "edb_commodity_spot",          # Choice EDB physical commodity spot (report_basis_spot)
     "edb_commodity_inventory",     # Choice EDB social/exchange inventory
     # Continuous futures BEFORE option IV — MOM VaR depends on this table. option_iv
     # has hung for hours on AkShare; it must not gate market-data catchup.
@@ -5925,6 +5960,7 @@ def main():
         "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
         "warehouse_receipts":              lambda: step_warehouse_receipts(conn, force=force),
         "edb_industry_profit":             lambda: step_edb_industry_profit(conn, force=force),
+        "edb_commodity_spot":              lambda: step_edb_commodity_spot(conn, force=force),
         "edb_commodity_inventory":         lambda: step_edb_commodity_inventory(conn, force=force),
         "afre":                            lambda: step_afre(conn, force=force),
         "regime_indicators":               lambda: step_regime_indicators(conn, force=force),

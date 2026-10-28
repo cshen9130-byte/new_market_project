@@ -114,6 +114,30 @@ python scripts/ma/fof99_friday_afternoon_fetch.py
 
 Previous Friday = last completed trading Friday **strictly before today** (Friday afternoon → last week). Override with `--friday YYYY-MM-DD`. `--skip-list` is FundMultiPrice only.
 
+
+## Tue-Thu midweek (tracking fof99, <=2 credits)
+
+Early catch for tracking-pool products whose ops best update channel is fof99
+(~1,198). Runs **Tue-Thu 14:00 Asia/Shanghai** on the PM2 worker (distinct from
+Friday 16:00). Uses only `/fund/advancedlist` newest-first, default **2 pages =
+2 credits**. No FundMultiPrice, no universe maintain, no skip-revival, no
+FundPrice history.
+
+Target = `tracking_pool` intersect ops best-channel fof99, excluding universe
+`skip` / `update_slow`. Primary stamps: list tip covers the previous Friday
+week (same holiday-week open-day rules as Friday). Leftover rows on those paid
+pages also stamp prioritized hole dates (default `2026-10-09`) then any other
+missing tip already on the page so credits are not wasted.
+
+`batch_id` prefix: `midweek-YYYY-MM-DD-pNNNN`. Pause with
+`FOF99_MIDWEEK_ETL_DISABLED=1`.
+
+```text
+python scripts/ma/fof99_midweek_advancedlist_etl.py --dry-run
+python scripts/ma/fof99_midweek_advancedlist_etl.py
+python scripts/ma/fof99_midweek_advancedlist_etl.py --hole-dates 2026-10-09
+```
+
 ## Weekly universe maintain (after Friday afternoon)
 
 Runs at the end of `fof99_friday_afternoon_fetch.py` (and standalone). No extra `/fund/advancedlist` crawl.
@@ -141,6 +165,8 @@ python scripts/ma/fof99_label_1m_blank_weekly_plus.py --dry-run
 python scripts/ma/fof99_label_1m_blank_weekly_plus.py
 python scripts/ma/fof99_friday_afternoon_fetch.py --dry-run
 python scripts/ma/fof99_friday_afternoon_fetch.py
+python scripts/ma/fof99_midweek_advancedlist_etl.py --dry-run
+python scripts/ma/fof99_midweek_advancedlist_etl.py
 python scripts/ma/fof99_weekly_universe_maintain.py --dry-run
 python scripts/ma/fof99_weekly_universe_maintain.py
 python scripts/ma/fof99_weekly_nav_fetch.py --dry-run

@@ -362,7 +362,11 @@ export async function loadFundNavRange(
   product_name: string,
   short_name: string,
 ): Promise<{ nav_start_date: string | null; latest_nav_date: string | null }> {
-  const rows = await loadMergedFundNavRows(beian_hao, product_name, short_name)
+  // Same tip as product detail / active products: raw merge alone can freeze behind
+  // valuation/FOF extend (see loadFundNavSeries). Report list latestNavDate and
+  // days-behind go through resolveFofWeeklyProductNavRange -> here.
+  const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  const rows = await loadDetailNavSeriesFast({ beian_hao, product_name, short_name })
   if (rows.length === 0) return { nav_start_date: null, latest_nav_date: null }
   return {
     nav_start_date: rows[0].price_date.slice(0, 10),

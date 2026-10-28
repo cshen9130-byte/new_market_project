@@ -158,6 +158,31 @@ cron.schedule("30 18 * * 1-5", () => {
   // Still runs if *this* Friday is a CN holiday (fetch last week). A holiday
   // Friday uses the last open day of that week (2026-10-02 → 2026-09-30).
   // Skips only when that whole Mon–Fri has no trading day.
+  // Tue-Thu 14:00 Beijing: cheap FundAdvancedList (<=2 pages / credits) for
+  // tracking_pool x fof99-channel products. Stamps previous-Friday week tips
+  // when the list already shows them; leftover rows on the same pages backfill
+  // prioritized holes (default 2026-10-09) then other missing tips. No
+  // FundMultiPrice, no universe maintain, no skip-revival. Distinct from
+  // Friday 16:00 (list+FundMultiPrice+maintain). Pause with
+  // FOF99_MIDWEEK_ETL_DISABLED=1.
+  cron.schedule("0 14 * * 2-4", () => {
+    void (async () => {
+      try {
+        const { startFof99MidweekAdvancedlistEtlJob } = await import(
+          "./fof99-midweek-advancedlist-etl-job"
+        )
+        const result = startFof99MidweekAdvancedlistEtlJob()
+        if (!result.ok) {
+          console.log(`[fof99-midweek-etl] skipped: ${result.reason}`)
+        } else {
+          console.log("[fof99-midweek-etl] started")
+        }
+      } catch (e) {
+        console.error("[fof99-midweek-etl] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   cron.schedule("0 16 * * 5", () => {
     void (async () => {
       try {

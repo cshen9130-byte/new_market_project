@@ -96,3 +96,14 @@ export function chinaMarketOpenDaysBetween(later: string, earlier: string): numb
   }
   return count
 }
+
+/** Inclusive A-share trading days in [start, end] (YYYY-MM-DD). */
+export function countChinaTradingDaysInclusive(startIso: string, endIso: string): number {
+  const start = startIso.slice(0, 10)
+  const end = endIso.slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+    return 0
+  }
+  // chinaMarketOpenDaysBetween counts (earlier, later]; add start if it is a trading day.
+  return chinaMarketOpenDaysBetween(end, start) + (isChinaTradingDay(start) ? 1 : 0)
+}

@@ -537,11 +537,15 @@ export function FofMonthlyReportDialog({
       nav_frequency: navFrequency,
       savedAt: new Date().toISOString(),
     }
-    const next = upsertFofMonthlyReportPreset(preset)
-    setPresets(next)
-    setSelectedPresetName(name)
-    setPresetMessage(`已保存配置「${name}」`)
-    setError(null)
+    try {
+      const next = upsertFofMonthlyReportPreset(preset)
+      setPresets(next)
+      setSelectedPresetName(name)
+      setPresetMessage(`已保存配置「${name}」`)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存配置失败")
+    }
   }
 
   function handleDeletePreset() {

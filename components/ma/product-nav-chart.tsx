@@ -102,6 +102,15 @@ interface Props {
   onSelectAccount?: (selectKey: string) => void
 }
 
+
+/** Beijing calendar day — align MOM trade-date / cache convention. */
+function todayCstBeijing(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+}
+function maxDateIso(a: string, b: string): string {
+  return a >= b ? a : b
+}
+
 export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false, variant = "mom", accountKey = "", allAccounts = false, onSelectAccount }: Props) {
   const isAccount = variant === "account"
   const [allData, setAllData] = useState<NavPoint[]>([])
@@ -294,7 +303,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
       return
     }
 
-    loadBenchmark(firstDate, lastDate)
+    loadBenchmark(firstDate, maxDateIso(lastDate, todayCstBeijing()))
   }, [allData, loadBenchmark])
 
   // Filter by rangeFrom

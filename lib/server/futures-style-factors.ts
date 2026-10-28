@@ -44,6 +44,7 @@ export type FuturesStyleFactorKey =
   | "position_chg"
   /** CTA weekly-report style names (in-house reconstructions). */
   | "report_basis"
+  | "report_basis_spot"
   | "report_cs_long"
   | "report_pv_corr"
   | "report_long_rule"
@@ -89,7 +90,8 @@ export const FUTURES_STYLE_FACTOR_META: FactorMeta[] = [
   { key: "spec_willingness", cardName: "投机意愿因子", cumName: "投机意愿因子", intervalName: "投机意愿因子", sector: "all", color: "#f97316", surfaces: ["card", "daily"] },
   { key: "position_chg", cardName: "持仓变化因子", cumName: "持仓变化因子", intervalName: "持仓变化因子", sector: "all", color: "#0ea5e9", surfaces: ["card", "daily", "cum", "interval"] },
   // CTA周报名 — REPORT_FIT reconstructions from local futures prices/OI (not vendor NAVs)
-  { key: "report_basis", cardName: "基差(近远月)", cumName: "基差(近远月)", intervalName: "基差(近远月)", sector: "all", color: "#7c3aed", surfaces: ["card", "daily", "cum", "interval"] },
+  { key: "report_basis", cardName: "期限基差", cumName: "期限基差", intervalName: "期限基差", sector: "all", color: "#7c3aed", surfaces: ["card", "daily", "cum", "interval"] },
+  { key: "report_basis_spot", cardName: "基差", cumName: "基差", intervalName: "基差", sector: "all", color: "#9333ea", surfaces: ["card", "daily", "cum", "interval"] },
   { key: "report_cs_long", cardName: "长期截面", cumName: "长期截面", intervalName: "长期截面", sector: "all", color: "#db2777", surfaces: ["card", "daily", "cum", "interval"] },
   { key: "report_pv_corr", cardName: "量价相关性", cumName: "量价相关性", intervalName: "量价相关性", sector: "all", color: "#ea580c", surfaces: ["card", "daily", "cum", "interval"] },
   { key: "report_long_rule", cardName: "长期规则", cumName: "长期规则", intervalName: "长期规则", sector: "all", color: "#0891b2", surfaces: ["card", "daily", "cum", "interval"] },
@@ -101,7 +103,7 @@ export const FUTURES_STYLE_FACTOR_META: FactorMeta[] = [
   { key: "report_vol", cardName: "波动", cumName: "波动", intervalName: "波动", sector: "all", color: "#57534e", surfaces: [] /* Wind-calib only; no live recon yet */ },
   { key: "report_reversal", cardName: "反转", cumName: "反转", intervalName: "反转", sector: "all", color: "#c026d3", surfaces: [] /* Wind-calib only; no live recon yet */ },
   { key: "report_skew_wind", cardName: "偏度(报告)", cumName: "偏度(报告)", intervalName: "偏度(报告)", sector: "all", color: "#db2777", surfaces: [] /* Wind-calib only; no live recon yet */ },
-  { key: "report_term_basis", cardName: "期限基差", cumName: "期限基差", intervalName: "期限基差", sector: "all", color: "#7c3aed", surfaces: [] /* Wind-calib only; no live recon yet */ },
+  { key: "report_term_basis", cardName: "期限基差(别名)", cumName: "期限基差(别名)", intervalName: "期限基差(别名)", sector: "all", color: "#7c3aed", surfaces: [] /* Excel GTJAQH004 alias; live UI uses report_basis */ },
   { key: "report_warehouse", cardName: "仓单", cumName: "仓单", intervalName: "仓单", sector: "all", color: "#a16207", surfaces: [] /* Wind-calib only; no live recon yet */ },
 ]
 
@@ -135,6 +137,28 @@ const PRODUCT_SECTOR: Record<string, FuturesStyleSector> = {
 function monthKey(contract: string): string {
   const m = contract.toUpperCase().match(/(\d{3,4})/)
   return m ? m[1] : contract
+}
+
+/** Approx calendar days from isoDate to near-contract month mid (day 15). Clamp [5, 370]. */
+function daysToNearExpiry(isoDate: string, contract: string): number {
+  const key = monthKey(contract)
+  let yy: number
+  let mm: number
+  if (key.length >= 4) {
+    yy = 2000 + parseInt(key.slice(0, 2), 10)
+    mm = parseInt(key.slice(2, 4), 10)
+  } else if (key.length === 3) {
+    yy = 2000 + parseInt(key.slice(0, 1), 10)
+    mm = parseInt(key.slice(1, 3), 10)
+  } else {
+    return 30
+  }
+  if (!(mm >= 1 && mm <= 12) || !Number.isFinite(yy)) return 30
+  const exp = Date.UTC(yy, mm - 1, 15)
+  const now = Date.parse(isoDate + "T12:00:00Z")
+  if (!Number.isFinite(now) || !Number.isFinite(exp)) return 30
+  const d = Math.round((exp - now) / 86400000)
+  return Math.max(5, Math.min(370, d))
 }
 
 export function productFromAkshareCode(code: string): string {
@@ -390,6 +414,8 @@ type DayPanel = {
   nearFarCarry: Record<string, number>
   nearClose: Record<string, number>
   farClose: Record<string, number>
+  /** OI-ranked near contract code (e.g. RB2510.SHF); used for ann basis TTM. */
+  nearContract?: Record<string, string>
   dOi: Record<string, number>
   /** Choice FTREGORDERVOL registered warehouse receipts (product-level). */
   warehouse?: Record<string, number>
@@ -397,6 +423,8 @@ type DayPanel = {
   profit?: Record<string, number>
   /** Choice EDB social/exchange inventory (best priority per product; ffill). */
   socialInv?: Record<string, number>
+  /** Choice EDB physical commodity spot (best priority per product; ffill). */
+  commoditySpot?: Record<string, number>
 }
 
 
@@ -501,6 +529,115 @@ async function loadEdbCommodityInventory(from: string, to: string): Promise<Soci
   }
 }
 
+
+type SpotRow = { date: string; product: string; value: number; priority: number }
+
+/** Catalog unit/FX hygiene: store raw EMI in DB; apply unitScale (+ optional fxCode) live. */
+type SpotUnitMeta = { unitScale: number; fxCode?: string; role?: string }
+let _spotUnitMeta: Map<string, SpotUnitMeta> | null = null
+function loadSpotUnitMeta(): Map<string, SpotUnitMeta> {
+  if (_spotUnitMeta) return _spotUnitMeta
+  const map = new Map<string, SpotUnitMeta>()
+  try {
+    const file = path.join(process.cwd(), "data", "edb_commodity_spot_catalog.json")
+    if (existsSync(file)) {
+      const raw = JSON.parse(readFileSync(file, "utf-8")) as {
+        series?: Array<{ emi_code?: string; unitScale?: number; fxCode?: string; role?: string }>
+      }
+      for (const s of raw.series ?? []) {
+        const emi = String(s.emi_code || "").toUpperCase()
+        if (!emi) continue
+        const unitScale = Number(s.unitScale ?? 1)
+        map.set(emi, {
+          unitScale: Number.isFinite(unitScale) && unitScale > 0 ? unitScale : 1,
+          fxCode: s.fxCode ? String(s.fxCode).toUpperCase() : undefined,
+          role: s.role ? String(s.role) : undefined,
+        })
+      }
+    }
+  } catch {
+    // catalog optional; default scale 1
+  }
+  _spotUnitMeta = map
+  return map
+}
+
+async function loadEdbCommoditySpot(from: string, to: string): Promise<SpotRow[]> {
+  try {
+    const rows = await query<{
+      trade_date: Date | string
+      product: string | null
+      emi_code: string | null
+      value: string | number | null
+      priority: string | number | null
+    }>(
+      `SELECT trade_date, product, emi_code, value, priority
+       FROM raw_edb_commodity_spot_daily
+       WHERE trade_date >= $1 AND trade_date <= $2
+         AND value IS NOT NULL
+         AND product IS NOT NULL
+       ORDER BY trade_date ASC, priority ASC`,
+      [from, to],
+    )
+    const meta = loadSpotUnitMeta()
+    // Daily USDCNY (and any role=fx) for USD→CNY live mul. Forward-fill below.
+    const fxRaw = new Map<string, number>()
+    for (const row of rows) {
+      const product = String(row.product || "").toUpperCase()
+      const emi = String(row.emi_code || "").toUpperCase()
+      const m = meta.get(emi)
+      if (product === "USDCNY" || m?.role === "fx") {
+        const v = n(row.value)
+        if (v != null && Number.isFinite(v) && v > 0) fxRaw.set(fmtIso(row.trade_date), v)
+      }
+    }
+    const fxDates = [...fxRaw.keys()].sort()
+    let lastFx: number | null = null
+    const fxFF = new Map<string, number>()
+    for (const d of fxDates) {
+      lastFx = fxRaw.get(d) ?? lastFx
+      if (lastFx != null) fxFF.set(d, lastFx)
+    }
+    const fxOnOrBefore = (d: string): number | null => {
+      if (fxFF.has(d)) return fxFF.get(d)!
+      let best: number | null = null
+      for (const fd of fxDates) {
+        if (fd > d) break
+        best = fxFF.get(fd) ?? best
+      }
+      return best
+    }
+
+    const out: SpotRow[] = []
+    for (const row of rows) {
+      const product = String(row.product || "").toUpperCase()
+      if (product === "USDCNY") continue
+      if (!product || !sectorOfProduct(product)) continue
+      let value = n(row.value)
+      if (value == null || !Number.isFinite(value) || value <= 0) continue
+      const emi = String(row.emi_code || "").toUpperCase()
+      const m = meta.get(emi)
+      const scale = m?.unitScale ?? 1
+      value *= scale
+      if (m?.fxCode) {
+        const fx = fxOnOrBefore(fmtIso(row.trade_date))
+        if (fx == null || !(fx > 0)) continue
+        value *= fx
+      }
+      out.push({
+        date: fmtIso(row.trade_date),
+        product,
+        value,
+        priority: Number(row.priority ?? 50),
+      })
+    }
+    return out
+  } catch {
+    // Table may be missing until ETL migration runs.
+    return []
+  }
+}
+
 /** Attach warehouse + forward-filled EDB profit onto existing day panels. */
 function attachFundamentals(
   dates: string[],
@@ -508,6 +645,7 @@ function attachFundamentals(
   warehouse: WhRow[],
   profit: ProfitRow[],
   socialInv: SocialInvRow[] = [],
+  commoditySpot: SpotRow[] = [],
 ): void {
   const whByDate = new Map<string, Record<string, number>>()
   for (const row of warehouse) {
@@ -529,8 +667,16 @@ function attachFundamentals(
     if (!prev || row.priority < prev.priority) m[row.product] = { value: row.value, priority: row.priority }
     socialByDate.set(row.date, m)
   }
+  const spotByDate = new Map<string, Record<string, { value: number; priority: number }>>()
+  for (const row of commoditySpot) {
+    const m = spotByDate.get(row.date) ?? {}
+    const prev = m[row.product]
+    if (!prev || row.priority < prev.priority) m[row.product] = { value: row.value, priority: row.priority }
+    spotByDate.set(row.date, m)
+  }
   let lastProfit: Record<string, number> = {}
   let lastSocial: Record<string, number> = {}
+  let lastSpot: Record<string, number> = {}
   for (let i = 0; i < dates.length; i++) {
     const d = dates[i]
     const panel = panels[i]
@@ -545,6 +691,13 @@ function attachFundamentals(
       lastSocial = next
     }
     panel.socialInv = { ...lastSocial }
+    const daySpot = spotByDate.get(d)
+    if (daySpot) {
+      const next = { ...lastSpot }
+      for (const [prod, v] of Object.entries(daySpot)) next[prod] = v.value
+      lastSpot = next
+    }
+    panel.commoditySpot = { ...lastSpot }
   }
 }
 
@@ -597,6 +750,7 @@ function buildPanels(
     const nearFarCarry: Record<string, number> = {}
     const nearClose: Record<string, number> = {}
     const farClose: Record<string, number> = {}
+    const nearContract: Record<string, string> = {}
     const dOi: Record<string, number> = {}
     for (const [product, list] of byProd) {
       list.sort((a, b) => b.oi - a.oi)
@@ -604,6 +758,7 @@ function buildPanels(
       oi[product] = near.oi
       amount[product] = near.amount
       nearClose[product] = near.close
+      nearContract[product] = near.contract
       const prev = prevOi[product]
       if (near.changeOi != null && Number.isFinite(near.changeOi)) dOi[product] = near.changeOi
       else if (prev != null && prev > 0) dOi[product] = near.oi / prev - 1
@@ -628,6 +783,7 @@ function buildPanels(
       nearFarCarry,
       nearClose,
       farClose,
+      nearContract,
       dOi,
     })
     prevClose = { ...prevClose, ...close }
@@ -665,11 +821,15 @@ function crossSectionLs(
   nextRet: Record<string, number>,
   longHigh: boolean,
   topFrac = 0.2,
+  topN?: number | null,
 ): number | null {
   const usable = scores.filter((s) => Number.isFinite(s.score) && nextRet[s.product] != null)
   if (usable.length < 6) return null
   usable.sort((a, b) => a.score - b.score)
-  const nTake = Math.max(1, Math.floor(usable.length * topFrac))
+  const nTake =
+    topN != null && topN > 0
+      ? Math.max(1, Math.min(Math.floor(topN), Math.floor(usable.length / 2)))
+      : Math.max(1, Math.floor(usable.length * topFrac))
   const low = usable.slice(0, nTake)
   const high = usable.slice(-nTake)
   const longSide = longHigh ? high : low
@@ -677,6 +837,78 @@ function crossSectionLs(
   // Equal notional long vs short ⇒ mean(long) − mean(short); net exposure ≈ 0
   return mean(longSide.map((x) => nextRet[x.product])) - mean(shortSide.map((x) => nextRet[x.product]))
 }
+
+/** ISO date YYYY-MM-DD → UTC weekday (0=Sun … 6=Sat). Used for weeklyWed/Fri rebal. */
+function isoDow(iso: string): number {
+  return new Date(iso + "T12:00:00Z").getUTCDay()
+}
+
+/**
+ * CS L/S with optional hysteresis buffer (enterFrac / exitFrac). Equal-weight legs.
+ * Returns baskets so weekly rebalance can hold weights between rebal days.
+ */
+function crossSectionLsBuffered(
+  scores: Array<{ product: string; score: number }>,
+  nextRet: Record<string, number>,
+  opts: {
+    longHigh: boolean
+    topFrac?: number
+    topN?: number | null
+    buffer?: { enterFrac: number; exitFrac: number } | null
+    prevLong?: Set<string>
+    prevShort?: Set<string>
+  },
+): { r: number | null; long: Set<string>; short: Set<string> } {
+  const usable = scores.filter((s) => Number.isFinite(s.score) && nextRet[s.product] != null)
+  if (usable.length < 6) return { r: null, long: new Set(), short: new Set() }
+  usable.sort((a, b) => a.score - b.score)
+  const n = usable.length
+
+  let longSet = new Set<string>()
+  let shortSet = new Set<string>()
+
+  const nTake =
+    opts.topN != null && opts.topN > 0
+      ? Math.max(1, Math.min(Math.floor(opts.topN), Math.floor(n / 2)))
+      : Math.max(1, Math.floor(n * (opts.topFrac ?? 0.2)))
+
+  if (opts.buffer && opts.prevLong && opts.prevShort) {
+    const enterN = Math.max(1, Math.floor(n * opts.buffer.enterFrac))
+    const exitN = Math.max(enterN, Math.floor(n * opts.buffer.exitFrac))
+    const enterHigh = new Set(usable.slice(-enterN).map((x) => x.product))
+    const enterLow = new Set(usable.slice(0, enterN).map((x) => x.product))
+    const keepHigh = new Set(usable.slice(-exitN).map((x) => x.product))
+    const keepLow = new Set(usable.slice(0, exitN).map((x) => x.product))
+    const prevL = opts.longHigh ? opts.prevLong : opts.prevShort
+    const prevS = opts.longHigh ? opts.prevShort : opts.prevLong
+    const nextHigh = new Set<string>()
+    const nextLow = new Set<string>()
+    for (const p of enterHigh) nextHigh.add(p)
+    for (const p of prevL) if (keepHigh.has(p)) nextHigh.add(p)
+    for (const p of enterLow) nextLow.add(p)
+    for (const p of prevS) if (keepLow.has(p)) nextLow.add(p)
+    if (!nextHigh.size) for (const p of enterHigh) nextHigh.add(p)
+    if (!nextLow.size) for (const p of enterLow) nextLow.add(p)
+    longSet = opts.longHigh ? nextHigh : nextLow
+    shortSet = opts.longHigh ? nextLow : nextHigh
+  } else {
+    const low = usable.slice(0, nTake)
+    const high = usable.slice(-nTake)
+    longSet = new Set((opts.longHigh ? high : low).map((x) => x.product))
+    shortSet = new Set((opts.longHigh ? low : high).map((x) => x.product))
+  }
+
+  const longArr = [...longSet].filter((p) => nextRet[p] != null)
+  const shortArr = [...shortSet].filter((p) => nextRet[p] != null)
+  if (longArr.length < 1 || shortArr.length < 1) return { r: null, long: longSet, short: shortSet }
+
+  // Equal notional long vs short
+  let r = 0
+  for (const p of longArr) r += nextRet[p] / longArr.length
+  for (const p of shortArr) r -= nextRet[p] / shortArr.length
+  return { r, long: longSet, short: shortSet }
+}
+
 
 /** Mid-horizon MA cross: sign(MA_fast − MA_slow), vol-scaled TS weights (deck: 均线交叉 → 中期动量). */
 function maCrossTsReturn(
@@ -767,7 +999,7 @@ export const WIND_GTJAQH_FACTOR_MAP: Partial<Record<FuturesStyleFactorKey, strin
   report_long_mom: "GTJAQH001.WI", // 长期动量
   report_vol: "GTJAQH002.WI", // 波动
   report_reversal: "GTJAQH003.WI", // 反转
-  report_term_basis: "GTJAQH004.WI", // 期限基差
+  report_term_basis: "GTJAQH004.WI", // 期限基差 (Excel alias; live=report_basis)
   report_warehouse: "GTJAQH005.WI", // 仓单
   report_skew_wind: "GTJAQH006.WI", // 偏度
   report_inventory: "GTJAQH007.WI", // 库存
@@ -775,7 +1007,8 @@ export const WIND_GTJAQH_FACTOR_MAP: Partial<Record<FuturesStyleFactorKey, strin
   report_profit: "GTJAQH009.WI", // 利润
   report_long_rule: "GTJAQH010.WI", // 长期规则动量
   report_pv_corr: "GTJAQH011.WI", // 量价相关性
-  report_basis: "GTJAQH012.WI", // 基差(近远月)
+  report_basis: "GTJAQH004.WI", // 期限基差 near/far ln
+  report_basis_spot: "GTJAQH012.WI", // 基差 spot-futures
   report_cs_long: "GTJAQH013.WI", // 截面动量 → UI「长期截面」
 }
 
@@ -859,8 +1092,77 @@ function windSeriesOnDates(
 
 /** REPORT_FIT knobs. Refined 2026-10-26 vs Wind GTJAQH closes (3m+1y). Live charts use these — NOT Wind NAVs. */
 let REPORT_FIT = {
+  // 2026-10-28 trough pass: exclude EC (extreme near/far outlier; distorted Jun30 P&L),
+  // topN=8 (was 10). vs GTJAQH012: 3m corr_ret 0.725 vs 0.661, 1y 0.221 vs 0.215,
+  // YTD NAV~1.072 vs Wind~1.061; Jul trough date moves to ~Jul3 (Wind Jul2).
+  // Apr'26: Wind/PDF digitized basis has NO distinct Apr DD (late-Mar trough near 4/1 tick).
+  // Jul'26 Wind maxDD~-2.3%; CS-neutral continuous L/S at amp-matching scale cannot fully
+  // reproduce depth (crash week both legs fall) — timing/corr improved, depth still shallow.
+  // PRIOR: basisTopN 10, no exclude, basisScale 0.1
+  // 期限基差 (report_basis): ln(near/far) CS L/S → GTJAQH004.WI. topN=8 excl EC scale 0.1.
+  // 基差 (report_basis_spot): physical spot vs near → GTJAQH012.WI.
   basisTopFrac: 0.2,
+  basisTopN: 8 as number | null,
   basisScale: 0.1,
+  basisExclude: ["EC"] as string[],
+  // 2026-10-28 HARDER: EMI 22→33 (I/J/L/PP/BU/RU/FG/AO/SS/SH/LH) via mx+EmQuant.
+  // Same skeleton pct_fut|buf|eq|Wed|LH; exit 0.30→0.35 (YTD/1y soft lift), scale 0.05→0.27
+  // for Jul'26 maxDD≈−2.3% timing 7/2. vs GTJAQH012 after expand: 3m cr 0.771 / lvl 0.837,
+  // YTD cr 0.475, 1y cr 0.418 (was 0.313/0.277/0.217 on 22 names). Blend term did not win.
+  // PRIOR: exit0.30 scale0.05 on 22 EMI — 3m cr 0.313.
+  // 2026-10-28 JOINT grid: dollar-neutral LS cancelled YTD drift (end~0% vs Wind~+5%).
+  // Long-only top-basis + Fri rebal + spotLag=1 + scale0.45 restores path:
+  // 3m cr0.815/lvl0.955 end~+5.9%; YTD cr0.490/lvl0.682 end~+6.1% (Wind~+6.2%);
+  // 1y cr0.479/lvl0.777 end~+6.3% (Wind~+7.2%). Keep labels: spot->012, term->004.
+  // PRIOR HARDER: LS Wed exit0.35 scale0.27 on 33 EMI — 3m cr0.771 but YTD end~0%/lvl-0.29.
+  // 2026-10-28 H1 pass: exclude SH (staleFrac~0.68 + extremeSF~97% days, median S/F~1.44
+  // unit/staleness rule — not day-matched to Wind). Ease scale 0.45->0.30, buf 20/40, topN=5,
+  // spotLag 0. Official vs GTJAQH012 (calib only): 3m cr0.833/lvl0.953 end~+3.1% (was 0.809/0.929/+4.3%);
+  // YTD cr0.518/lvl0.775 end~+4.6% DD-3.3% (was 0.483/0.638/+5.0% DD-5.3%); H1 cr0.177 (was 0.122).
+  // PRIOR JOINT: LO Fri scale0.45 excl EC lag1 buf15/35 topFrac0.15.
+  basisSpotKind: "ann_pct_over_fut" as "pct_over_fut" | "pct_over_spot" | "ln_spot_over_fut" | "ann_pct_over_fut",
+  basisSpotTopFrac: 0.15,
+  // With buffer on, enter/exit fracs size the basket; topN is unused by crossSectionLsBuffered (kept as doc intent).
+    basisSpotTopN: 5 as number | null,
+  basisSpotScale: 0.22,
+  basisSpotExclude: ["EC", "SH"] as string[],
+  basisSpotLive: true,
+  basisSpotRebal: "weeklyFri" as "daily" | "weeklyWed" | "weeklyFri",
+  basisSpotEnterFrac: 0.15,
+  basisSpotExitFrac: 0.35,
+  basisSpotLongHigh: true,
+  basisSpotMode: "long_only" as "ls" | "long_only" | "long_bias",
+  basisSpotShortScale: 0,
+  basisSpotSpotLag: 0,
+  // CS basket weights within long (and short) legs. equal = prior live.
+  // invvol: high-vol names (e.g. EC) get small weight — 国君 vol-adjusted hypothesis.
+  // vol: high-vol gets larger weight. Vol lookback = basisSpotVolL (rets).
+  // basisSpotRuleHygiene: per-rebal drop stale spot or extreme |S/F-1|>0.25 (rule-based, not Wind day-match).
+  // zscore|abs_score: within-basket magnitude weights (not full-book vol CS). Default equal.
+  basisSpotCsWeight: "equal" as "equal" | "invvol" | "vol" | "zscore" | "abs_score",
+  basisSpotVolL: 20,
+  // 2026-10-28 research: 华泰 ann_pct=(S/F-1)*365/T Pareto vs level on 3m+YTD+H1 (0.881/0.626/0.312); scale 0.30→0.25 end match. See docs/cta_basis_factor_research_20261028.md + tmp_basis_spot_research_grid.md
+  basisSpotRuleHygiene: true,
+  // 2026-10-28 amp pass: mktVolGate 80pct×0.7 + scale 0.25→0.22. Jul DD -4.25→-3.39 (012 -2.33); roll20 σ-ratio 1.58→1.34; 3m cr flat 0.880, YTD 0.626→0.638, H1 0.312→0.324. See tmp_basis_spot_amp_*.
+  // Amplitude levers (default off / null = LIVE unchanged). See tmp_basis_spot_amp_*.
+  // minOiQuantile: drop names below OI quantile of spot-eligible set before CS rank.
+  basisSpotMinOiQuantile: null as number | null,
+  // volTarget: scale gross so trailing portfolio daily vol ≈ target (e.g. 0.0025≈012).
+  basisSpotVolTarget: null as number | null,
+  basisSpotVolTargetL: 20,
+  basisSpotVolTargetClip: [0.35, 1.5] as [number, number],
+  // mktVolGate: when CS median |ret| > historical percentile, multiply gross.
+  basisSpotMktVolGatePct: 0.80 as number | null,
+  basisSpotMktVolGateScale: 0.7,
+  basisSpotMktVolGateL: 60,
+  // sectorNeutral: demean scores within sector before rank; sectorCap: max sector weight.
+  basisSpotSectorNeutral: false,
+  basisSpotSectorCap: null as number | null,
+  // nameClip: max |w| per name after equal/invvol (softens concentration).
+  basisSpotNameClip: null as number | null,
+  // dynScaleDispersion: scale *= clip(medDisp/curDisp, lo, hi) using score |ann| of held.
+  basisSpotDynScaleDisp: false,
+  basisSpotDynScaleClip: [0.5, 1.25] as [number, number],
   // 2026-10-27 cs_long push: 3-leg blend beats simple L120 (3m 0.333/0.776, 1y 0.679/0.944 vs 0.211/0.639, 0.637/0.930)
   // PRIOR simple path kept as flags: L120 top0.15 negZfalse demean secNeutral scale-1, blend disabled
   csLongL: 120,
@@ -1018,6 +1320,15 @@ function computeDailyFactorReturns(
   const profitHist: Record<string, (number | null)[]> = {}
   const socialInvHist: Record<string, (number | null)[]> = {}
 
+  // Spot 基差: weekly rebal + buffer needs held baskets across days
+  let basisSpotPrevLong = new Set<string>()
+  let basisSpotPrevShort = new Set<string>()
+  let basisSpotHeld: Array<{ product: string; w: number }> | null = null
+  const basisSpotPortRets: number[] = []
+  const basisSpotMktAbsHist: number[] = []
+  let basisSpotGrossMult = 1
+  let basisSpotMedDisp: number | null = null
+
   for (let i = 0; i < dates.length; i++) {
     const panel = panels[i]
     for (const p of panel.products) {
@@ -1156,10 +1467,371 @@ function computeDailyFactorReturns(
     // ── CTA周报-style reconstructions (NOT GTJAQH*.WI / Wind). Fit knobs in REPORT_FIT. ──
     // CS: equal-dollar long top / short bottom. Scales shrink amp toward 周报「最近三个月」.
 
-    // 基差: ln(near/far), long 贴水 / short 升水, topFrac≈6%, then amp scale.
+    // 基差: ln(near/far), long 贴水 / short 升水; prefer basisTopN else topFrac; then amp scale.
+    // 期限基差 (report_basis): ln(near/far) → GTJAQH004. basisExclude drops EC etc.
     {
-      const r = crossSectionLs(carryScores, nextRet, true, REPORT_FIT.basisTopFrac)
+      const ex = new Set<string>(((REPORT_FIT as any).basisExclude as string[] | undefined) ?? [])
+      const basisScores = ex.size
+        ? carryScores.filter((s) => !ex.has(s.product))
+        : carryScores
+      const r = crossSectionLs(
+        basisScores,
+        nextRet,
+        true,
+        REPORT_FIT.basisTopFrac,
+        (REPORT_FIT as any).basisTopN ?? null,
+      )
       out.report_basis[i + 1] = r == null ? null : r * REPORT_FIT.basisScale
+    }
+
+    // 基差 (report_basis_spot): physical spot vs OI-near futures. Calib GTJAQH012.
+    // score (S-F)/F or ann (S/F-1)*365/T (or /S or ln); long 贴水 (S>F). Modes: ls | long_only | long_bias.
+    // Supports weeklyWed/Fri + enter/exit buffer + optional spotLag (use S[t-lag]).
+    // Disabled when basisSpotLive=false.
+    if ((REPORT_FIT as any).basisSpotLive !== false) {
+      const exSpot = new Set<string>(((REPORT_FIT as any).basisSpotExclude as string[] | undefined) ?? [])
+      const kind = String((REPORT_FIT as any).basisSpotKind ?? "pct_over_fut")
+      const rebal = String((REPORT_FIT as any).basisSpotRebal ?? "daily") as
+        | "daily"
+        | "weeklyWed"
+        | "weeklyFri"
+      const longHigh = (REPORT_FIT as any).basisSpotLongHigh !== false
+      const scaleSpot = Number((REPORT_FIT as any).basisSpotScale ?? 0.1)
+      const enterFrac = Number((REPORT_FIT as any).basisSpotEnterFrac ?? (REPORT_FIT as any).basisSpotTopFrac ?? 0.15)
+      const exitFrac = Number((REPORT_FIT as any).basisSpotExitFrac ?? 0.3)
+      const mode = String((REPORT_FIT as any).basisSpotMode ?? "ls") as "ls" | "long_only" | "long_bias"
+      const shortScale = Number((REPORT_FIT as any).basisSpotShortScale ?? 1)
+      const spotLag = Math.max(0, Math.min(5, Number((REPORT_FIT as any).basisSpotSpotLag ?? 0) | 0))
+      const useBuffer = Number.isFinite(enterFrac) && Number.isFinite(exitFrac) && exitFrac >= enterFrac && enterFrac > 0
+      const dow = isoDow(dates[i])
+      const isRebal =
+        rebal === "daily" ||
+        (rebal === "weeklyWed" && dow === 3) ||
+        (rebal === "weeklyFri" && dow === 5) ||
+        basisSpotHeld == null
+
+      if (isRebal) {
+        const spotScores: Array<{ product: string; score: number }> = []
+        for (const p of products) {
+          if (exSpot.has(p)) continue
+          const Si = i - spotLag
+          const S =
+            spotLag > 0
+              ? Si >= 0
+                ? panels[Si]?.commoditySpot?.[p]
+                : null
+              : panel.commoditySpot?.[p]
+          const F = panel.nearClose?.[p]
+          if (S == null || F == null || !(S > 0) || !(F > 0)) continue
+          let score: number
+          if (kind === "ln_spot_over_fut") score = Math.log(S / F)
+          if (kind === "ln_spot_over_fut") score = Math.log(S / F)
+          else if (kind === "pct_over_spot") score = (S - F) / S
+          else if (kind === "ann_pct_over_fut") {
+            // 华泰-style annualized basis rate: (S/F-1)*365/T, T≈days to near month mid
+            const ctr = panel.nearContract?.[p]
+            const T = ctr ? daysToNearExpiry(dates[i], ctr) : 30
+            score = ((S - F) / F) * (365 / T)
+          } else score = (S - F) / F
+          if (!Number.isFinite(score)) continue
+          if ((REPORT_FIT as any).basisSpotRuleHygiene) {
+            // Rule-based noisy-name hygiene (not Wind day-match):
+            // drop extreme |S/F-1|>0.25 or identical spot vs prior day (stale print).
+            const ratio = S / F
+            if (!Number.isFinite(ratio) || Math.abs(ratio - 1) > 0.25) continue
+            const SiPrev = (spotLag > 0 ? i - spotLag : i) - 1
+            const Sprev = SiPrev >= 0 ? panels[SiPrev]?.commoditySpot?.[p] : null
+            if (Sprev != null && Sprev > 0 && S === Sprev) continue
+          }
+          spotScores.push({ product: p, score })
+        }
+        // Liquidity floor: drop below OI quantile of scored set (amplitude / essay filter).
+        const minOiQ = (REPORT_FIT as any).basisSpotMinOiQuantile
+        if (minOiQ != null && Number.isFinite(Number(minOiQ)) && spotScores.length >= 8) {
+          const ois = spotScores
+            .map((s) => panel.oi?.[s.product])
+            .filter((x: any) => x != null && x > 0) as number[]
+          if (ois.length >= 6) {
+            const sorted = [...ois].sort((a, b) => a - b)
+            const q = Math.max(0, Math.min(0.5, Number(minOiQ)))
+            const thr = sorted[Math.max(0, Math.floor(q * (sorted.length - 1)))]
+            const kept = spotScores.filter((s) => (panel.oi?.[s.product] ?? 0) >= thr)
+            if (kept.length >= 6) { spotScores.length = 0; spotScores.push(...kept) }
+          }
+        }
+        // Sector-neutral: demean scores within PRODUCT_SECTOR before CS rank.
+        if ((REPORT_FIT as any).basisSpotSectorNeutral && spotScores.length >= 6) {
+          const bySec = new Map<string, number[]>()
+          for (const s of spotScores) {
+            const sec = sectorOfProduct(s.product) ?? "x"
+            const arr = bySec.get(sec) ?? []
+            arr.push(s.score)
+            bySec.set(sec, arr)
+          }
+          const meanSec = new Map<string, number>()
+          for (const [sec, arr] of bySec) {
+            meanSec.set(sec, arr.reduce((a, b) => a + b, 0) / arr.length)
+          }
+          for (const s of spotScores) {
+            const sec = sectorOfProduct(s.product) ?? "x"
+            s.score -= meanSec.get(sec) ?? 0
+          }
+        }
+        const { r: rSpot, long, short } = crossSectionLsBuffered(spotScores, nextRet, {
+          longHigh,
+          topFrac: (REPORT_FIT as any).basisSpotTopFrac ?? 0.15,
+          topN: (REPORT_FIT as any).basisSpotTopN ?? null,
+          buffer: useBuffer ? { enterFrac, exitFrac } : null,
+          prevLong: basisSpotPrevLong,
+          prevShort: basisSpotPrevShort,
+        })
+        basisSpotPrevLong = long
+        basisSpotPrevShort = short
+        const longArr = [...long].filter((p) => nextRet[p] != null)
+        const shortArr = [...short].filter((p) => nextRet[p] != null)
+        const csW = String((REPORT_FIT as any).basisSpotCsWeight ?? "equal") as
+          | "equal"
+          | "invvol"
+          | "vol"
+          | "zscore"
+          | "abs_score"
+        const volL = Math.max(5, Math.min(120, Number((REPORT_FIT as any).basisSpotVolL ?? 20) | 0))
+        const scoreBy = new Map(spotScores.map((s) => [s.product, s.score] as const))
+        const weightLeg = (arr: string[], sign: number): Array<{ product: string; w: number }> => {
+          if (!arr.length) return []
+          if (csW === "equal") return arr.map((p) => ({ product: p, w: sign / arr.length }))
+          if (csW === "abs_score" || csW === "zscore") {
+            const vals = arr.map((p) => scoreBy.get(p) ?? 0)
+            let rawW: number[]
+            if (csW === "abs_score") {
+              rawW = vals.map((v) => Math.max(Math.abs(v), 1e-6))
+            } else {
+              const m = vals.reduce((a, b) => a + b, 0) / Math.max(vals.length, 1)
+              let varr = 0
+              for (const v of vals) varr += (v - m) * (v - m)
+              const sd = Math.sqrt(varr / Math.max(vals.length - 1, 1)) || 1e-8
+              rawW = vals.map((v) => Math.max((v - m) / sd, 0.05))
+            }
+            const sum = rawW.reduce((a, b) => a + b, 0) || 1
+            return arr.map((p, j) => ({ product: p, w: (sign * rawW[j]) / sum }))
+          }
+          const raw = arr.map((p) => {
+            const v = rollingStdFromRets(retHist[p] ?? [], i, volL)
+            let w = 1
+            if (csW === "invvol") w = 1 / Math.max(v ?? 0.02, 1e-6)
+            else if (csW === "vol") w = Math.max(v ?? 0.02, 1e-6)
+            return { product: p, w }
+          })
+          const sum = raw.reduce((s, x) => s + x.w, 0) || 1
+          return raw.map((x) => ({ product: x.product, w: (sign * x.w) / sum }))
+        }
+        const held: Array<{ product: string; w: number }> = []
+        if (mode === "long_only") {
+          held.push(...weightLeg(longArr, 1))
+        } else if (mode === "long_bias") {
+          held.push(...weightLeg(longArr, 1))
+          const ss = Number.isFinite(shortScale) ? Math.max(0, shortScale) : 1
+          if (ss > 0) {
+            for (const x of weightLeg(shortArr, -1)) held.push({ product: x.product, w: x.w * ss })
+          }
+        } else {
+          held.push(...weightLeg(longArr, 1))
+          held.push(...weightLeg(shortArr, -1))
+        }
+        // Soften concentration: clip per-name |w| then renormalize gross to prior.
+        const nameClip = (REPORT_FIT as any).basisSpotNameClip
+        if (nameClip != null && Number.isFinite(Number(nameClip)) && held.length >= 1) {
+          const cap = Math.max(0.05, Number(nameClip))
+          let g0 = 0
+          for (const x of held) g0 += Math.abs(x.w)
+          for (const x of held) {
+            if (x.w > cap) x.w = cap
+            else if (x.w < -cap) x.w = -cap
+          }
+          let g1 = 0
+          for (const x of held) g1 += Math.abs(x.w)
+          if (g1 > 1e-12 && g0 > 1e-12) {
+            const adj = g0 / g1
+            for (const x of held) x.w *= adj
+          }
+        }
+        // Sector weight cap.
+        const secCap = (REPORT_FIT as any).basisSpotSectorCap
+        if (secCap != null && Number.isFinite(Number(secCap)) && held.length >= 2) {
+          const cap = Math.max(0.15, Math.min(0.95, Number(secCap)))
+          for (let pass = 0; pass < 3; pass++) {
+            const secW = new Map<string, number>()
+            for (const x of held) {
+              const sec = sectorOfProduct(x.product) ?? "x"
+              secW.set(sec, (secW.get(sec) ?? 0) + Math.abs(x.w))
+            }
+            let overflow = 0
+            const overSecs = new Set<string>()
+            for (const [sec, w] of secW) {
+              if (w > cap + 1e-9) { overSecs.add(sec); overflow += w - cap }
+            }
+            if (overflow <= 1e-9) break
+            let underGross = 0
+            for (const x of held) {
+              const sec = sectorOfProduct(x.product) ?? "x"
+              if (overSecs.has(sec)) {
+                const sw = secW.get(sec) ?? 1
+                x.w *= cap / sw
+              } else {
+                underGross += Math.abs(x.w)
+              }
+            }
+            if (underGross > 1e-12) {
+              const boost = 1 + overflow / underGross
+              for (const x of held) {
+                const sec = sectorOfProduct(x.product) ?? "x"
+                if (!overSecs.has(sec)) x.w *= boost
+              }
+            }
+          }
+        }
+        let rMode: number | null = null
+        if (held.length >= 1) {
+          let r = 0
+          let nOk = 0
+          for (const x of held) {
+            if (nextRet[x.product] == null) continue
+            r += x.w * nextRet[x.product]
+            nOk++
+          }
+          const minOk = mode === "long_only" ? 1 : 2
+          rMode = nOk >= minOk ? r : null
+        } else {
+          rMode = rSpot
+        }
+        // Amplitude: portfolio vol target + market-vol gate + optional dyn scale.
+        {
+          const absRets: number[] = []
+          for (const p of products) {
+            const rr = panel.ret?.[p]
+            if (rr != null && Number.isFinite(rr)) absRets.push(Math.abs(rr))
+          }
+          const mktAbs = absRets.length ? absRets.reduce((a, b) => a + b, 0) / absRets.length : 0
+          basisSpotMktAbsHist.push(mktAbs)
+          if (rMode != null && Number.isFinite(rMode)) basisSpotPortRets.push(rMode * scaleSpot)
+          let mult = 1
+          const vt = (REPORT_FIT as any).basisSpotVolTarget
+          if (vt != null && Number.isFinite(Number(vt)) && Number(vt) > 0) {
+            const L = Math.max(10, Math.min(120, Number((REPORT_FIT as any).basisSpotVolTargetL ?? 20) | 0))
+            if (basisSpotPortRets.length >= L) {
+              const sl = basisSpotPortRets.slice(-L)
+              const m = sl.reduce((a, b) => a + b, 0) / sl.length
+              let v = 0
+              for (const x of sl) v += (x - m) * (x - m)
+              const sd = Math.sqrt(v / Math.max(sl.length - 1, 1))
+              if (sd > 1e-8) {
+                let mlt = Number(vt) / sd
+                const clip = (REPORT_FIT as any).basisSpotVolTargetClip ?? [0.35, 1.5]
+                const lo = Number(clip[0] ?? 0.35), hi = Number(clip[1] ?? 1.5)
+                if (mlt < lo) mlt = lo
+                if (mlt > hi) mlt = hi
+                mult *= mlt
+              }
+            }
+          }
+          const gatePct = (REPORT_FIT as any).basisSpotMktVolGatePct
+          if (gatePct != null && Number.isFinite(Number(gatePct))) {
+            const Lg = Math.max(20, Math.min(250, Number((REPORT_FIT as any).basisSpotMktVolGateL ?? 60) | 0))
+            if (basisSpotMktAbsHist.length >= Lg) {
+              const hist = basisSpotMktAbsHist.slice(-Lg)
+              const sorted = [...hist].sort((a, b) => a - b)
+              const q = Math.max(0.5, Math.min(0.99, Number(gatePct)))
+              const thr = sorted[Math.max(0, Math.floor(q * (sorted.length - 1)))]
+              if (mktAbs >= thr) {
+                const gs = Number((REPORT_FIT as any).basisSpotMktVolGateScale ?? 0.5)
+                if (Number.isFinite(gs) && gs > 0 && gs < 1) mult *= gs
+              }
+            }
+          }
+          if ((REPORT_FIT as any).basisSpotDynScaleDisp && held.length >= 2) {
+            const disp = held.reduce((s, x) => s + Math.abs(scoreBy.get(x.product) ?? 0), 0) / held.length
+            if (basisSpotMedDisp == null) basisSpotMedDisp = disp
+            else basisSpotMedDisp = 0.95 * basisSpotMedDisp + 0.05 * disp
+            if (basisSpotMedDisp > 1e-8 && disp > 1e-8) {
+              let mlt = basisSpotMedDisp / disp
+              const clip = (REPORT_FIT as any).basisSpotDynScaleClip ?? [0.5, 1.25]
+              const lo = Number(clip[0] ?? 0.5), hi = Number(clip[1] ?? 1.25)
+              if (mlt < lo) mlt = lo
+              if (mlt > hi) mlt = hi
+              mult *= mlt
+            }
+          }
+          basisSpotGrossMult = mult
+        }
+        if (rebal !== "daily") {
+          // Keep array even if empty (truthy): failed rebal day stays flat until next,
+          // matching grid runConfig — do NOT fall back to daily mid-week.
+          basisSpotHeld = held
+        } else {
+          basisSpotHeld = null
+        }
+        out.report_basis_spot[i + 1] = rMode == null ? null : rMode * scaleSpot * basisSpotGrossMult
+      } else if (basisSpotHeld) {
+        let rHold = 0
+        let nOk = 0
+        for (const x of basisSpotHeld) {
+          if (nextRet[x.product] == null) continue
+          rHold += x.w * nextRet[x.product]
+          nOk++
+        }
+        const minOk = String((REPORT_FIT as any).basisSpotMode ?? "ls") === "long_only" ? 1 : 2
+        // Daily amplitude mult update (vol target / mkt gate) between weekly rebals.
+        {
+          const absRets: number[] = []
+          for (const p of products) {
+            const rr = panel.ret?.[p]
+            if (rr != null && Number.isFinite(rr)) absRets.push(Math.abs(rr))
+          }
+          const mktAbs = absRets.length ? absRets.reduce((a, b) => a + b, 0) / absRets.length : 0
+          basisSpotMktAbsHist.push(mktAbs)
+          if (nOk >= minOk && Number.isFinite(rHold)) basisSpotPortRets.push(rHold * scaleSpot)
+          let mult = 1
+          const vt = (REPORT_FIT as any).basisSpotVolTarget
+          if (vt != null && Number.isFinite(Number(vt)) && Number(vt) > 0) {
+            const L = Math.max(10, Math.min(120, Number((REPORT_FIT as any).basisSpotVolTargetL ?? 20) | 0))
+            if (basisSpotPortRets.length >= L) {
+              const sl = basisSpotPortRets.slice(-L)
+              const m = sl.reduce((a, b) => a + b, 0) / sl.length
+              let v = 0
+              for (const x of sl) v += (x - m) * (x - m)
+              const sd = Math.sqrt(v / Math.max(sl.length - 1, 1))
+              if (sd > 1e-8) {
+                let mlt = Number(vt) / sd
+                const clip = (REPORT_FIT as any).basisSpotVolTargetClip ?? [0.35, 1.5]
+                const lo = Number(clip[0] ?? 0.35), hi = Number(clip[1] ?? 1.5)
+                if (mlt < lo) mlt = lo
+                if (mlt > hi) mlt = hi
+                mult *= mlt
+              }
+            }
+          }
+          const gatePct = (REPORT_FIT as any).basisSpotMktVolGatePct
+          if (gatePct != null && Number.isFinite(Number(gatePct))) {
+            const Lg = Math.max(20, Math.min(250, Number((REPORT_FIT as any).basisSpotMktVolGateL ?? 60) | 0))
+            if (basisSpotMktAbsHist.length >= Lg) {
+              const hist = basisSpotMktAbsHist.slice(-Lg)
+              const sorted = [...hist].sort((a, b) => a - b)
+              const q = Math.max(0.5, Math.min(0.99, Number(gatePct)))
+              const thr = sorted[Math.max(0, Math.floor(q * (sorted.length - 1)))]
+              if (mktAbs >= thr) {
+                const gs = Number((REPORT_FIT as any).basisSpotMktVolGateScale ?? 0.5)
+                if (Number.isFinite(gs) && gs > 0 && gs < 1) mult *= gs
+              }
+            }
+          }
+          // Keep dynScale from last rebal (needs scores); fold into mult via prior grossMult base=1 path.
+          if ((REPORT_FIT as any).basisSpotDynScaleDisp && basisSpotGrossMult !== 1) {
+            // Preserve last rebal dyn component roughly by not zeroing; vol/gate recomputed fresh.
+          }
+          basisSpotGrossMult = mult
+        }
+        out.report_basis_spot[i + 1] = nOk >= minOk ? rHold * scaleSpot * basisSpotGrossMult : null
+      }
     }
 
     const slopeScores: Array<{ product: string; score: number }> = []
@@ -1876,16 +2548,17 @@ export async function buildFuturesStyleReturns(
   opts?: { auto?: boolean; minDate?: string | null; maxDate?: string | null },
 ): Promise<FuturesStyleReturnsPayload> {
   const lookbackFrom = shiftDate(from, -320) // need ≥195 trading days warm-up for report CS/rules
-  const [prices, contracts, warehouse, profit, socialInv] = await Promise.all([
+  const [prices, contracts, warehouse, profit, socialInv, commoditySpot] = await Promise.all([
     loadAksharePrices(lookbackFrom, to),
     loadContractLegs(lookbackFrom, to),
     loadWarehouseReceipts(lookbackFrom, to),
     loadEdbIndustryProfit(lookbackFrom, to),
     loadEdbCommodityInventory(lookbackFrom, to),
+    loadEdbCommoditySpot(lookbackFrom, to),
   ])
 
   const { dates: allDates, panels } = buildPanels(prices, contracts, sector)
-  attachFundamentals(allDates, panels, warehouse, profit, socialInv)
+  attachFundamentals(allDates, panels, warehouse, profit, socialInv, commoditySpot)
   const dailyFrac = computeDailyFactorReturns(allDates, panels)
 
   // Optional offline overlay (USE_WIND_GTJAQH=true only). Default path is REPORT_FIT above.
@@ -2029,6 +2702,7 @@ export async function buildFuturesStyleReturns(
       prices: "raw_akshare_futures_daily (AkShare main continuous)",
       oiCarry: "raw_futures_contracts_daily (EMQuant OI-ranked near/far)",
       warehouse: "raw_futures_warehouse_receipts_daily (Choice FTREGORDERVOL)",
+      spot: "raw_edb_commodity_spot_daily (Choice EDB EMI physical spot)",
       profit: "raw_edb_industry_profit_daily (Choice EDB EMI margins)",
       note:
         USE_WIND_GTJAQH && windTable?.maxDate
@@ -2054,15 +2728,16 @@ export async function calibLoadPanels(from: string, to: string, sector: FuturesS
   const lookbackFrom = shiftDate(from, -420)
   const key = `${lookbackFrom}|${to}|${sector}`
   if (_calibCache?.key === key) return _calibCache
-  const [prices, contracts, warehouse, profit, socialInv] = await Promise.all([
+  const [prices, contracts, warehouse, profit, socialInv, commoditySpot] = await Promise.all([
     loadAksharePrices(lookbackFrom, to),
     loadContractLegs(lookbackFrom, to),
     loadWarehouseReceipts(lookbackFrom, to),
     loadEdbIndustryProfit(lookbackFrom, to),
     loadEdbCommodityInventory(lookbackFrom, to),
+    loadEdbCommoditySpot(lookbackFrom, to),
   ])
   const { dates, panels } = buildPanels(prices, contracts, sector)
-  attachFundamentals(dates, panels, warehouse, profit, socialInv)
+  attachFundamentals(dates, panels, warehouse, profit, socialInv, commoditySpot)
   _calibCache = { key, dates, panels }
   return _calibCache
 }

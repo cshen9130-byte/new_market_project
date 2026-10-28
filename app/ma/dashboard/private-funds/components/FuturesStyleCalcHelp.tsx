@@ -32,21 +32,44 @@ type FactorHelp = {
 export const FACTOR_CALC_HELP: Record<string, FactorHelp> = {
   report_basis: {
     key: "report_basis",
-    title: "基差(近远月)（国君 CTA 周报代理）",
-    summary: "近远月对数基差的截面多空，再乘 REPORT_FIT.basisScale。",
+    title: "期限基差（国君 CTA 周报·近远月）",
+    summary: "近远月套利差的截面收益，再乘 REPORT_FIT.basisScale。校准 GTJAQH004.WI。",
     paragraphs: [
-      "信号日 t 用近月/远月收盘构造 Carry_i = ln(近月价/远月价)（贴水为正、升水为负）。",
-      "在商品池内按 Carry 排序，做多最高 topFrac、做空最低 topFrac（等权多空，crossSectionLs longHigh=true）。",
-      "组合日收益取下一交易日主力连续收益 r_{i,t+1}，再乘 amp 缩放，使路径幅度贴近周报校准（非 Wind 净值）。",
+      "信号：在 t 用近月/远月收盘构造 Carry_i = ln(近月价/远月价)（贴水为正、升水为负）。",
+      "全商品池内按 Carry 排序：多头 topFrac，空头底 topFrac，等权差价（crossSectionLs longHigh=true）。",
+      "组合下期收益取下一个交易日各品种连续合约 r_{i,t+1}，再乘 amp 缩放，使路径幅度靠近周报校准（非 Wind 净值盘）。",
     ],
     formula: `score_i = ln(P_near / P_far)
-r_basis = CS_LS(score, topFrac=basisTopFrac=0.2, longHigh) × basisScale(=0.1)`,
+r_term_basis = CS_LS(score excl basisExclude, topN=basisTopN=8 else topFrac=0.2, longHigh) × basisScale(=0.1)`,
     bullets: [
-      "当前 knobs：basisTopFrac=0.2，basisScale=0.1（相对 Wind GTJAQH012 离线校准）。",
-      "USE_WIND_GTJAQH=false：图上永不直接画 GTJAQH*.WI。",
+      "当前 knobs：basisTopN=8, basisExclude=['EC'], basisTopFrac=0.2 fallback, basisScale=0.1；校准目标 Wind GTJAQH004（Excel「期限基差」）2026-10-28。",
+      "UI 原名「基差(近远月)」已更名为「期限基差」；factor id report_basis 保持稳定以兼容 prefs。",
+      "USE_WIND_GTJAQH=false；图表不会直接拉 GTJAQH*.WI。",
     ],
-    note: "与「基差因子/价值收益」同源 Carry，但是周报名因子并带独立 scale。",
+    note: "与「期限结构/套利价值」同源 Carry；国君周报「基差」请见 report_basis_spot。",
   },
+  report_basis_spot: {
+    key: "report_basis_spot",
+    title: "基差（国君/CTA 周报·现货−期货）",
+    summary: "现货 S vs OI 近月期货价的截面多头（贴水）；weeklyFri + buffer；校准 GTJAQH012.WI。",
+    paragraphs: [
+      "现货 S 来自 Choice EDB（raw_edb_commodity_spot_daily），按品种优先级选一系列并向前填充。",
+      "期货 F 为同品种 OI 最大近月连续。默认 score=年化基差率 ((S−F)/F)×(365/T)（华泰；T≈近月合约月中剩余天；可选 /S 或 ln）；spotLag=0 用昨现货对今期货，避免现货晚到。",
+      "截面：只做贴水端多头（long_only，不再美元中性空头腿——旧 LS 会抹掉 YTD 漂移）。equal weight + buffer enter/exit 0.15/0.35，rebal weeklyFri，排除 EC+SH（SH=片碱），ruleHygiene 丢弃 |S/F−1|>0.25。",
+    ],
+    formula: `score_i = ((S_i - F_near,i) / F_near,i) * (365 / T_near,i)   // ann_pct; T≈days to near-contract month mid
+r_basis = CS_long_only_buffered(score excl EC+SH + ruleHygiene|S/F-1|>0.25, enter=15%, exit=35%, longHigh, rebal=Fri) × basisSpotScale(=0.22) × mktVolGate(80pct→×0.7)`,
+    bullets: [
+      "校准目标：Wind GTJAQH012（Excel「基差」）；图不直连 Wind。",
+      "2026-10-28 amp pass: mktVolGate pct=0.80 scale=0.7 + basisSpotScale 0.25→0.22 (equal Fri ann_pct buf15/35 excl EC+SH hygiene). vs LIVE prior: Jul DD -4.25%→-3.39% (012 -2.33%); roll20 ret-σ ratio 1.58→1.34; 3m cr~0.880 flat, YTD 0.626→0.638, H1 0.312→0.324; end~+5.2% (012~+5.6%). Cause: n≈4 equal chem/energy book + no risk-off. See tmp_basis_spot_amp_diag.md / amp_refine.md.",
+      "2026-10-28 research promote: kind=ann_pct_over_fut (华泰年化基差率), scale0.25, buf15/35 equal Fri excl EC+SH ruleHygiene — vs GTJAQH012 grid Pareto 3m~0.88/YTD~0.63/H1~0.31. See docs/cta_basis_factor_research_20261028.md. PRIOR unit/FX+hygiene live: excl EC+SH, scale0.30 buf15/35 equal Fri lag0 ruleHygiene → vs GTJAQH012: 3m cr~0.86/lvl~0.89; YTD cr~0.62/lvl~0.82 end~+5.6% DD~−4.8%; H1 cr~0.28. longHigh=(S−F)/F 高 = 做多贴水（现货溢价），非升水。",
+      "PRIOR harder LS Wed scale0.27：3m cr~0.771 但 YTD end~0%/lvl−0.29（美元中性对冲掉漂移）。",
+      "knobs：basisSpotMode=long_only, rebal=weeklyFri, enter=0.15, exit=0.35, kind=ann_pct_over_fut, scale=+0.25, spotLag=0, csWeight=equal, ruleHygiene=true, exclude=['EC','SH']（SH=片碱产品码，非上期所）。buffer 用 enter/exit 比例定仓位数；topN 在 buffer 开启时未接入。",
+      "数据：data/edb_commodity_spot_catalog.json + fetch_edb_commodity_spot_daily.py（server EmQuant c.edb）。",
+    ],
+    note: "与「期限基差」（近远月）并列展示，不替代。",
+  },
+
   report_cs_long: {
     key: "report_cs_long",
     title: "长期截面（国君 CTA 周报代理）",
@@ -296,7 +319,7 @@ const FACTOR_DEFINITIONS: HelpBlock = {
     "价格偏离：Dev = P/MA20 − 1，反转：做多 Dev 低、做空 Dev 高。",
     "偏度 / 峰度：20 日收益偏度或超额峰度，做多低、做空高。",
     "投机意愿：成交量/持仓量；持仓变化：sign(r)·ΔOI。",
-    "基差(近远月)（周报）：CS ln(近/远)×basisScale；长期截面：OLS slope 截面×负 scale；量价：dOiShockBlend；长期规则：momLowVol+flip；库存：−Δ%仓单L5；利润：ΔCarry(L20)；基差动量/中期动量：ΔCarry 与 MA20/60。",
+    "期限基差（周报/近远月）：CS ln(近/远)×basisScale；基差（现货−期货）：CS ann_pct=((S−F)/F)×(365/T)×basisSpotScale；长期截面：OLS slope 截面×负 scale；量价：dOiShockBlend；长期规则：momLowVol+flip；库存：−Δ%仓单L5；利润：ΔCarry(L20)；基差动量/中期动量：ΔCarry 与 MA20/60。",
   ],
 }
 

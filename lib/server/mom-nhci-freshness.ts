@@ -7,12 +7,27 @@
  * trade-calendar skip fix alone is not enough: mid-day warm caches for
  * benchmark + product-nav were never busted when NHCI caught up, so the
  * "latest day truncated" symptom kept recurring after every afternoon settle.
+ *
+ * Important: product-nav PnL is driven by mom_daily_reports (plus capital
+ * flows), while 持仓截面 can land earlier the same day. A single
+ * MAX(daily_reports, position_details) freshness token stays unchanged when
+ * daily_reports later catches up to an already-advanced position date — the
+ * file cache then keeps serving a product-nav series that ends early. Rolling
+ * vol also used that stale product last-date as the NHCI `to`, so BOTH lines
+ * stopped early (worse than NHCI-only lag). Track each source separately.
  */
 
 import { query } from "@/lib/db"
 
 export type MomNhciAsOf = {
+  /** max(daily_reports, position_details) — used for lag UX vs NHCI. */
   positionAsOf: string | null
+  /** Max trade date in mom_daily_reports (product-nav PnL spine). */
+  dailyReportsAsOf: string | null
+  /** Max trade date in mom_position_details (持仓截面). */
+  positionDetailsAsOf: string | null
+  /** Max confirmation_date in mom_fund_transactions (capital flows). */
+  capitalFlowAsOf: string | null
   nhciAsOf: string | null
   /** Max usable close for NHCI.NH in raw_nanhua_indices_daily (chart source). */
   nanhuaNhciAsOf: string | null
@@ -27,39 +42,77 @@ function isoDate(v: unknown): string | null {
   return s.slice(0, 10)
 }
 
-export async function loadMomNhciAsOf(): Promise<MomNhciAsOf> {
-  const rows = await query<{
-    position_asof: string | null
-    nanhua_nhci: string | null
-    raw_nhci: string | null
-  }>(
-    `SELECT
-       (SELECT MAX(d)::text FROM (
-          SELECT "交易日期"::date AS d FROM mom_daily_reports WHERE "交易日期" IS NOT NULL
-          UNION ALL
-          SELECT "交易日期"::date AS d FROM mom_position_details WHERE "交易日期" IS NOT NULL
-        ) s) AS position_asof,
-       (SELECT MAX(trade_date)::text FROM raw_nanhua_indices_daily
-         WHERE code = 'NHCI.NH' AND close IS NOT NULL AND close > 0) AS nanhua_nhci,
-       (SELECT MAX(trade_date)::text FROM raw_nhci_daily
-         WHERE close IS NOT NULL AND close > 0) AS raw_nhci`,
-  ).catch(() => [] as Array<{
-    position_asof: string | null
-    nanhua_nhci: string | null
-    raw_nhci: string | null
-  }>)
-
-  const positionAsOf = isoDate(rows[0]?.position_asof)
-  const nanhuaNhciAsOf = isoDate(rows[0]?.nanhua_nhci)
-  const rawNhciAsOf = isoDate(rows[0]?.raw_nhci)
-  const nhciAsOf = nanhuaNhciAsOf || rawNhciAsOf
-  return { positionAsOf, nhciAsOf, nanhuaNhciAsOf, rawNhciAsOf }
+function maxIso(...dates: Array<string | null | undefined>): string | null {
+  let best: string | null = null
+  for (const d of dates) {
+    const iso = isoDate(d)
+    if (!iso) continue
+    if (!best || iso > best) best = iso
+  }
+  return best
 }
 
-/** Cache-key token: advances when positions or NHCI settle mid-day. */
+async function maxDateText(sql: string): Promise<string | null> {
+  try {
+    const rows = await query<{ d: string | null }>(sql)
+    return isoDate(rows[0]?.d)
+  } catch {
+    return null
+  }
+}
+
+export async function loadMomNhciAsOf(): Promise<MomNhciAsOf> {
+  // Query each source independently so one missing table cannot blank the token.
+  const [
+    dailyReportsAsOf,
+    positionDetailsAsOf,
+    capitalFlowAsOf,
+    nanhuaNhciAsOf,
+    rawNhciAsOf,
+  ] = await Promise.all([
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_daily_reports WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_position_details WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX(confirmation_date::date)::text AS d FROM mom_fund_transactions WHERE confirmation_date IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX(trade_date)::text AS d FROM raw_nanhua_indices_daily WHERE code = 'NHCI.NH' AND close IS NOT NULL AND close > 0`,
+    ),
+    maxDateText(
+      `SELECT MAX(trade_date)::text AS d FROM raw_nhci_daily WHERE close IS NOT NULL AND close > 0`,
+    ),
+  ])
+
+  const nhciAsOf = nanhuaNhciAsOf || rawNhciAsOf
+  const positionAsOf = maxIso(dailyReportsAsOf, positionDetailsAsOf)
+  return {
+    positionAsOf,
+    dailyReportsAsOf,
+    positionDetailsAsOf,
+    capitalFlowAsOf,
+    nhciAsOf,
+    nanhuaNhciAsOf,
+    rawNhciAsOf,
+  }
+}
+
+/**
+ * Cache-key token: advances when any product-nav input OR NHCI settle mid-day.
+ * daily_reports / position_details / capital flows are separate so catching up
+ * one source after another still busts the file cache.
+ */
 export async function momNhciFreshnessToken(_req?: Request): Promise<string> {
   const a = await loadMomNhciAsOf()
-  return `${a.positionAsOf || ""}_${a.nanhuaNhciAsOf || a.rawNhciAsOf || ""}`
+  return [
+    a.dailyReportsAsOf || "",
+    a.positionDetailsAsOf || "",
+    a.capitalFlowAsOf || "",
+    a.nanhuaNhciAsOf || a.rawNhciAsOf || "",
+  ].join("_")
 }
 
 /** True when product/position as-of is strictly ahead of usable NHCI.NH. */
@@ -74,6 +127,8 @@ export type NhciLagMeta = {
   positionAsOf: string | null
   nhciAsOf: string | null
   nanhuaNhciAsOf: string | null
+  dailyReportsAsOf?: string | null
+  positionDetailsAsOf?: string | null
   requestedTo: string | null
   lagging: boolean
   /** Human-readable reason when lagging; null when aligned. */
@@ -100,6 +155,8 @@ export function buildNhciLagMeta(
     positionAsOf: asOf.positionAsOf,
     nhciAsOf: seriesEnd,
     nanhuaNhciAsOf: asOf.nanhuaNhciAsOf,
+    dailyReportsAsOf: asOf.dailyReportsAsOf,
+    positionDetailsAsOf: asOf.positionDetailsAsOf,
     requestedTo: to,
     lagging,
     lagReason,

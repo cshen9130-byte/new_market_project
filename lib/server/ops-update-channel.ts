@@ -61,8 +61,8 @@ type FofWeekRow = {
   ok_products: number
   empty_products: number
   error_products: number
+  filled_later_products: number
   ok_rows: number
-  empty_rows: number
   error_rows: number
   batches: number
   min_d: string | null
@@ -97,6 +97,10 @@ function zh(n: number): string {
   return n.toLocaleString("zh-CN")
 }
 
+function ensureWeekFilledLater(week: UpdateWeekStat): UpdateWeekStat {
+  return { ...week, filled_later_products: num(week.filled_later_products) }
+}
+
 function emptyWeek(start: string, inProgress: boolean): UpdateWeekStat {
   return {
     week_start: start,
@@ -107,8 +111,8 @@ function emptyWeek(start: string, inProgress: boolean): UpdateWeekStat {
     ok_products: 0,
     empty_products: 0,
     error_products: 0,
+    filled_later_products: 0,
     ok_rows: 0,
-    empty_rows: 0,
     error_rows: 0,
     batches: 0,
     min_date: null,
@@ -293,7 +297,6 @@ friday_rows AS (
   SELECT
     wk,
     COUNT(*) FILTER (WHERE status = 'ok')::int AS ok_rows,
-    COUNT(*) FILTER (WHERE status = 'no_data')::int AS empty_rows,
     COUNT(*) FILTER (WHERE status = 'error')::int AS error_rows,
     COUNT(DISTINCT batch_id)::int AS batches
   FROM tagged
@@ -317,8 +320,8 @@ SELECT
   COALESCE(f.ok_products, 0)::int AS ok_products,
   COALESCE(f.empty_products, 0)::int AS empty_products,
   COALESCE(f.error_products, 0)::int AS error_products,
+  0::int AS filled_later_products,
   COALESCE(r.ok_rows, 0)::int AS ok_rows,
-  COALESCE(r.empty_rows, 0)::int AS empty_rows,
   COALESCE(r.error_rows, 0)::int AS error_rows,
   COALESCE(r.batches, 0)::int AS batches,
   f.min_d::text AS min_d,
@@ -332,6 +335,9 @@ FULL JOIN friday_rows r USING (wk)
 FULL JOIN backfill b USING (wk)
 ORDER BY 1
 `
+
+// FOF99_FILLED_LATER_SQL gated off: joins over fof99_nav_fetch_log exceed DB_STATEMENT_TIMEOUT (~60s).
+// Weeks SQL already emits filled_later_products=0 so the Update Channel page can load.
 
 const EMAIL_WEEKS_SQL = `
 WITH weeks AS (
@@ -369,8 +375,8 @@ function fofWeek(row: FofWeekRow, thisWeek: string): UpdateWeekStat {
     ok_products: num(row.ok_products),
     empty_products: num(row.empty_products),
     error_products: num(row.error_products),
+    filled_later_products: num(row.filled_later_products),
     ok_rows: num(row.ok_rows),
-    empty_rows: num(row.empty_rows),
     error_rows: num(row.error_rows),
     batches: num(row.batches),
     min_date: day(row.min_d),
@@ -436,7 +442,10 @@ function fofHeadline(week: UpdateWeekStat, previous: UpdateWeekStat | null): str
   }
   const span = dateSpan(week)
   let text = `${when}火富牛周五任务覆盖 ${zh(week.products)} 只产品，${zh(week.ok_products)} 只拿到净值，${zh(week.empty_products)} 只只有空返回，失败 ${zh(week.error_products)} 只。`
-  text += `成功 ${zh(week.ok_rows)} 条，空返回 ${zh(week.empty_rows)} 条，调用 ${zh(week.batches)} 批。`
+    text += `成功 ${zh(week.ok_rows)} 条，调用 ${zh(week.batches)} 批。`
+  if (week.filled_later_products > 0) {
+    text += `其中周五未拿到的里，后来补到同一净值日的有 ${zh(week.filled_later_products)} 只。`
+  }
   if (span) text += `净值日 ${span}。`
   if (week.backfill_products > 0) {
     text += `另外补历史 ${zh(week.backfill_products)} 只。`
@@ -521,6 +530,9 @@ ORDER BY 1
 `
 
 async function buildFof99(thisWeek: string, lastWeek: string): Promise<UpdateChannelResponse> {
+  // filled_later (same price_date ok in a later week) is too heavy on fof99_nav_fetch_log
+  // under the 60s statement_timeout; keep the metric at 0 so Update Channel can load.
+  // Re-enable via a cheap definition later; do not join the full fetch log here.
   const [coverageRows, weekRows, totalsRows, admitRows, slowRows, cohortRows] = await Promise.all([
     query<PolicyCount>(FOF99_COVERAGE_SQL),
     query<FofWeekRow>(FOF99_WEEKS_SQL),
@@ -529,7 +541,7 @@ async function buildFof99(thisWeek: string, lastWeek: string): Promise<UpdateCha
     query<SlowDay>(FOF99_SLOW_DAYS_SQL),
     query<Fof99CohortRow>(fof99ProductStatusSql(lastWeek)),
   ])
-  const history = fillWeekGaps(weekRows.map((row) => fofWeek(row, thisWeek)), thisWeek)
+  const history = fillWeekGaps(weekRows.map((row) => fofWeek(row, thisWeek)), thisWeek).map(ensureWeekFilledLater)
   const last = history.find((row) => row.week_start === lastWeek) ?? emptyWeek(lastWeek, false)
   const current = history.find((row) => row.week_start === thisWeek) ?? null
   const previous = [...history].reverse().find((row) => row.week_start < lastWeek && row.products > 0) ?? null
@@ -1537,6 +1549,6 @@ export function parseUpdateChannel(raw: string | null): UpdateChannel | null {
 }
 
 export async function getUpdateChannel(channel: UpdateChannel, refresh: boolean): Promise<UpdateChannelResponse> {
-  const key = `ops-update-channel:v9:${channel}`
+  const key = `ops-update-channel:v12:${channel}`
   return serveOpsSnapshot(key, refresh, () => buildUpdateChannel(channel))
 }

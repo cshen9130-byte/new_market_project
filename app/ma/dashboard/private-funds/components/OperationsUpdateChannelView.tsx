@@ -15,8 +15,9 @@ const POLICY_COLOR: Record<string, string> = {
   email: "#1A73E8",
 }
 
-function formatCount(count: number): string {
-  return count.toLocaleString("zh-CN")
+function formatCount(count: number | null | undefined): string {
+  const n = Number(count)
+  return (Number.isFinite(n) ? n : 0).toLocaleString("zh-CN")
 }
 
 function formatShare(share: number): string {
@@ -122,6 +123,7 @@ function fofHistoryOption(history: UpdateWeekStat[]): Record<string, unknown> {
       { name: "拿到净值", type: "bar", stack: "friday", data: weeks.map((row) => row.ok_products), itemStyle: { color: "#16a34a" }, barMaxWidth: 22 },
       { name: "仅空返回", type: "bar", stack: "friday", data: weeks.map((row) => row.empty_products), itemStyle: { color: "#f59e0b" }, barMaxWidth: 22 },
       { name: "失败", type: "bar", stack: "friday", data: weeks.map((row) => row.error_products), itemStyle: { color: "#dc2626" }, barMaxWidth: 22 },
+      { name: "事后补回", type: "line", data: weeks.map((row) => row.filled_later_products ?? 0), itemStyle: { color: "#2563eb" }, lineStyle: { color: "#2563eb", width: 2 }, symbol: "circle", symbolSize: 6 },
     ],
   }
 }
@@ -1229,6 +1231,7 @@ export function OperationsUpdateChannelView({
           { label: "拿到净值", value: formatCount(last.ok_products) },
           { label: "仅空返回", value: formatCount(last.empty_products) },
           { label: "失败", value: formatCount(last.error_products) },
+          { label: "事后补回", value: formatCount(last.filled_later_products) },
           { label: "调用批次", value: formatCount(last.batches) },
           { label: "补历史", value: formatCount(last.backfill_products) },
         ]
@@ -1272,7 +1275,7 @@ export function OperationsUpdateChannelView({
                 统计时间 {formatGeneratedAt(visible.generated_at)}
               </span>
             </div>
-            <div className={`mt-3 grid gap-2 ${isFof ? "grid-cols-2 md:grid-cols-6" : "grid-cols-2 md:grid-cols-5"}`}>
+            <div className={`mt-3 grid gap-2 ${isFof ? "grid-cols-2 md:grid-cols-4 xl:grid-cols-7" : "grid-cols-2 md:grid-cols-5"}`}>
               {cards.map((card) => (
                 <div key={card.label} className="rounded-lg border px-3 py-2">
                   <div className="text-[11px] text-zinc-400">{card.label}</div>
@@ -1311,7 +1314,7 @@ export function OperationsUpdateChannelView({
               <h3 className="text-xs font-semibold text-foreground">{isFof ? "各周火富牛抓取" : "各周邮箱写入"}</h3>
               <p className="mt-0.5 text-[11px] leading-4 text-zinc-400">
                 {isFof
-                  ? "柱子是周五任务里的产品：拿到净值、只有空返回、或接口失败。某一周是空的，表示那周没跑周五任务，净值可能记在下一周。补历史的产品数在表里单独一列。"
+                  ? "柱子是周五任务里的产品：拿到净值、只有空返回、或接口失败。折线是事后补回：周五空返回/失败的产品，后来又对同一净值日抓到 ok。某一周柱子是空的，表示那周没跑周五任务。补历史的产品数在表里单独一列。"
                   : "按写入时间分周。产品按备案号去重，跟踪池更新是这周新邮件净值落在跟踪池里的只数。"}
               </p>
             </div>
@@ -1332,9 +1335,9 @@ export function OperationsUpdateChannelView({
                       <th className="px-3 py-1.5 text-right font-medium">拿到净值</th>
                       <th className="px-3 py-1.5 text-right font-medium">仅空返回</th>
                       <th className="px-3 py-1.5 text-right font-medium">失败</th>
+                      <th className="px-3 py-1.5 text-right font-medium">事后补回</th>
                       <th className="px-3 py-1.5 text-right font-medium">成功率</th>
                       <th className="px-3 py-1.5 text-right font-medium">成功条数</th>
-                      <th className="px-3 py-1.5 text-right font-medium">空返回条数</th>
                       <th className="px-3 py-1.5 text-right font-medium">调用批次</th>
                       <th className="px-4 py-1.5 text-right font-medium">补历史</th>
                     </tr>
@@ -1350,9 +1353,9 @@ export function OperationsUpdateChannelView({
                         <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.ok_products)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.empty_products)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.error_products)}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.filled_later_products)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums text-zinc-500">{rate(row.ok_products, row.products)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.ok_rows)}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.empty_rows)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(row.batches)}</td>
                         <td className="px-4 py-1.5 text-right tabular-nums">{formatCount(row.backfill_products)}</td>
                       </tr>

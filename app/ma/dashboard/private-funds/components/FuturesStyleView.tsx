@@ -13,8 +13,10 @@ const VISIBLE_FACTORS_STORAGE_KEY = "futures_style_visible_factor_keys"
  * 基差 / 长期截面 / 量价相关性 / 长期规则 / 库存 / 利润
  * + 同属 CTA/REPORT_FIT 的基差动量、中期动量 → 默认共 8 个 (<10)
  */
+/** Core CTA set: 期限基差(near/far) + 基差(spot) + peers. Prefs key report_basis kept stable. */
 const GUOJUN_CTA_SIX_KEYS = [
   "report_basis",
+  "report_basis_spot",
   "report_cs_long",
   "report_pv_corr",
   "report_long_rule",
@@ -107,15 +109,17 @@ function formatReturnPct(value: number): string {
 }
 
 function formatCumulativeAxisLabel(value: string, index: number, allDates: string[]): string {
+  // 国君 CTA report style: concise M/D labels (e.g. 8/3, 9/1), no Chinese 月
   const d = new Date(`${value}T12:00:00`)
   if (Number.isNaN(d.getTime())) return ""
   const day = d.getDate()
   const month = d.getMonth() + 1
+  const label = `${month}/${day}`
   const prev = index > 0 ? new Date(`${allDates[index - 1]}T12:00:00`) : null
   if (!prev || prev.getMonth() !== d.getMonth()) {
-    if (day <= 3) return `${month}月`
+    if (day <= 3) return label
   }
-  if ([8, 15, 22, 29].includes(day)) return String(day)
+  if ([8, 15, 22, 29].includes(day)) return label
   return ""
 }
 

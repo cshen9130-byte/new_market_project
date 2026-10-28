@@ -21,7 +21,8 @@ import {
 import { useRouter } from "next/navigation"
 import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
 import { computeFundNavMetrics, type FundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
-import { isWeekendIsoDate } from "@/lib/nav-trading-day"
+import { isWeekendIsoDate, countChinaTradingDaysInclusive } from "@/lib/nav-trading-day"
+import { computePeriodStats } from "./components/computePeriodStats"
 import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, computeHeadlineRiskMetrics, type HeadlineRiskFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
@@ -1102,7 +1103,16 @@ export default function PrivateFundDetailPage() {
   const [showDateRange,    setShowDateRange]    = useState(false)
   const [excessByDivision, setExcessByDivision] = useState(false)
   const [intervalExcess, setIntervalExcess] = useState(false)
-  const [headlineRiskFreq, setHeadlineRiskFreq] = useState<HeadlineRiskFrequency>("周频")
+  const [headlineRiskFreq, setHeadlineRiskFreq] = useState<HeadlineRiskFrequency>("日频")
+
+  // When 净值频率 is applied as 日/周/月, drive header DD/Sharpe from the same series.
+  useEffect(() => {
+    if (appliedFreq === "日频" || appliedFreq === "周频" || appliedFreq === "月频") {
+      setHeadlineRiskFreq(appliedFreq)
+    } else if (appliedFreq === "全部") {
+      setHeadlineRiskFreq("日频")
+    }
+  }, [appliedFreq])
 
   const headlineRisk = useMemo(() => {
     const series = data?.nav_series
@@ -1263,7 +1273,14 @@ export default function PrivateFundDetailPage() {
   function handleApply() {
     setAppliedFrom(filterFrom)
     setAppliedTo(filterTo)
-    setAppliedFreq(filterFreq as NavFrequencyFilter)
+    const nextFreq = filterFreq as NavFrequencyFilter
+    setAppliedFreq(nextFreq)
+    // Keep header risk口径 on the same frequency as 净值频率 (日/周/月).
+    if (nextFreq === "日频" || nextFreq === "周频" || nextFreq === "月频") {
+      setHeadlineRiskFreq(nextFreq)
+    } else if (nextFreq === "全部") {
+      setHeadlineRiskFreq("日频")
+    }
     setAppliedBench(filterBench)
   }
   function handleReset() {
@@ -1290,6 +1307,7 @@ export default function PrivateFundDetailPage() {
     setAppliedFrom("")
     setAppliedTo("")
     setAppliedFreq("全部")
+    setHeadlineRiskFreq("日频")
     setAppliedBench(benchmarkKey)
   }
 
@@ -1514,10 +1532,8 @@ export default function PrivateFundDetailPage() {
       ? (1 + benchPeriod !== 0 ? (1 + fundPeriod) / (1 + benchPeriod) - 1 : NaN)
       : fundPeriod - benchPeriod
     if (!isFinite(periodRet)) return null
-    const startTs = new Date(dates[0]).getTime()
-    const endTs = new Date(dates[dates.length - 1]).getTime()
-    const years = Math.max((endTs - startTs) / 86400000 / 365.25, 1 / 365)
-    const annRet = Math.pow(1 + periodRet, 1 / years) - 1
+    const nTd = Math.max(1, countChinaTradingDaysInclusive(dates[0], dates[dates.length - 1]))
+    const annRet = Math.pow(1 + periodRet, 252 / nTd) - 1
     built.periodRet = periodRet
     built.sharpe = isFinite(built.annVol) && built.annVol > 0 && isFinite(annRet) ? (annRet - 0.02) / built.annVol : NaN
     built.calmar = isFinite(annRet) && built.maxDD >= 1e-4 ? annRet / built.maxDD : NaN
@@ -1558,275 +1574,19 @@ export default function PrivateFundDetailPage() {
 
   // ─── Period statistics ────────────────────────────────────────────────────
   const periodStats = useMemo(() => {
-    if (filteredNavRows.length < 3) return null
-
-    const _mean = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length
-    const _std  = (arr: number[], ddof = 1): number => {
-      if (arr.length <= ddof) return NaN
-      const m = _mean(arr)
-      return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - ddof))
-    }
-    const _skew = (arr: number[]): number => {
-      if (arr.length < 3) return NaN
-      const m = _mean(arr); const s = _std(arr)
-      if (!isFinite(s) || s === 0) return NaN
-      return arr.reduce((sum, v) => sum + ((v - m) / s) ** 3, 0) / arr.length
-    }
-    const _kurt = (arr: number[]): number => {
-      if (arr.length < 4) return NaN
-      const m = _mean(arr); const s = _std(arr)
-      if (!isFinite(s) || s === 0) return NaN
-      return arr.reduce((sum, v) => sum + ((v - m) / s) ** 4, 0) / arr.length - 3
-    }
-    const _var95 = (arr: number[]): number => {
-      if (arr.length < 5) return NaN
-      return [...arr].sort((a, b) => a - b)[Math.floor(arr.length * 0.05)]
-    }
-
-    const navVals   = filteredNavRows.map(r => getNavFieldValue(r, filterNavType))
-    const dateTsArr = filteredNavRows.map(r => new Date(r.price_date).getTime())
-    const totalDays = (dateTsArr[dateTsArr.length - 1] - dateTsArr[0]) / 86400000
-    const years     = Math.max(totalDays / 365.25, 1 / 365)
-
-    // Median gap → annualization factor
-    const gaps = []
-    for (let i = 1; i < dateTsArr.length; i++) gaps.push((dateTsArr[i] - dateTsArr[i - 1]) / 86400000)
-    gaps.sort((a, b) => a - b)
-    const medGap = gaps[Math.floor(gaps.length / 2)] || 1
-    const ppy = medGap <= 2 ? 252 : medGap <= 10 ? 52 : medGap <= 20 ? 26 : medGap <= 45 ? 12 : 4
-
-    // Fund returns
-    const fundRets: number[] = []
-    for (let i = 1; i < navVals.length; i++) {
-      fundRets.push(navVals[i - 1] > 0 ? navVals[i] / navVals[i - 1] - 1 : 0)
-    }
-
-    const fundPeriodRet = navVals[navVals.length - 1] / navVals[0] - 1
-    const fundAnnRet    = Math.pow(1 + fundPeriodRet, 1 / years) - 1
-    const fundAnnVol    = fundRets.length > 1 ? _std(fundRets) * Math.sqrt(ppy) : NaN
-    const RF = 0.02
-    const fundSharpe = isFinite(fundAnnVol) && fundAnnVol > 0 ? (fundAnnRet - RF) / fundAnnVol : NaN
-
-    // Drawdown + recovery + no-new-high streak
-    let peak = navVals[0], peakTs = dateTsArr[0]
-    let maxDD = 0, troughTs = dateTsArr[0], maxDDPeakVal = navVals[0], maxDDPeakTs = dateTsArr[0]
-    let longestNoNewHigh = 0, curHighTs = dateTsArr[0]
-    let longestNoNewHighStartTs = dateTsArr[0], longestNoNewHighEndTs = dateTsArr[0]
-    for (let i = 0; i < navVals.length; i++) {
-      if (navVals[i] > peak) { peak = navVals[i]; peakTs = dateTsArr[i]; curHighTs = dateTsArr[i] }
-      else {
-        const d = (dateTsArr[i] - curHighTs) / 86400000
-        if (d > longestNoNewHigh) {
-          longestNoNewHigh = d
-          longestNoNewHighStartTs = curHighTs
-          longestNoNewHighEndTs = dateTsArr[i]
-        }
-      }
-      const dd = (peak - navVals[i]) / peak
-      if (dd > maxDD) { maxDD = dd; troughTs = dateTsArr[i]; maxDDPeakVal = peak; maxDDPeakTs = peakTs }
-    }
-    let ddRecoveryDays: number | null = null
-    let ddRecoveryEndTs: number | null = null
-    for (let i = 0; i < navVals.length; i++) {
-      if (dateTsArr[i] > troughTs && navVals[i] >= maxDDPeakVal) {
-        ddRecoveryDays = Math.round((dateTsArr[i] - troughTs) / 86400000)
-        ddRecoveryEndTs = dateTsArr[i]
-        break
-      }
-    }
-
-    const fundCalmar = maxDD > 0 ? fundAnnRet / maxDD : NaN
-    const downRets   = fundRets.filter(r => r < 0)
-    const fundDsr    = downRets.length > 0 ? Math.sqrt(downRets.reduce((s, r) => s + r * r, 0) / downRets.length) * Math.sqrt(ppy) : 0
-    const fundSortino = fundDsr > 0 ? (fundAnnRet - RF) / fundDsr : NaN
-
-    const fund = {
-      periodRet: fundPeriodRet, annRet: fundAnnRet, annVol: fundAnnVol,
-      sharpe: fundSharpe, calmar: fundCalmar, downsideRisk: fundDsr,
-      maxDD, ddRecoveryDays, longestNoNewHighDays: Math.round(longestNoNewHigh),
-      maxDDInterval: formatDateRange(maxDDPeakTs, troughTs),
-      ddRecoveryInterval: ddRecoveryEndTs !== null ? formatDateRange(troughTs, ddRecoveryEndTs) : null,
-      longestNoNewHighInterval: formatDateRange(longestNoNewHighStartTs, longestNoNewHighEndTs),
-      sortino: fundSortino,
-      correlation: NaN, infoRatio: NaN, trackingError: NaN, alpha: NaN, beta: NaN,
-      skewness: _skew(fundRets), kurtosis: _kurt(fundRets), var95: _var95(fundRets),
-    }
-
-    // ── Benchmark ──────────────────────────────────────────────────────────
-    type BenchStats = typeof fund & { ddRecoveryDays: number | null }
-    type PeriodStatBlock = typeof fund
-    let bench: BenchStats | null = null
-    let excess: PeriodStatBlock | null = null
-
-    if (appliedBench && benchmarkData.length) {
-      const benchAligned = buildAlignedBenchmarkValues(filteredNavRows, benchmarkData, "nav", filterNavType)
-      const baseIdx = benchAligned.findIndex(v => v !== null)
-
-      if (baseIdx >= 0 && baseIdx < navVals.length - 1) {
-        const fRetsAl: number[] = [], bRetsAl: number[] = []
-        for (let i = Math.max(1, baseIdx); i < benchAligned.length; i++) {
-          const bp = benchAligned[i - 1], bc = benchAligned[i]
-          if (bp !== null && bc !== null && bp > 0) {
-            fRetsAl.push(navVals[i] / navVals[i - 1] - 1)
-            bRetsAl.push(bc / bp - 1)
-          }
-        }
-
-        const bLevels: Array<{ v: number; ts: number }> = []
-        for (let i = 0; i < benchAligned.length; i++) {
-          if (benchAligned[i] !== null) bLevels.push({ v: benchAligned[i]!, ts: dateTsArr[i] })
-        }
-
-        if (bLevels.length >= 2 && bRetsAl.length >= 2) {
-          const bPeriodRet = bLevels[bLevels.length - 1].v / bLevels[0].v - 1
-          const bAnnRet    = Math.pow(1 + bPeriodRet, 1 / years) - 1
-          const bAnnVol    = _std(bRetsAl) * Math.sqrt(ppy)
-          const bSharpe    = isFinite(bAnnVol) && bAnnVol > 0 ? (bAnnRet - RF) / bAnnVol : NaN
-
-          let bPeak = bLevels[0].v, bPeakTs = bLevels[0].ts, bMaxDD = 0, bTroughTs = bLevels[0].ts
-          let bMaxDDPeakVal = bLevels[0].v, bMaxDDPeakTs = bLevels[0].ts
-          let bLongestNoNewHigh = 0, bCurHighTs = bLevels[0].ts
-          let bLongestNoNewHighStartTs = bLevels[0].ts, bLongestNoNewHighEndTs = bLevels[0].ts
-          for (const { v, ts } of bLevels) {
-            if (v > bPeak) { bPeak = v; bPeakTs = ts; bCurHighTs = ts }
-            else {
-              const d = (ts - bCurHighTs) / 86400000
-              if (d > bLongestNoNewHigh) {
-                bLongestNoNewHigh = d
-                bLongestNoNewHighStartTs = bCurHighTs
-                bLongestNoNewHighEndTs = ts
-              }
-            }
-            const dd = (bPeak - v) / bPeak
-            if (dd > bMaxDD) { bMaxDD = dd; bTroughTs = ts; bMaxDDPeakVal = bPeak; bMaxDDPeakTs = bPeakTs }
-          }
-          let bDDRecoveryDays: number | null = null
-          let bDDRecoveryEndTs: number | null = null
-          for (const { v, ts } of bLevels) {
-            if (ts > bTroughTs && v >= bMaxDDPeakVal) {
-              bDDRecoveryDays = Math.round((ts - bTroughTs) / 86400000)
-              bDDRecoveryEndTs = ts
-              break
-            }
-          }
-
-          const bCalmar      = bMaxDD > 0 ? bAnnRet / bMaxDD : NaN
-          const bDownRets    = bRetsAl.filter(r => r < 0)
-          const bDsr         = bDownRets.length > 0 ? Math.sqrt(bDownRets.reduce((s, r) => s + r * r, 0) / bDownRets.length) * Math.sqrt(ppy) : 0
-          const bSortino     = bDsr > 0 ? (bAnnRet - RF) / bDsr : NaN
-
-          const mf = _mean(fRetsAl), mb = _mean(bRetsAl)
-          const cov  = fRetsAl.reduce((s, v, i) => s + (v - mf) * (bRetsAl[i] - mb), 0) / fRetsAl.length
-          const sf   = _std(fRetsAl), sb = _std(bRetsAl)
-          const corr = isFinite(sf) && sf > 0 && isFinite(sb) && sb > 0 ? cov / (sf * sb) : NaN
-          const varB = bRetsAl.reduce((s, v) => s + (v - mb) ** 2, 0) / bRetsAl.length
-          const beta = varB > 0 ? cov / varB : NaN
-          const alpha = isFinite(beta) ? fundAnnRet - (RF + beta * (bAnnRet - RF)) : NaN
-
-          const excessRets = excessByDivision
-            ? fRetsAl.map((r, i) => (1 + r) / (1 + bRetsAl[i]) - 1)
-            : fRetsAl.map((r, i) => r - bRetsAl[i])
-          const trackingError = excessRets.length > 1 ? _std(excessRets) * Math.sqrt(ppy) : NaN
-          const excessAnnRet  = excessByDivision
-            ? Math.pow((1 + fundPeriodRet) / (1 + bPeriodRet), 1 / years) - 1
-            : fundAnnRet - bAnnRet
-          const infoRatio = isFinite(trackingError) && trackingError > 0 ? excessAnnRet / trackingError : NaN
-
-          if (excessByDivision && excessRets.length >= 2) {
-            const exPeriodRet = (1 + fundPeriodRet) / (1 + bPeriodRet) - 1
-            const exAnnRet = Math.pow(1 + exPeriodRet, 1 / years) - 1
-            const exAnnVol = _std(excessRets) * Math.sqrt(ppy)
-            const exSharpe = isFinite(exAnnVol) && exAnnVol > 0 ? (exAnnRet - RF) / exAnnVol : NaN
-
-            const exLevels: Array<{ v: number; ts: number }> = []
-            let exNav = 1
-            let retIdx = 0
-            for (let i = Math.max(1, baseIdx); i < benchAligned.length; i++) {
-              const bp = benchAligned[i - 1], bc = benchAligned[i]
-              if (bp !== null && bc !== null && bp > 0 && navVals[i - 1] > 0) {
-                if (exLevels.length === 0) exLevels.push({ v: 1, ts: dateTsArr[i - 1] })
-                exNav *= (1 + excessRets[retIdx])
-                exLevels.push({ v: exNav, ts: dateTsArr[i] })
-                retIdx++
-              }
-            }
-
-            let exPeak = exLevels[0]?.v ?? 1, exPeakTs = exLevels[0]?.ts ?? dateTsArr[0]
-            let exMaxDD = 0, exTroughTs = exPeakTs, exMaxDDPeakVal = exPeak, exMaxDDPeakTs = exPeakTs
-            let exLongestNoNewHigh = 0, exCurHighTs = exPeakTs
-            let exLongestNoNewHighStartTs = exPeakTs, exLongestNoNewHighEndTs = exPeakTs
-            for (const { v, ts } of exLevels) {
-              if (v > exPeak) { exPeak = v; exPeakTs = ts; exCurHighTs = ts }
-              else {
-                const d = (ts - exCurHighTs) / 86400000
-                if (d > exLongestNoNewHigh) {
-                  exLongestNoNewHigh = d
-                  exLongestNoNewHighStartTs = exCurHighTs
-                  exLongestNoNewHighEndTs = ts
-                }
-              }
-              const dd = (exPeak - v) / exPeak
-              if (dd > exMaxDD) { exMaxDD = dd; exTroughTs = ts; exMaxDDPeakVal = exPeak; exMaxDDPeakTs = exPeakTs }
-            }
-            let exDDRecoveryDays: number | null = null
-            let exDDRecoveryEndTs: number | null = null
-            for (const { v, ts } of exLevels) {
-              if (ts > exTroughTs && v >= exMaxDDPeakVal) {
-                exDDRecoveryDays = Math.round((ts - exTroughTs) / 86400000)
-                exDDRecoveryEndTs = ts
-                break
-              }
-            }
-
-            const exCalmar = exMaxDD > 0 ? exAnnRet / exMaxDD : NaN
-            const exDownRets = excessRets.filter(r => r < 0)
-            const exDsr = exDownRets.length > 0
-              ? Math.sqrt(exDownRets.reduce((s, r) => s + r * r, 0) / exDownRets.length) * Math.sqrt(ppy)
-              : 0
-            const exSortino = exDsr > 0 ? (exAnnRet - RF) / exDsr : NaN
-
-            excess = {
-              periodRet: exPeriodRet, annRet: exAnnRet, annVol: exAnnVol,
-              sharpe: exSharpe, calmar: exCalmar, downsideRisk: exDsr,
-              maxDD: exMaxDD, ddRecoveryDays: exDDRecoveryDays,
-              longestNoNewHighDays: Math.round(exLongestNoNewHigh),
-              maxDDInterval: formatDateRange(exMaxDDPeakTs, exTroughTs),
-              ddRecoveryInterval: exDDRecoveryEndTs !== null ? formatDateRange(exTroughTs, exDDRecoveryEndTs) : null,
-              longestNoNewHighInterval: formatDateRange(exLongestNoNewHighStartTs, exLongestNoNewHighEndTs),
-              sortino: exSortino,
-              correlation: NaN, infoRatio: NaN, trackingError: NaN, alpha: NaN, beta: NaN,
-              skewness: _skew(excessRets), kurtosis: _kurt(excessRets), var95: _var95(excessRets),
-            }
-          }
-
-          bench = {
-            periodRet: bPeriodRet, annRet: bAnnRet, annVol: bAnnVol,
-            sharpe: bSharpe, calmar: bCalmar, downsideRisk: bDsr,
-            maxDD: bMaxDD, ddRecoveryDays: bDDRecoveryDays, longestNoNewHighDays: Math.round(bLongestNoNewHigh),
-            maxDDInterval: formatDateRange(bMaxDDPeakTs, bTroughTs),
-            ddRecoveryInterval: bDDRecoveryEndTs !== null ? formatDateRange(bTroughTs, bDDRecoveryEndTs) : null,
-            longestNoNewHighInterval: formatDateRange(bLongestNoNewHighStartTs, bLongestNoNewHighEndTs),
-            sortino: bSortino,
-            correlation: 1, infoRatio: NaN, trackingError: 0, alpha: 0, beta: 1,
-            skewness: _skew(bRetsAl), kurtosis: _kurt(bRetsAl), var95: _var95(bRetsAl),
-          }
-          // overwrite fund-relative fields on fund itself
-          fund.correlation    = corr
-          fund.infoRatio      = infoRatio
-          fund.trackingError  = trackingError
-          fund.alpha          = alpha
-          fund.beta           = beta
-        }
-      }
-    }
-
-    return {
-      dateRange: `${filteredNavRows[0].price_date} ~ ${filteredNavRows[filteredNavRows.length - 1].price_date}`,
-      fund,
-      bench,
-      excess,
-    }
-  }, [filteredNavRows, benchmarkData, filterNavType, appliedBench, excessByDivision])
+    return computePeriodStats(
+      filteredNavRows,
+      filterNavType,
+      benchmarkData,
+      !!appliedBench,
+      excessByDivision,
+      // Prefer filter/operation start so 运作以来 n matches 运作天数 (not first NAV only).
+      {
+        startDate: activeFrom || filteredNavRows[0]?.price_date,
+        endDate: filteredNavRows[filteredNavRows.length - 1]?.price_date,
+      },
+    )
+  }, [filteredNavRows, benchmarkData, filterNavType, appliedBench, excessByDivision, activeFrom])
 
   const yDomain = useMemo(() => {
     if (!activeChartData.length) return ["auto", "auto"] as [string, string]
@@ -2622,6 +2382,7 @@ export default function PrivateFundDetailPage() {
               showExcess={chartMode === "return" && !!appliedBench && excessSeriesVisible}
               benchmarkLabel={benchmarkLabel}
               returnLabelMode={returnLabelMode}
+              episodeMarks={returnChartEpisodeMarks}
               materialMarks={materialChartMarks}
               onMaterialMarkClick={handleMaterialMarkClick}
             />
@@ -2887,199 +2648,6 @@ export default function PrivateFundDetailPage() {
           })()}
         </div>
       )}
-
-      {/* Second copy sits above 动态回撤. With no series it is a duplicate empty 平台数据. */}
-      {activeChartData.length > 1 && (
-      <div className="mt-4 flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
-      {seriesLoading && activeChartData.length <= 1 && (
-        <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
-          <div className="text-sm font-semibold text-zinc-800 mb-2">净值走势</div>
-          <div className="flex-1 rounded-lg bg-zinc-100 animate-pulse" />
-          <p className="text-center text-xs text-zinc-400 mt-3">加载净值曲线…</p>
-        </div>
-      )}
-      {activeChartData.length > 1 && (
-        <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
-          <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-start justify-between mb-2 flex-shrink-0 gap-3">
-            <div>
-              <div className="text-sm font-semibold text-zinc-800">
-              {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
-            </div>
-              {activeFrom && activeTo && (
-                <div className="text-[11px] text-zinc-400 mt-1 tabular-nums">
-                  {activeFrom} ~ {activeTo}
-                </div>
-              )}
-              <NavChartSeriesLegend
-                chartMode={chartMode}
-                navTypeLabel={filterNavType}
-                benchmarkLabel={benchmarkLabel}
-                hasBenchmark={!!appliedBench}
-                fundVisible={fundSeriesVisible}
-                benchVisible={benchSeriesVisible}
-                onToggleFund={() => setFundSeriesVisible((v) => !v)}
-                onToggleBench={() => setBenchSeriesVisible((v) => !v)}
-                excessVisible={excessSeriesVisible}
-                onToggleExcess={() => setExcessSeriesVisible((v) => !v)}
-              />
-            </div>
-            <div className="flex flex-col items-end gap-1 flex-shrink-0">
-              <div className="inline-flex text-xs">
-              <button
-                  type="button"
-                onClick={() => setChartMode("return")}
-                  className={`px-3 py-1 transition-colors border rounded-l ${
-                  chartMode === "return"
-                      ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
-                      : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
-                }`}
-              >
-                收益曲线
-              </button>
-              <button
-                  type="button"
-                onClick={() => setChartMode("nav")}
-                  className={`px-3 py-1 transition-colors border rounded-r -ml-px ${
-                  chartMode === "nav"
-                      ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
-                      : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
-                }`}
-              >
-                净值曲线
-              </button>
-              </div>
-              {chartMode === "return" && (
-                <div className="inline-flex text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setReturnLabelMode("cumulative")}
-                    className={`px-2.5 py-1 transition-colors border rounded-l ${
-                      returnLabelMode === "cumulative"
-                        ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
-                        : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
-                    }`}
-                  >
-                    累计收益
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReturnLabelMode("period")}
-                    className={`px-2.5 py-1 transition-colors border rounded-r -ml-px ${
-                      returnLabelMode === "period"
-                        ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
-                        : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
-                    }`}
-                  >
-                    涨跌幅
-                  </button>
-                </div>
-              )}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors"
-                    aria-label="图表菜单"
-                  >
-                    <Menu className="h-4 w-4" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[7.5rem] text-xs">
-                  <DropdownMenuItem onClick={handleDownloadNavChartImage}>下载图片</DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleDownloadNavChartData}>下载数据</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setNavChartLightboxOpen(true)}>查看大图</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
-          <div className="flex-1 min-h-0">
-            <NavPerformanceEChart
-              data={activeChartData}
-              chartMode={chartMode}
-              navTypeLabel={filterNavType}
-              yDomain={yDomain}
-              showDots={navChartShowDots}
-              showFund={fundSeriesVisible}
-              showBench={!!appliedBench && benchSeriesVisible}
-              showExcess={chartMode === "return" && !!appliedBench && excessSeriesVisible}
-              benchmarkLabel={benchmarkLabel}
-              returnLabelMode={returnLabelMode}
-              episodeMarks={returnChartEpisodeMarks}
-              materialMarks={materialChartMarks}
-              onMaterialMarkClick={handleMaterialMarkClick}
-            />
-          </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── NAV Table ─────────────────────────────────────── */}
-      <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
-        <div className="flex items-center justify-between mb-3 flex-shrink-0">
-          <div className="flex items-center gap-1.5">
-            <div className="text-sm font-semibold text-zinc-700">{navTableTitle}</div>
-            {nav_data_source === "team" && (
-              <span className="relative group/help inline-flex">
-                <HelpCircle className="h-3.5 w-3.5 text-zinc-400 cursor-help" aria-label="团队净值说明" />
-                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 rounded text-xs leading-snug text-white bg-zinc-700 whitespace-nowrap opacity-0 group-hover/help:opacity-100 transition-opacity z-50 shadow-md">
-                  团队净值仅团队内部可见，可在运维进行净值管理。
-                  <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-[5px] border-transparent border-t-zinc-700" />
-                </span>
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                if (!appliedBench) return
-                setShowTableBenchmarkChg((v) => !v)
-              }}
-              disabled={!appliedBench}
-              title={appliedBench ? undefined : "请先选择业绩基准并点击开始分析"}
-              className={`inline-flex items-center text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                showTableBenchmarkChg && appliedBench
-                  ? "text-red-600 font-medium"
-                  : "text-zinc-500 hover:text-zinc-800 disabled:hover:text-zinc-500"
-              }`}
-            >
-              {showTableBenchmarkChg && appliedBench ? "隐藏基准涨跌幅" : "显示基准涨跌幅"}
-            </button>
-            <button
-              onClick={() => exportNavCsv(
-                filteredNavRows,
-                filterNavType,
-                `${info.product_name}_${navTableTitle}_${new Date().toISOString().slice(0, 10)}.csv`,
-                {
-                  showBenchmarkChg: !!(showTableBenchmarkChg && appliedBench),
-                  benchmarkLabel,
-                  benchmarkChgByDate,
-                  showExcessChg: chartMode === "return" && !!appliedBench && excessSeriesVisible,
-                  excessChgByDate,
-                },
-              )}
-              disabled={filteredNavRows.length === 0}
-              className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Download className="h-3.5 w-3.5" />
-              导出
-            </button>
-          </div>
-        </div>
-        <NavTable
-          rows={filteredNavRows}
-          navType={filterNavType}
-          showBenchmarkChg={!!(showTableBenchmarkChg && appliedBench)}
-          benchmarkLabel={benchmarkLabel}
-          benchmarkChgByDate={benchmarkChgByDate}
-          showExcessChg={chartMode === "return" && !!appliedBench && excessSeriesVisible}
-          excessChgByDate={excessChgByDate}
-          pending={seriesLoading}
-        />
-      </div>
-      </div>
-      )}{/* end flex chart+table copy */}
 
       {/* ── Dynamic Drawdown Chart ───────────────────────── */}
       {drawdownChartData.length > 1 && (

@@ -36,8 +36,9 @@ export type UpdateWeekStat = {
   ok_products: number
   empty_products: number
   error_products: number
+  /** Friday empty/error products that later got ok for an attempted price_date. */
+  filled_later_products: number
   ok_rows: number
-  empty_rows: number
   error_rows: number
   batches: number
   min_date: string | null

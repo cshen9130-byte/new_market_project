@@ -286,6 +286,11 @@ def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
     Monthly keeps the last trading day of each calendar month.
     Daily keeps every trading day. The kept row keeps its real date, so a
     report that ends mid-week still includes that week.
+
+    For weekly/monthly, also keep the first trading-day NAV as an anchor when
+    it is not already the first sampled point. Otherwise a series that starts
+    mid-week (or on Monday before Friday) drops the inception/first NAV and
+    cumulative YTD/since-inception collapse to the first week-end move.
     """
     normalized = normalize_nav_frequency(freq)
     work = _trading_day_nav(df)
@@ -303,6 +308,13 @@ def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
         sampled = work
 
     sampled = sampled.drop(columns="_bucket", errors="ignore")
+    if normalized in ("weekly", "monthly") and not sampled.empty:
+        first = work.drop(columns="_bucket", errors="ignore").iloc[[0]]
+        first_date = pd.Timestamp(first["date"].iloc[0]).normalize()
+        sampled_first = pd.Timestamp(sampled["date"].iloc[0]).normalize()
+        if first_date != sampled_first:
+            sampled = pd.concat([first, sampled], ignore_index=True)
+            sampled = sampled.drop_duplicates(subset=["date"], keep="first")
     sampled = sampled.sort_values("date").reset_index(drop=True)
     sampled["daily_ret"] = sampled["adj_nav"].pct_change()
     sampled["pct_chg"] = sampled["daily_ret"].apply(
@@ -633,20 +645,12 @@ def compute_metrics(
     total_return = end_nav / start_nav - 1.0
 
     returns, periods_per_year = risk_return_series(series, nav_frequency)
-    years = max((series.index[-1] - series.index[0]).days / 365.25, 1 / 365.25)
-    annual_return = (end_nav / start_nav) ** (1 / years) - 1.0
     volatility = returns.std(ddof=1) * np.sqrt(periods_per_year) if len(returns) > 1 else 0.0
 
     wealth = series / start_nav
     roll_max = wealth.cummax()
     drawdown = (wealth - roll_max) / roll_max
     max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
-
-    # Sharpe here follows the house convention of annualized return over
-    # annualized volatility (no risk-free subtraction), matching the historical
-    # reference reports (e.g. 20.57% / 7.09% = 2.90).
-    sharpe = annual_return / volatility if volatility > 0 else 0.0
-    calmar = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
 
     win_rate = (returns > 0).sum() / len(returns) if len(returns) > 0 else 0.0
     max_daily_gain = returns.max() if len(returns) > 0 else 0.0
@@ -656,9 +660,6 @@ def compute_metrics(
     bench_returns = bench_nav.pct_change().dropna()
     bench_start = float(bench_nav.iloc[0])
     bench_end = float(bench_nav.iloc[-1])
-    bench_years = max((bench_nav.index[-1] - bench_nav.index[0]).days / 365.25, 1 / 365.25)
-    bench_annual_return = (bench_end / bench_start) ** (1 / bench_years) - 1.0
-    annual_excess = annual_return - bench_annual_return
 
     ref_date = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else work["date"].iloc[-1]
     kind = normalize_report_kind(report_kind)
@@ -751,6 +752,19 @@ def compute_metrics(
     if span_end < inception:
         span_end = inception
 
+    # 年化收益: (1+R)^(252/n)-1 with n = 运作天数 (trading days inception→cutoff inclusive).
+    # Keep total_return from first→last NAV of the (possibly weekly) series; do NOT use weekly point count.
+    trading_days_n = max(1, count_cn_trading_days(inception, span_end))
+    annual_return = (end_nav / start_nav) ** (252 / trading_days_n) - 1.0
+    bench_trading_days_n = max(1, count_cn_trading_days(bench_nav.index[0], bench_nav.index[-1]))
+    bench_annual_return = (bench_end / bench_start) ** (252 / bench_trading_days_n) - 1.0
+    annual_excess = annual_return - bench_annual_return
+    # Sharpe here follows the house convention of annualized return over
+    # annualized volatility (no risk-free subtraction), matching the historical
+    # reference reports (e.g. 20.57% / 7.09% = 2.90).
+    sharpe = annual_return / volatility if volatility > 0 else 0.0
+    calmar = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
+
     return {
         "start_date": inception,
         # Report as-of date (selected week/month end), not last NAV observation.
@@ -774,7 +788,7 @@ def compute_metrics(
         "ytd_bench": ytd_bench,
         "bench_total": bench_total,
         "excess_total": excess_total,
-        "trading_days": count_cn_trading_days(inception, span_end),
+        "trading_days": trading_days_n,
         "win_rate": win_rate,
         "max_daily_gain": max_daily_gain,
         "max_daily_loss": max_daily_loss,
@@ -1247,10 +1261,6 @@ def _prepare_report_context(
 ) -> dict:
     kind = normalize_report_kind(report_kind)
     raw_df = load_nav_data(nav_file)
-    first_adj = float(raw_df["adj_nav"].iloc[0]) if len(raw_df) > 0 else 1.0
-    if first_adj > 0 and abs(first_adj - 1.0) > 1e-6:
-        raw_df = raw_df.copy()
-        raw_df["adj_nav"] = raw_df["adj_nav"] / first_adj
     as_of = pd.Timestamp(week_end).normalize() if week_end else None
     report_week_begin = pd.Timestamp(week_begin).normalize() if week_begin else None
     if as_of is not None:
@@ -1267,6 +1277,8 @@ def _prepare_report_context(
         raise ValueError(
             f"报告开始日期 {report_week_begin.date()} 不能晚于结束日期 {as_of.date()}"
         )
+    # Absolute tip NAV for 最新净值 — never the renormalized wealth index.
+    true_end_nav = float(raw_df["adj_nav"].iloc[-1]) if len(raw_df) > 0 else 1.0
     # Product establishment date wins. Otherwise the first trading-day NAV,
     # before weekly/monthly folding. Weekend forward-fills are not a start date.
     official_inception = _coerce_inception_date(inception_date)
@@ -1277,25 +1289,33 @@ def _prepare_report_context(
     operating_end = pd.Timestamp(trading_raw["date"].iloc[-1]).normalize()
     if as_of is not None and as_of < operating_end:
         operating_end = as_of
-    df = apply_nav_frequency(raw_df, nav_frequency)
-
-    plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
-    daily_plot_df = raw_df[raw_df["date"] <= as_of].copy() if as_of is not None else raw_df.copy()
-    # Month cells follow the selected frequency, same as the product page
-    # 月度收益 table. Weekly uses the last trading day of each week, so a
-    # month that ends after Friday is not marked to that Friday.
-    interval_rows = compute_interval_returns(plot_df, fund_name=product_name)
+    # Metrics / YTD / risk follow nav_frequency (weekly series for 周频, daily for 日频).
+    # Chart sampling uses the same frequency. 运作天数 still uses calendar
+    # trading sessions via operating_end (not the resampled point count).
+    freq = normalize_nav_frequency(nav_frequency)
+    metrics_df = apply_nav_frequency(raw_df, freq)
+    plot_df = apply_nav_frequency(raw_df, freq)
+    if as_of is not None:
+        plot_df = plot_df[plot_df["date"] <= as_of].copy()
+        metrics_df = metrics_df[metrics_df["date"] <= as_of].copy()
+        daily_plot_df = raw_df[raw_df["date"] <= as_of].copy()
+    else:
+        daily_plot_df = raw_df.copy()
+    # Month / YTD cells use the same frequency series as the risk KPIs.
+    interval_rows = compute_interval_returns(metrics_df, fund_name=product_name)
     period_benchmark = None
     if kind == "monthly":
         period_benchmark = load_benchmark_calendar(nav_file)
         if period_benchmark is None:
             period_benchmark = daily_plot_df.set_index("date")["csi300"]
     metrics = compute_metrics(
-        df, as_of, nav_frequency, report_week_begin, report_kind=kind,
+        metrics_df, as_of, freq, report_week_begin, report_kind=kind,
         period_benchmark=period_benchmark,
         inception_date=inception_date,
         operating_end=operating_end,
     )
+    metrics["end_nav"] = true_end_nav
+    metrics["nav_frequency"] = freq
 
     cur_year = int(as_of.year) if as_of is not None else int(daily_plot_df["date"].dt.year.max())
     year_row = next((r for r in interval_rows if r["year"] == cur_year), None)
@@ -1308,6 +1328,7 @@ def _prepare_report_context(
         "interval_rows": interval_rows,
         "metrics": metrics,
         "as_of": as_of,
+        "nav_frequency": freq,
     }
 
 
@@ -1535,7 +1556,13 @@ def _make_weekly_report(
         ("初始净值", "1.0000"),
         ("年化收益", fmt_pct(metrics["annual_return"])),
         ("卡玛比率", f"{metrics['calmar']:.2f}"),
-        ("日度胜率", fmt_pct(metrics["win_rate"], signed=False)),
+        (
+            {"daily": "日度胜率", "weekly": "周度胜率", "monthly": "月度胜率"}.get(
+                metrics.get("nav_frequency") or ctx.get("nav_frequency") or "weekly",
+                "日度胜率",
+            ),
+            fmt_pct(metrics["win_rate"], signed=False),
+        ),
     ]
     for i, (label, value) in enumerate(table_items):
         row_y = bottom_y + bottom_h - 0.042 - i * 0.016
@@ -1960,7 +1987,11 @@ def make_report(
     metrics = ctx["metrics"]
     strategy_phrase = resolve_strategy_phrase(strategy_label, product_name, report_title)
     tagline = (product_tagline or "").strip()
-    if not tagline or tagline in (PRODUCT_TAGLINE, LEGACY_STRONG_STOCK_TAGLINE):
+    # Preserve an explicit generation override (incl. 中/高波动). Only fill when
+    # empty or still the old hard-coded 低波动 · 强势股 default.
+    if not tagline or tagline == LEGACY_STRONG_STOCK_TAGLINE:
+        tagline = f"低波动 · 稳健运作 · {strategy_phrase}"
+    elif tagline == PRODUCT_TAGLINE and strategy_phrase != "FOF策略":
         tagline = f"低波动 · 稳健运作 · {strategy_phrase}"
 
     if kind == "monthly" and layout == "review":

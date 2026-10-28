@@ -3,7 +3,7 @@ import { query } from "@/lib/db"
 import { isWeekendIsoDate } from "@/lib/nav-trading-day"
 import { getCustomFundByCode, tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
 import { ensureCustomFundNavFresh } from "@/lib/server/custom-fund-nav-daily-refresh"
-import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
+import { isChinaTradingDay, countChinaTradingDaysInclusive } from "@/lib/server/china-trading-calendar"
 import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-nav-query"
 import { clipRowsOnOrAfterInception } from "@/lib/server/nav-anomaly"
 import { lookupProductInceptionDate } from "@/lib/server/team-data-query-pg"
@@ -45,8 +45,8 @@ import { ensureFundElementTrackColumns } from "@/lib/server/fund-elements-write"
 
 export const dynamic = "force-dynamic"
 
-// Minimum elapsed days of NAV history before annualizing "since inception" return/Sharpe.
-const MIN_DAYS_FOR_ANNUALIZATION = 30
+// Annualize when there is at least one trading day in the NAV span.
+const MIN_TRADING_DAYS_FOR_ANNUALIZATION = 1
 
 function performanceFromSeries(nav_series: LegacyNavRow[]) {
   const first = nav_series[0]
@@ -57,15 +57,13 @@ function performanceFromSeries(nav_series: LegacyNavRow[]) {
     latestReinvestedNav !== null && firstReinvestedNav !== null && firstReinvestedNav > 0
       ? latestReinvestedNav / firstReinvestedNav - 1
       : null
-  const inceptionDate = first ? new Date(first.price_date) : null
-  const latestDate = latest ? new Date(latest.price_date) : null
-  const days =
-    inceptionDate && latestDate
-      ? (latestDate.getTime() - inceptionDate.getTime()) / 86_400_000
-      : null
+  const tradingDaysN =
+    first && latest
+      ? countChinaTradingDaysInclusive(String(first.price_date).slice(0, 10), String(latest.price_date).slice(0, 10))
+      : 0
   const ann_ret =
-    ret_since_inception !== null && days && days >= MIN_DAYS_FOR_ANNUALIZATION
-      ? Math.pow(1 + ret_since_inception, 365 / days) - 1
+    ret_since_inception !== null && tradingDaysN >= MIN_TRADING_DAYS_FOR_ANNUALIZATION
+      ? Math.pow(1 + ret_since_inception, 252 / tradingDaysN) - 1
       : null
   const yearPrefix = latest ? latest.price_date.slice(0, 4) + "-01-01" : null
   const ytdBase = yearPrefix
@@ -93,9 +91,9 @@ function performanceFromSeries(nav_series: LegacyNavRow[]) {
   }
 
   let sharpe_since_inception: string | null = null
-  if (ann_ret !== null && dailyReturns.length > 1 && days && days >= MIN_DAYS_FOR_ANNUALIZATION) {
-    const totalYears = days / 365
-    const recordsPerYear = dailyReturns.length / totalYears
+  if (ann_ret !== null && dailyReturns.length > 1 && tradingDaysN >= MIN_TRADING_DAYS_FOR_ANNUALIZATION) {
+    // Vol still uses sqrt(ppy) from observation density (~252 for daily trading-day series).
+    const recordsPerYear = dailyReturns.length / (tradingDaysN / 252)
     const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
     const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
     const annVol = Math.sqrt(variance) * Math.sqrt(recordsPerYear)
