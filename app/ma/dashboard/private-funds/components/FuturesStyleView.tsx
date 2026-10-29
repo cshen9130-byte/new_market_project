@@ -9,23 +9,23 @@ import { FuturesStyleCalcHelp, FuturesStyleFactorHelp, FuturesStyleFactorHelpPan
 const VISIBLE_FACTORS_STORAGE_KEY = "futures_style_visible_factor_keys"
 
 /**
- * 国君 CTA 周报「报告名六因子」(REPORT_FIT 本地重构，非 Wind GTJAQH*.WI 实盘):
- * 基差 / 长期截面 / 量价相关性 / 长期规则 / 库存 / 利润
- * + 同属 CTA/REPORT_FIT 的基差动量、中期动量 → 默认共 8 个 (<10)
+ * 国君 CTA 周报六因子展示顺序/配色（与国君截图一致）:
+ * 基差 / 长期截面 / 库存 / 量价相关性 / 长期规则 / 利润
+ * + 期限基差、基差动量、中期动量排在其后 → 默认共 9 个
  */
-/** Core CTA set: 期限基差(near/far) + 基差(spot) + peers. Prefs key report_basis kept stable. */
+/** Core CTA set matching 国君 6-factor order (期限基差 is after these six). Prefs key report_basis kept stable. */
 const GUOJUN_CTA_SIX_KEYS = [
-  "report_basis",
-  "report_basis_spot",
-  "report_cs_long",
-  "report_pv_corr",
-  "report_long_rule",
-  "report_inventory",
-  "report_profit",
+  "report_basis_spot",  // 基差 — red
+  "report_cs_long",     // 长期截面 — blue
+  "report_inventory",   // 库存 — green
+  "report_pv_corr",     // 量价相关性 — gold
+  "report_long_rule",   // 长期规则 — purple
+  "report_profit",      // 利润 — teal
 ] as const
 
 const DEFAULT_VISIBLE_FACTOR_KEYS: string[] = [
   ...GUOJUN_CTA_SIX_KEYS,
+  "report_basis",       // 期限基差 — after the six
   "report_basis_mom",
   "report_mid_mom",
 ]
