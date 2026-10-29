@@ -135,8 +135,8 @@ r = (Σ w r_{t+1} / Σ|w|) × (−0.7)`,
     formula: `score_Δ = -Δ% inv; score_ave = -(Inv/MA(N)-1); score_z = -z(Inv)
 LS topN8 on Δ/z legs; LO top8 on Ave leg; r = 4.75 * Σ w_k CS(score_k)`,
     bullets: [
-      "2026-10-29 WP: 库存 GTJAQH017 截面「库存变化率」做多去库做空累库，周度换仓; calib仍用007。live已是Δ%多腿; 周度换仓未接线。详情 docs/cta_factors_doc_extract_20261029.md。 数据：EDB social inventory + warehouse receipts；Wind GTJAQH007 仅离线校准。",
-      "残差：Apr/May/Aug 仍偏软；3m end 略高（~5.4 vs Wind~4.0）；weekly rebal 未接线；无公开国君闭式。",
+      "2026-10-29 WP: 库存 GTJAQH017 截面「库存变化率」做多去库做空累库，周度换仓; calib仍用007。live已是Δ%多腿; 周度换仓已接线 invRebal（默认 daily；Fri/Mon/Wed 可测，未 promote）。详情 docs/cta_factors_doc_extract_20261029.md。 数据：EDB social inventory + warehouse receipts；Wind GTJAQH007 仅离线校准。",
+      "残差：Apr/May/Aug 仍偏软；3m end 略高（~5.4 vs Wind~4.0）；weekly 已接线但未 promote（Fri 伤 path；Mon corr↑ 但 YTD lvl/soft 崩）；无公开国君闭式。详见 docs/cta_inventory_weekly_20261029.md。",
     ],
   },
 

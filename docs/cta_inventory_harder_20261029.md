@@ -9,7 +9,7 @@
 2. **PercentileRank** N=60/120/250 — LS weak path; LO overshoots amp.
 3. **Z / Bollinger** N=20/60/120 — already in LIVE as socialZ; LO alone mid.
 4. **TopN 5/8/10** + **long_only vs L/S** — topN8 LS improved soft months; LO on full LIVE overshot YTD (~19%).
-5. Weekly Fri / buffer / 5d smooth — **not wired** this loop (residual).
+5. Weekly Fri / buffer / 5d smooth — weekly **wired 2026-10-29** (`invRebal`); no promote (see weekly doc).
 6. Quality filter monthly-only — not separately gated (EDB priority already prefers better series).
 
 ## Loop rounds
@@ -50,7 +50,7 @@ New score kinds kept in code: `socialAve` / `warehouseAve` / `socialPctile` / `w
 ## Residuals
 - Apr–May–Aug still soft vs Wind (esp Aug 6.65 vs 8.68).
 - 3m end overshoots (~5.4 vs 4.0).
-- Weekly Fri rebal / enter-exit buffer not implemented for inventory.
+- Weekly rebal **wired** (`invRebal`) but **not promoted** — see `docs/cta_inventory_weekly_20261029.md` (Fri hurts; Mon corr↑ but YTD lvl/soft collapse). Enter/exit buffer still open.
 - No public Guojun closed-form; 017 series unknown.
 
 ## Artifacts

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Futures style-factor daily / cumulative returns from real continuous futures.
  *
  * Primary price source: raw_akshare_futures_daily (AkShare main continuous *0.EXCH).
@@ -1322,6 +1322,9 @@ let REPORT_FIT = {
   invMinCov: 6,
   invDoiFallback: true,
   invFlip: false,
+  // Inventory holdings rebal cadence. White paper GTJAQH017: weekly; calib target still GTJAQH007.
+  // daily = LIVE prior behavior; weeklyFri preferred (WP-style); weeklyMon/Wed for grid.
+  invRebal: "daily" as "daily" | "weeklyFri" | "weeklyMon" | "weeklyWed",
   invRetBlend: {
     enabled: true,
     scale: 4.75,
@@ -1417,6 +1420,9 @@ function computeDailyFactorReturns(
   let csLongPrevLong = new Set<string>()
   let csLongPrevShort = new Set<string>()
   let csLongHoldW: Array<{ product: string; w: number }> | null = null
+  // Inventory weekly rebal: hold equal-notional L/S (or LO) weights between rebal days; mark daily.
+  let invHoldLegs: Array<Array<{ product: string; w: number }> | null> = []
+  let invHoldSingle: Array<{ product: string; w: number }> | null = null
   const csLongScoreHist: Record<string, number[]> = {}
   let csLongHybPrevLong = new Set<string>()
   let csLongHybPrevShort = new Set<string>()
@@ -2388,14 +2394,14 @@ function computeDailyFactorReturns(
     out.report_mid_mom[i + 1] = maCrossTsReturn(products, closeHist, retHist, i, nextRet, 20, 60)
 
 
-    function inventoryCsReturn(
+    function inventoryBuildScores(
       kindLocal: string,
       opts: {
         L?: number; L2?: number; wWh?: number; socL?: number; socL2?: number; socW?: number;
-        invLag?: number; zWin?: number; topFrac?: number; topN?: number | null; scale?: number; flip?: boolean;
+        invLag?: number; zWin?: number; topFrac?: number; topN?: number | null; flip?: boolean;
         mode?: "ls" | "long_only";
       },
-    ): number | null {
+    ): { scores: Array<{ product: string; score: number }>; mode: "ls" | "long_only"; topFrac: number; topN: number | null; flip: boolean } {
       const L = Math.max(1, Number(opts.L ?? 5) | 0)
       const L2 = Math.max(1, Number(opts.L2 ?? 1) | 0)
       const wWh = Number(opts.wWh ?? 0.65)
@@ -2406,7 +2412,6 @@ function computeDailyFactorReturns(
       const zWin = Math.max(5, Number(opts.zWin ?? 60) | 0)
       const topFrac = Number(opts.topFrac ?? 0.25)
       const topN = opts.topN != null && Number(opts.topN) > 0 ? Math.floor(Number(opts.topN)) : null
-      const scale = Number(opts.scale ?? 0.2)
       const flip = !!opts.flip
       const mode = (opts.mode ?? "ls") as "ls" | "long_only"
       const idx = Math.max(0, i - invLag)
@@ -2462,7 +2467,7 @@ function computeDailyFactorReturns(
           if (!(mu > 1e-12) || cur == null || !Number.isFinite(cur) || !(cur > 0)) return null
           return -(cur / mu - 1)
         }
-        // Percentile rank of current vs trailing window; low pctile => long => negate (or use 1-pct)
+        // Percentile rank of current vs trailing window; low pctile => long => negate
         const pctile = (series: (number | null)[] | undefined, win: number): number | null => {
           const xs = windowVals(series, win)
           if (xs.length < Math.max(5, Math.floor(win * 0.5))) return null
@@ -2509,39 +2514,108 @@ function computeDailyFactorReturns(
           if (d != null && Number.isFinite(d) && !scores.some((s) => s.product === p)) scores.push({ product: p, score: -d })
         }
       }
-      let r: number | null = null
+      return { scores, mode, topFrac, topN, flip }
+    }
+
+    /** Build equal-notional holdings from inventory scores (mean-mean L/S or equal LO). */
+    function inventoryHoldFromScores(
+      built: { scores: Array<{ product: string; score: number }>; mode: "ls" | "long_only"; topFrac: number; topN: number | null; flip: boolean },
+    ): Array<{ product: string; w: number }> | null {
+      const { scores, mode, topFrac, topN, flip } = built
+      const usable = scores.filter((s) => Number.isFinite(s.score) && nextRet[s.product] != null)
       if (mode === "long_only") {
-        const usable = scores.filter((s) => Number.isFinite(s.score) && nextRet[s.product] != null)
-        if (usable.length >= 4) {
-          usable.sort((a, b) => a.score - b.score)
-          const nTake = topN != null && topN > 0
-            ? Math.max(1, Math.min(topN, usable.length))
-            : Math.max(1, Math.floor(usable.length * topFrac))
-          // longHigh=true: long highest scores (already -inv => destock)
-          const longSide = usable.slice(-nTake)
-          r = mean(longSide.map((x) => nextRet[x.product]))
-        }
-      } else {
-        r = crossSectionLs(scores, nextRet, true, topFrac, topN)
+        if (usable.length < 4) return null
+        usable.sort((a, b) => a.score - b.score)
+        const nTake = topN != null && topN > 0
+          ? Math.max(1, Math.min(topN, usable.length))
+          : Math.max(1, Math.floor(usable.length * topFrac))
+        const longSide = usable.slice(-nTake)
+        const sign = flip ? -1 : 1
+        return longSide.map((x) => ({ product: x.product, w: sign / longSide.length }))
       }
-      if (r != null && flip) r = -r
-      return r == null ? null : r * scale
+      if (usable.length < 6) return null
+      usable.sort((a, b) => a.score - b.score)
+      const nTake =
+        topN != null && topN > 0
+          ? Math.max(1, Math.min(Math.floor(topN), Math.floor(usable.length / 2)))
+          : Math.max(1, Math.floor(usable.length * topFrac))
+      const low = usable.slice(0, nTake)
+      const high = usable.slice(-nTake)
+      // longHigh=true (destock high score): long high, short low — matches crossSectionLs(..., true, ...)
+      const longSide = high
+      const shortSide = low
+      const sign = flip ? -1 : 1
+      const held: Array<{ product: string; w: number }> = []
+      for (const x of longSide) held.push({ product: x.product, w: sign / longSide.length })
+      for (const x of shortSide) held.push({ product: x.product, w: -sign / shortSide.length })
+      return held
+    }
+
+    function inventoryMarkHold(
+      held: Array<{ product: string; w: number }> | null,
+      scale: number,
+      minOk: number,
+    ): number | null {
+      if (!held || !held.length) return null
+      let r = 0, nOk = 0
+      for (const x of held) {
+        if (nextRet[x.product] == null) continue
+        r += x.w * nextRet[x.product]
+        nOk++
+      }
+      if (nOk < minOk) return null
+      return r * scale
+    }
+
+    function inventoryCsReturn(
+      kindLocal: string,
+      opts: {
+        L?: number; L2?: number; wWh?: number; socL?: number; socL2?: number; socW?: number;
+        invLag?: number; zWin?: number; topFrac?: number; topN?: number | null; scale?: number; flip?: boolean;
+        mode?: "ls" | "long_only";
+      },
+    ): number | null {
+      const scale = Number(opts.scale ?? 0.2)
+      const built = inventoryBuildScores(kindLocal, opts)
+      const held = inventoryHoldFromScores(built)
+      return inventoryMarkHold(held, scale, built.mode === "long_only" ? 1 : 2)
     }
 
     // 库存: warehouse / social / socialZ / socialMulti / socialBlend / warehouse* / dOi
+    // Optional weeklyFri/Mon/Wed rebal: hold weights constant between rebal days; daily PnL mark.
     {
+      const invRebal = String((REPORT_FIT as any).invRebal ?? "daily") as
+        | "daily"
+        | "weeklyFri"
+        | "weeklyMon"
+        | "weeklyWed"
+      const dowInv = isoDow(dates[i])
       const kind = String((REPORT_FIT as any).invKind ?? "dOi")
       if (kind === "invRetBlend" && (REPORT_FIT as any).invRetBlend?.enabled && (REPORT_FIT as any).invRetBlend?.legs?.length) {
         const blend = (REPORT_FIT as any).invRetBlend
+        const legs: any[] = blend.legs
+        while (invHoldLegs.length < legs.length) invHoldLegs.push(null)
         let acc = 0, wsum = 0, any = false
-        for (const leg of blend.legs) {
-          const rr = inventoryCsReturn(String(leg.invKind ?? "social"), {
-            L: leg.invWhL, L2: leg.invWhL2, wWh: leg.invWhWeight,
-            socL: leg.invSocialL, socL2: leg.invSocialL2, socW: leg.invSocialWeight,
-            invLag: leg.invLag, zWin: leg.invZWin,
-            topFrac: leg.invTopFrac, topN: leg.invTopN ?? null, scale: leg.invScale, flip: leg.invFlip,
-            mode: (leg.invMode ?? "ls") as "ls" | "long_only",
-          })
+        for (let li = 0; li < legs.length; li++) {
+          const leg = legs[li]
+          const mode = (leg.invMode ?? "ls") as "ls" | "long_only"
+          const doRebal =
+            invRebal === "daily" ||
+            (invRebal === "weeklyFri" && dowInv === 5) ||
+            (invRebal === "weeklyMon" && dowInv === 1) ||
+            (invRebal === "weeklyWed" && dowInv === 3) ||
+            invHoldLegs[li] == null
+          if (doRebal) {
+            const built = inventoryBuildScores(String(leg.invKind ?? "social"), {
+              L: leg.invWhL, L2: leg.invWhL2, wWh: leg.invWhWeight,
+              socL: leg.invSocialL, socL2: leg.invSocialL2, socW: leg.invSocialWeight,
+              invLag: leg.invLag, zWin: leg.invZWin,
+              topFrac: leg.invTopFrac, topN: leg.invTopN ?? null, flip: leg.invFlip,
+              mode,
+            })
+            invHoldLegs[li] = inventoryHoldFromScores(built)
+          }
+          const rr = inventoryMarkHold(invHoldLegs[li], Number(leg.invScale ?? 0.2), mode === "long_only" ? 1 : 2)
           const w = Number(leg.weight ?? 1)
           if (rr != null && Number.isFinite(rr)) { acc += w * rr; wsum += Math.abs(w); any = true }
         }
@@ -2554,96 +2628,30 @@ function computeDailyFactorReturns(
       const socL2 = Math.max(1, Number((REPORT_FIT as any).invSocialL2 ?? 1) | 0)
       const invLag = Math.max(0, Number((REPORT_FIT as any).invLag ?? 0) | 0)
       const zWin = Math.max(5, Number((REPORT_FIT as any).invZWin ?? 60) | 0)
-      const minCov = Math.max(4, Number((REPORT_FIT as any).invMinCov ?? 6) | 0)
-      const useDoiFallback = (REPORT_FIT as any).invDoiFallback !== false
-      const scores: Array<{ product: string; score: number }> = []
-      const idx = Math.max(0, i - invLag)
-      for (const p of products) {
-        const dOi = panels[idx]?.dOi?.[p]
-        const dOiScore = dOi != null && Number.isFinite(dOi) ? -dOi : null
-        const hist = whHist[p]
-        const sh = socialInvHist[p]
-        const whPct = (lag: number): number | null => {
-          if (!hist || idx - lag < 0) return null
-          const cur = hist[idx]
-          const prev = hist[idx - lag]
-          if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
-          return -(cur / prev - 1)
-        }
-        const socPct = (lag: number): number | null => {
-          if (!sh || idx - lag < 0) return null
-          const cur = sh[idx]
-          const prev = sh[idx - lag]
-          if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
-          return -(cur / prev - 1)
-        }
-        const levelZ = (series: (number | null)[] | undefined, win: number): number | null => {
-          if (!series) return null
-          const xs: number[] = []
-          for (let k = idx - win + 1; k <= idx; k++) {
-            if (k < 0) continue
-            const v = series[k]
-            if (v != null && Number.isFinite(v)) xs.push(v)
-          }
-          if (xs.length < Math.max(5, Math.floor(win * 0.5))) return null
-          const mu = xs.reduce((a, b) => a + b, 0) / xs.length
-          const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
-          const cur = series[idx]
-          if (!(sd > 1e-12) || cur == null || !Number.isFinite(cur)) return null
-          return -((cur - mu) / sd)
-        }
-        let whScore: number | null = null
-        if (kind === "warehouse" || kind === "warehouseBlend" || kind === "warehouseZ" || kind === "warehouseMulti" || kind === "socialBlend") {
-          if (kind === "warehouseZ") whScore = levelZ(hist, L)
-          else if (kind === "warehouseMulti") {
-            const a = whPct(L)
-            const b = whPct(L2)
-            if (a != null && b != null) whScore = wWh * a + (1 - wWh) * b
-            else whScore = a ?? b
-          } else {
-            whScore = whPct(L)
-          }
-        }
-        let socialScore: number | null = null
-        if (kind === "social" || kind === "socialBlend" || kind === "socialZ" || kind === "socialMulti") {
-          if (kind === "socialZ") socialScore = levelZ(sh, zWin)
-          else if (kind === "socialMulti") {
-            const a = socPct(socL)
-            const b = socPct(socL2)
-            const w = Number((REPORT_FIT as any).invSocialWeight ?? 0.7)
-            if (a != null && b != null) socialScore = w * a + (1 - w) * b
-            else socialScore = a ?? b
-          } else {
-            socialScore = socPct(socL)
-          }
-        }
-        let score: number | null = null
-        if (kind === "dOi") score = dOiScore
-        else if (kind === "warehouse" || kind === "warehouseZ" || kind === "warehouseMulti") score = whScore
-        else if (kind === "social" || kind === "socialZ" || kind === "socialMulti") score = socialScore
-        else if (kind === "socialBlend") {
-          // wWh = weight on SOCIAL (legacy naming)
-          if (socialScore != null && whScore != null) score = wWh * socialScore + (1 - wWh) * whScore
-          else score = socialScore ?? whScore ?? dOiScore
-        } else if (kind === "warehouseBlend") {
-          if (whScore != null && dOiScore != null) score = wWh * whScore + (1 - wWh) * dOiScore
-          else score = whScore ?? dOiScore
-        } else {
-          score = dOiScore
-        }
-        if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
+      const modeSingle = "ls" as const
+      const doRebal =
+        invRebal === "daily" ||
+        (invRebal === "weeklyFri" && dowInv === 5) ||
+        (invRebal === "weeklyMon" && dowInv === 1) ||
+        (invRebal === "weeklyWed" && dowInv === 3) ||
+        invHoldSingle == null
+      if (doRebal) {
+        const built = inventoryBuildScores(kind, {
+          L, L2, wWh, socL, socL2, socW: Number((REPORT_FIT as any).invSocialWeight ?? 0.7),
+          invLag, zWin,
+          topFrac: (REPORT_FIT as any).invTopFrac ?? 0.2,
+          topN: (REPORT_FIT as any).invTopN ?? null,
+          flip: !!(REPORT_FIT as any).invFlip,
+          mode: ((REPORT_FIT as any).invMode ?? modeSingle) as "ls" | "long_only",
+        })
+        // Preserve prior single-kind doi fallback minCov behavior via inventoryBuildScores (<6 fills dOi).
+        invHoldSingle = inventoryHoldFromScores(built)
       }
-      if (useDoiFallback && scores.length < minCov && kind !== "dOi") {
-        for (const p of products) {
-          const d = panels[idx]?.dOi?.[p]
-          if (d != null && Number.isFinite(d) && !scores.some((s) => s.product === p)) {
-            scores.push({ product: p, score: -d })
-          }
-        }
-      }
-      let r = crossSectionLs(scores, nextRet, true, (REPORT_FIT as any).invTopFrac ?? 0.2)
-      if (r != null && (REPORT_FIT as any).invFlip) r = -r
-      out.report_inventory[i + 1] = r == null ? null : r * ((REPORT_FIT as any).invScale ?? 0.5)
+      out.report_inventory[i + 1] = inventoryMarkHold(
+        invHoldSingle,
+        Number((REPORT_FIT as any).invScale ?? 0.5),
+        2,
+      )
       }
     }
 
