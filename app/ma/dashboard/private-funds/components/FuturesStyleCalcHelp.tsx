@@ -73,7 +73,7 @@ r_basis = CS_ls(L/S)_buffered(score excl EC+SH + ruleHygiene|S/F-1|>0.25, enter=
   report_cs_long: {
     key: "report_cs_long",
     title: "长期截面（国君 CTA 周报代理）",
-    summary: "csLongBlend weights 0.2/0.35/0.45 (neg_slope L120 + z L120 + neg_z L250) x scale0.95; vs GTJAQH013 3m corr_ret~0.461 / YTD~0.723 / 1y~0.703",
+    summary: "csLongBlend 0.2/0.35/0.45 x0.95 + hybridW0.3 ols_neg_slope K120 weeklyFri topN10 x0.85; vs GTJAQH013 3m~0.43 / YTD~0.77 end~12.6; JF direction fixed",
     paragraphs: [
       "对每个品种用近 L 日收盘做 price ~ time 回归（L=csLongL=120），要求 R² ≥ csLongR2(=0.15)。",
       "打分取回归斜率 slope（csLongNegZ=false，不用 −z）。可选板块内 demean + 全截面 z-score 标准化。",

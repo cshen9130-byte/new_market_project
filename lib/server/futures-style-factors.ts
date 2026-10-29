@@ -1198,6 +1198,41 @@ let REPORT_FIT = {
       { kind: "neg_z" as const, L: 250, topFrac: 0.2, sectorNeutral: true, powerDaily: 1, weight: 0.45 },
     ],
   },
+  // 2026-10-29 csLong V2: peer/other-AI score formulas + LO/LS + weekly/buffer (calib vs GTJAQH013).
+  // When csLongV2=true, replaces blend/simple OLS path below.
+  csLongV2: false,
+  csLongScoreKind: "ret" as "ret" | "risk_adj" | "avg_mom" | "ols_slope" | "ols_neg_slope" | "ols_z" | "ols_neg_z",
+  csLongK: 120,
+  csLongAvgMomN: 6,
+  csLongSkip: 0,
+  csLongMode: "ls" as "ls" | "long_only",
+  csLongLongHigh: true,
+  csLongRebal: "daily" as "daily" | "weeklyFri" | "monthly",
+  csLongEnterFrac: 0.2,
+  csLongExitFrac: 0.4,
+  csLongUseBuffer: false,
+  csLongTopN: 8 as number | null,
+  csLongSmooth: 0,
+  csLongV2Scale: 1.0,
+  csLongV2Exclude: [] as string[],
+  csLongV2Demean: true,
+  csLongV2SectorNeutral: false,
+  // Hybrid: (1-w)*legacy blend + w*V2 series.
+  // 2026-10-29 loop R3 promote: w=0.3 scaleH=0.85 ols_neg_slope K120 weeklyFri topN10.
+  // vs LIVE blend-only: YTD cr 0.723->0.765 lvl 0.895->0.949 end~12.6 (013~12.5);
+  // JF +0.8/+0.33 -> -0.4/-0.8 (Wind ~-1/-2.8); 3m cr 0.461->0.433 lvl 0.858->0.883.
+  // Plateau: 3m cr still <0.55 stretch. See docs/cta_cs_long_loop_20261029.md.
+  csLongHybridW: 0.3,
+  csLongHybridKind: 'ols_neg_slope' as 'ret' | 'risk_adj' | 'avg_mom' | 'ols_slope' | 'ols_neg_slope' | 'ols_z' | 'ols_neg_z',
+  csLongHybridK: 120,
+  csLongHybridMode: 'ls' as 'ls' | 'long_only',
+  csLongHybridRebal: 'weeklyFri' as 'daily' | 'weeklyFri' | 'monthly',
+  csLongHybridTopN: 10 as number | null,
+  csLongHybridUseBuffer: false,
+  csLongHybridEnterFrac: 0.2,
+  csLongHybridExitFrac: 0.4,
+  csLongHybridSmooth: 0,
+  csLongHybridScale: 0.85,
   // round14 CE: 8-leg multi-field shock blend (ret~0.56 lvl~0.90)
   pvKind: "dOiShockBlend" as const,
   pvCorrL: 50,
@@ -1340,6 +1375,14 @@ function computeDailyFactorReturns(
   // Spot 基差: weekly rebal + buffer needs held baskets across days
   let basisSpotPrevLong = new Set<string>()
   let basisSpotPrevShort = new Set<string>()
+  let csLongPrevLong = new Set<string>()
+  let csLongPrevShort = new Set<string>()
+  let csLongHoldW: Array<{ product: string; w: number }> | null = null
+  const csLongScoreHist: Record<string, number[]> = {}
+  let csLongHybPrevLong = new Set<string>()
+  let csLongHybPrevShort = new Set<string>()
+  let csLongHybHoldW: Array<{ product: string; w: number }> | null = null
+  const csLongHybScoreHist: Record<string, number[]> = {}
   let basisSpotHeld: Array<{ product: string; w: number }> | null = null
   const basisSpotPortRets: number[] = []
   const basisSpotMktAbsHist: number[] = []
@@ -1855,7 +1898,7 @@ function computeDailyFactorReturns(
     const pvScores: Array<{ product: string; score: number }> = []
     const rollYieldMomScores: Array<{ product: string; score: number }> = []
     for (const p of products) {
-      // 长期截面 legA: log(P)~t OLS residual z (optional sector-neutral later)
+      // 长期截面 legA (legacy OLS): log(P)~t
       const reg = priceTimeRegression(closeHist[p], i, REPORT_FIT.csLongL)
       if (reg != null && reg.r2 >= REPORT_FIT.csLongR2) {
         const score = REPORT_FIT.csLongNegZ ? -reg.z : reg.slope
@@ -1927,7 +1970,145 @@ function computeDailyFactorReturns(
         for (const s of scores) s.score = (s.score - m0) / sd
       }
     }
-    if (REPORT_FIT.csLongBlend?.enabled && REPORT_FIT.csLongBlend.legs?.length) {
+    // ---- 长期截面 V2 (peer/other-AI): ret / risk_adj / avg_mom / OLS + LO|LS + weekly/buffer ----
+    if ((REPORT_FIT as any).csLongV2) {
+      const kind = String((REPORT_FIT as any).csLongScoreKind ?? "ret")
+      const K = Math.max(5, Math.min(300, Number((REPORT_FIT as any).csLongK ?? 120) | 0))
+      const skip = Math.max(0, Math.min(40, Number((REPORT_FIT as any).csLongSkip ?? 0) | 0))
+      const endScore = Math.max(0, i - skip)
+      const mode = String((REPORT_FIT as any).csLongMode ?? "ls") as "ls" | "long_only"
+      const longHigh = (REPORT_FIT as any).csLongLongHigh !== false
+      const rebal = String((REPORT_FIT as any).csLongRebal ?? "daily")
+      const useBuf = !!(REPORT_FIT as any).csLongUseBuffer
+      const enterFrac = Number((REPORT_FIT as any).csLongEnterFrac ?? 0.2)
+      const exitFrac = Number((REPORT_FIT as any).csLongExitFrac ?? 0.4)
+      const topN = (REPORT_FIT as any).csLongTopN as number | null
+      const topFrac = Number((REPORT_FIT as any).csLongTopFrac ?? 0.2)
+      const smooth = Math.max(0, Math.min(20, Number((REPORT_FIT as any).csLongSmooth ?? 0) | 0))
+      const scaleV2 = Number((REPORT_FIT as any).csLongV2Scale ?? 1)
+      const excl = new Set<string>(((REPORT_FIT as any).csLongV2Exclude as string[] | undefined) ?? [])
+      const demeanV2 = (REPORT_FIT as any).csLongV2Demean !== false
+      const secNeut = !!(REPORT_FIT as any).csLongV2SectorNeutral
+      const avgN = Math.max(2, Math.min(18, Number((REPORT_FIT as any).csLongAvgMomN ?? 6) | 0))
+
+      const rawScores: Array<{ product: string; score: number }> = []
+      for (const p of products) {
+        if (excl.has(p)) continue
+        const closes = closeHist[p]
+        const rets = retHist[p]
+        if (!closes) continue
+        let score: number | null = null
+        if (kind === "ret") {
+          score = rollingReturn(closes, endScore, K)
+        } else if (kind === "risk_adj") {
+          const R = rollingReturn(closes, endScore, K)
+          const sig = rollingStdFromRets(rets ?? [], endScore, K)
+          if (R != null && sig != null && sig > 1e-8) score = R / sig
+        } else if (kind === "avg_mom") {
+          const monthRets: number[] = []
+          let cursor = endScore
+          for (let m = 0; m < avgN; m++) {
+            if (cursor < 20) break
+            const R = rollingReturn(closes, cursor, 20)
+            if (R != null) monthRets.push(R)
+            cursor -= 20
+          }
+          if (monthRets.length >= Math.max(2, Math.floor(avgN * 0.5))) score = mean(monthRets)
+        } else if (kind === "ols_slope" || kind === "ols_neg_slope" || kind === "ols_z" || kind === "ols_neg_z") {
+          const reg = priceTimeRegression(closes, endScore, K)
+          if (reg != null && reg.r2 >= REPORT_FIT.csLongR2) {
+            if (kind === "ols_slope") score = reg.slope
+            else if (kind === "ols_neg_slope") score = -reg.slope
+            else if (kind === "ols_z") score = reg.z
+            else score = -reg.z
+          }
+        }
+        if (score == null || !Number.isFinite(score)) continue
+        if (!csLongScoreHist[p]) csLongScoreHist[p] = []
+        const histS = csLongScoreHist[p]
+        while (histS.length < i) histS.push(Number.NaN)
+        histS[i] = score
+        if (smooth > 1) {
+          const vals: number[] = []
+          for (let j = Math.max(0, i - smooth + 1); j <= i; j++) {
+            const v = histS[j]
+            if (Number.isFinite(v)) vals.push(v)
+          }
+          if (vals.length >= Math.max(2, Math.floor(smooth / 2))) score = mean(vals)
+          else continue
+        }
+        rawScores.push({ product: p, score })
+      }
+      if (secNeut && rawScores.length >= 3) {
+        const bySec = new Map<string, Array<{ product: string; score: number }>>()
+        for (const s of rawScores) {
+          const sec = sectorOfProduct(s.product) ?? "x"
+          const list = bySec.get(sec) ?? []
+          list.push(s)
+          bySec.set(sec, list)
+        }
+        for (const list of bySec.values()) {
+          if (list.length < 3) continue
+          const mm = mean(list.map((x) => x.score))
+          for (const s of list) s.score -= mm
+        }
+      }
+      if (demeanV2 && rawScores.length >= 6) {
+        const m0 = mean(rawScores.map((s) => s.score))
+        const sd = stdev(rawScores.map((s) => s.score)) || 1
+        for (const s of rawScores) s.score = (s.score - m0) / sd
+      }
+
+      const iso = dates[i]
+      const dow = isoDow(iso)
+      const isMonthEnd = i + 1 >= dates.length || dates[i + 1].slice(0, 7) !== iso.slice(0, 7)
+      const doRebal =
+        rebal === "daily" ||
+        (rebal === "weeklyFri" && dow === 5) ||
+        (rebal === "monthly" && isMonthEnd) ||
+        csLongHoldW == null
+
+      if (doRebal && rawScores.length >= 6) {
+        const { long, short } = crossSectionLsBuffered(rawScores, nextRet, {
+          longHigh,
+          topFrac,
+          topN,
+          buffer: useBuf ? { enterFrac, exitFrac } : null,
+          prevLong: csLongPrevLong,
+          prevShort: csLongPrevShort,
+        })
+        csLongPrevLong = long
+        csLongPrevShort = short
+        const longArr = [...long].filter((p) => nextRet[p] != null)
+        const shortArr = [...short].filter((p) => nextRet[p] != null)
+        const held: Array<{ product: string; w: number }> = []
+        if (mode === "long_only") {
+          if (longArr.length >= 1) {
+            for (const p of longArr) held.push({ product: p, w: 1 / longArr.length })
+          }
+        } else {
+          if (longArr.length >= 1 && shortArr.length >= 1) {
+            for (const p of longArr) held.push({ product: p, w: 0.5 / longArr.length })
+            for (const p of shortArr) held.push({ product: p, w: -0.5 / shortArr.length })
+          }
+        }
+        csLongHoldW = held.length ? held : null
+      }
+
+      let rV2: number | null = null
+      if (csLongHoldW && csLongHoldW.length) {
+        let r = 0
+        let nOk = 0
+        for (const x of csLongHoldW) {
+          if (nextRet[x.product] == null) continue
+          r += x.w * nextRet[x.product]
+          nOk++
+        }
+        const minOk = mode === "long_only" ? 1 : 2
+        if (nOk >= minOk) rV2 = r * scaleV2
+      }
+      out.report_cs_long[i + 1] = rV2
+    } else if (REPORT_FIT.csLongBlend?.enabled && REPORT_FIT.csLongBlend.legs?.length) {
       let mixed = 0
       let any = false
       for (const leg of REPORT_FIT.csLongBlend.legs) {
@@ -1951,6 +2132,113 @@ function computeDailyFactorReturns(
       const rA = crossSectionLs(slopeScores, nextRet, true, REPORT_FIT.csLongTopFrac)
       out.report_cs_long[i + 1] = rA == null ? null : rA * REPORT_FIT.csLongScale
     }
+    // Optional hybrid mix: (1-w)*current report_cs_long + w*V2 hybrid leg
+    {
+      const hyW = Number((REPORT_FIT as any).csLongHybridW ?? 0)
+      if (hyW > 0 && !(REPORT_FIT as any).csLongV2) {
+        const kind = String((REPORT_FIT as any).csLongHybridKind ?? 'ols_neg_slope')
+        const K = Math.max(5, Math.min(300, Number((REPORT_FIT as any).csLongHybridK ?? 120) | 0))
+        const mode = String((REPORT_FIT as any).csLongHybridMode ?? 'ls') as 'ls' | 'long_only'
+        const longHigh = true
+        const rebal = String((REPORT_FIT as any).csLongHybridRebal ?? 'weeklyFri')
+        const useBuf = !!(REPORT_FIT as any).csLongHybridUseBuffer
+        const enterFrac = Number((REPORT_FIT as any).csLongHybridEnterFrac ?? 0.2)
+        const exitFrac = Number((REPORT_FIT as any).csLongHybridExitFrac ?? 0.4)
+        const topN = (REPORT_FIT as any).csLongHybridTopN as number | null
+        const topFrac = Number((REPORT_FIT as any).csLongTopFrac ?? 0.2)
+        const smooth = Math.max(0, Math.min(20, Number((REPORT_FIT as any).csLongHybridSmooth ?? 0) | 0))
+        const scaleH = Number((REPORT_FIT as any).csLongHybridScale ?? 1)
+        const rawScores: Array<{ product: string; score: number }> = []
+        for (const p of products) {
+          const closes = closeHist[p]
+          if (!closes) continue
+          let score: number | null = null
+          if (kind === 'ols_neg_slope' || kind === 'ols_slope' || kind === 'ols_z' || kind === 'ols_neg_z') {
+            const reg = priceTimeRegression(closes, i, K)
+            if (reg != null && reg.r2 >= REPORT_FIT.csLongR2) {
+              if (kind === 'ols_slope') score = reg.slope
+              else if (kind === 'ols_neg_slope') score = -reg.slope
+              else if (kind === 'ols_z') score = reg.z
+              else score = -reg.z
+            }
+          } else if (kind === 'ret') {
+            score = rollingReturn(closes, i, K)
+          } else if (kind === 'risk_adj') {
+            const R = rollingReturn(closes, i, K)
+            const sig = rollingStdFromRets(retHist[p] ?? [], i, K)
+            if (R != null && sig != null && sig > 1e-8) score = R / sig
+          }
+          if (score == null || !Number.isFinite(score)) continue
+          if (!csLongHybScoreHist[p]) csLongHybScoreHist[p] = []
+          const histS = csLongHybScoreHist[p]
+          while (histS.length < i) histS.push(Number.NaN)
+          histS[i] = score
+          if (smooth > 1) {
+            const vals: number[] = []
+            for (let j = Math.max(0, i - smooth + 1); j <= i; j++) {
+              const v = histS[j]
+              if (Number.isFinite(v)) vals.push(v)
+            }
+            if (vals.length >= Math.max(2, Math.floor(smooth / 2))) score = mean(vals)
+            else continue
+          }
+          rawScores.push({ product: p, score })
+        }
+        if (rawScores.length >= 6) {
+          const m0 = mean(rawScores.map((s) => s.score))
+          const sd = stdev(rawScores.map((s) => s.score)) || 1
+          for (const s of rawScores) s.score = (s.score - m0) / sd
+        }
+        const iso = dates[i]
+        const dow = isoDow(iso)
+        const isMonthEnd = i + 1 >= dates.length || dates[i + 1].slice(0, 7) !== iso.slice(0, 7)
+        const doRebal =
+          rebal === 'daily' ||
+          (rebal === 'weeklyFri' && dow === 5) ||
+          (rebal === 'monthly' && isMonthEnd) ||
+          csLongHybHoldW == null
+        if (doRebal && rawScores.length >= 6) {
+          const { long, short } = crossSectionLsBuffered(rawScores, nextRet, {
+            longHigh,
+            topFrac,
+            topN,
+            buffer: useBuf ? { enterFrac, exitFrac } : null,
+            prevLong: csLongHybPrevLong,
+            prevShort: csLongHybPrevShort,
+          })
+          csLongHybPrevLong = long
+          csLongHybPrevShort = short
+          const longArr = [...long].filter((p) => nextRet[p] != null)
+          const shortArr = [...short].filter((p) => nextRet[p] != null)
+          const held: Array<{ product: string; w: number }> = []
+          if (mode === 'long_only') {
+            if (longArr.length >= 1) for (const p of longArr) held.push({ product: p, w: 1 / longArr.length })
+          } else if (longArr.length >= 1 && shortArr.length >= 1) {
+            for (const p of longArr) held.push({ product: p, w: 0.5 / longArr.length })
+            for (const p of shortArr) held.push({ product: p, w: -0.5 / shortArr.length })
+          }
+          csLongHybHoldW = held.length ? held : null
+        }
+        let rHy: number | null = null
+        if (csLongHybHoldW && csLongHybHoldW.length) {
+          let r = 0, nOk = 0
+          for (const x of csLongHybHoldW) {
+            if (nextRet[x.product] == null) continue
+            r += x.w * nextRet[x.product]
+            nOk++
+          }
+          if (nOk >= (mode === 'long_only' ? 1 : 2)) rHy = r * scaleH
+        }
+        const base = out.report_cs_long[i + 1]
+        if (base != null && rHy != null) {
+          const w = Math.max(0, Math.min(1, hyW))
+          out.report_cs_long[i + 1] = (1 - w) * base + w * rHy
+        } else if (base == null && rHy != null) {
+          out.report_cs_long[i + 1] = rHy
+        }
+      }
+    }
+
     {
       const hpApply = (series: (number | null)[], end: number, hp: number): number | null => {
         if (!hp) return series[end]
