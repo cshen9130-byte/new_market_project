@@ -37,3 +37,34 @@ Near-miss (not promoted): `edb60_w0.1_scale3` → 3m cr 0.4985 / lvl 0.415, but 
 1. Broader daily EMI/EDB profit codes → re-test WP `edb`+flip / `|z|` 时序 weights
 2. Soft 3m lvl corr still ~0.39 (path shape); may need weekly rebal / buffers like 基差
 3. Tiny edb60@10% blend once margins denser
+
+## Dense EMI expand pass (2026-10-29 Asia/Shanghai) — no promote
+
+### Codes upserted (server EmQuant, no PM2)
+| code | product | role | nn (approx) |
+|---|---|---|---:|
+| EMI01732831 | M | 全国大豆压榨毛利润(农业部) daily | 666 |
+| EMI01793711 | Y | 汇易全国平均 crush daily | 691 |
+| EMI01793743 | Y | 汇易进口平均 crush daily | 587 |
+| EMI01793725 | M | 汇易国产平均 crush daily | 577 |
+| EMM01855423 | CU | 铜冶炼 RC | 379 |
+| EMM01855422 | CU | 铜冶炼 TC (refresh) | 379 |
+| EMI02082712 | AL | 毛利:电解铝(百川) — remapped V→AL | 147 |
+
+Catalog now **21** EMI/EMM → **14** products; table ~9320 rows / **4750** non-null (was 17 codes / 5548 / 2167).
+
+Loader: `loadEdbIndustryProfit` now `DISTINCT ON (trade_date, product)` preferring daily + primary EMI (avoid CU TC/RC vs 精炼铜 overwrite).
+
+### Grid (`tmp_profit_dense_grid.*`, 126 configs, eval to 2026-10-02)
+| | 3m cr | 3m lvl | 3m end/W | 3m MAE | YTD cr | YTD end/W | YTD MAE | score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **LIVE** (scale3 carryMom blend) | **0.489** | **0.393** | **1.29/2.54** | **0.49** | 0.202 | **8.06/8.33** | **2.33** | **0.356** |
+| best tiny edb60@10%+LIVE | 0.471 | 0.384 | 1.14/2.54 | 0.58 | 0.205 | 6.71/8.33 | 2.06 | 0.347 |
+| best pure edbMom+flip | ~0.017 | ~0.08 | 0.67 | — | 0.09 | 0.78 | — | 0.087 |
+| pure edb+flip (WP) | ≤0.05 | weak/neg | soft | — | ~0 | soft/neg | — | ≤0 |
+
+### Promote?
+**No.** Denser crush/Cu did **not** lift pure WP `edb`+flip enough; tiny edb blend softens YTD amp vs LIVE. Knobs unchanged (`profitRetBlend` scale **3**).
+
+### Residual gaps
+NI/PB/SN smelting; I/J/JM blacks; SC/FU/BU cracks; MA/PP/L/EG processing; CF/SR/C ags — still sparse or missing daily EMI.

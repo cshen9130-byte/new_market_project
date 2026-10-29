@@ -148,6 +148,7 @@ LS topN8 on Δ/z legs; LO top8 on Ave leg; r = 4.75 * Σ w_k CS(score_k)`,
       "国君经典-8 白皮书：时序；基于产业利润估值回归；做多当前利润相对历史偏低、做空偏高；Wind GTJAQH009.WI / Bloomberg GTJAFPRF。",
       "默认 profitKind=profitRetBlend（push2 3-leg）：carryMom L30 top0.4 scale0.05 w0.4 + carryMom L20 top0.35 scale0.03 w0.1 + carryMomBlend L20 (wMom0.4) scale0.08 w0.5；全腿齐才出信号。",
       "2026-10-29 amp：profitRetBlend.scale 1→3（corr_ret 不变；YTD end ~8.05 vs Wind 8.33；3m MAE 1.06→0.49）。纯 EDB level-z+flip 在当前利润广度下未胜 LIVE。",
+      "2026-10-29 dense EMI：soy crush daily(M/Y)+Cu TC/RC+AL百川；WP edb+flip 仍不敌 LIVE，未改 knobs",
       "可选：carryMom / carry / carryMomBlend / edb / edbMom / edbBlend / edbMomBlend（EDB 产业利润仍偏稀，~13 品种）。",
     ],
     formula: `score = Carry_t - Carry_{t-L}   (L in {30,20})

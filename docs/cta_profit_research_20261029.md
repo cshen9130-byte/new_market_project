@@ -48,3 +48,8 @@ No public closed-form for GTJAQH009 lookback / topN / rebal. Calibrate to Wind N
 
 ## Data gaps / 妙想
 Still thin industry-margin coverage. Priority Choice EMI/EDB wishlist remains in `tmp_choice_wishlist_inv_profit.md` (CU/NI/blacks/oils/ags crush & smelting margins). Ask parent for Choice codes if grid stalls on data.
+
+## Dense EMI data pass (2026-10-29)
+- Upserted daily soy crush (农业部+汇易 → M/Y) + Cu RC + AL 百川 remap; catalog 17→21 codes / 13→14 products.
+- Re-grid WP `edb`+flip / edbMom / tiny LIVE blends (`tmp_profit_dense_grid.*`): **LIVE still wins**; no REPORT_FIT change.
+- Loader prefers one EMI per product (daily + primary). Residual: metals/blacks/chem beyond CU/ZN/AL/RB/HC/TA/V/SA/Y/M.

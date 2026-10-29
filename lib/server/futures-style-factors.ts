@@ -503,17 +503,31 @@ async function loadWarehouseReceipts(from: string, to: string): Promise<WhRow[]>
 
 async function loadEdbIndustryProfit(from: string, to: string): Promise<ProfitRow[]> {
   try {
+    // Prefer one series per (date, product): daily > weekly; curated primary EMI over siblings
+    // (soy agri/汇易, CU 精炼铜毛利 else TC, AL 电解铝 primary). Avoid TC/RC + margin overwrite.
     const rows = await query<{
       trade_date: Date | string
       product: string | null
       value: string | number | null
     }>(
-      `SELECT trade_date, product, value
+      `SELECT DISTINCT ON (trade_date, product) trade_date, product, value
        FROM raw_edb_industry_profit_daily
        WHERE trade_date >= $1 AND trade_date <= $2
          AND value IS NOT NULL
          AND product IS NOT NULL
-       ORDER BY trade_date ASC`,
+       ORDER BY trade_date ASC, product ASC,
+         CASE WHEN COALESCE(freq_hint,'') = 'daily' THEN 0 ELSE 1 END ASC,
+         CASE UPPER(emi_code)
+           WHEN 'EMI01732831' THEN 0
+           WHEN 'EMI01793711' THEN 0
+           WHEN 'EMI02082699' THEN 0
+           WHEN 'EMM01855422' THEN 1
+           WHEN 'EMI01961310' THEN 0
+           WHEN 'EMI02082712' THEN 1
+           WHEN 'EMI02082696' THEN 0
+           ELSE 5
+         END ASC,
+         emi_code ASC`,
       [from, to],
     )
     const out: ProfitRow[] = []

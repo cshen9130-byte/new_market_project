@@ -40,7 +40,7 @@ PROFIT_SERIES: list[dict] = [
     {"emi_code": "EMI02082699", "product": "CU", "name_cn": "毛利:电解铜", "freq_hint": "daily"},
     {"emi_code": "EMM01855422", "product": "CU", "name_cn": "现货:中国铜冶炼厂:粗炼费TC", "freq_hint": "weekly"},
     {"emi_code": "EMI02082729", "product": "HC", "name_cn": "毛利:热轧", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082712", "product": "V", "name_cn": "毛利:聚氯乙烯", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082712", "product": "AL", "name_cn": "毛利:电解铝(百川)", "freq_hint": "weekly"},
     {"emi_code": "EMI02082691", "product": "V", "name_cn": "毛利:PVC糊树脂", "freq_hint": "weekly"},
     {"emi_code": "EMI01734485", "product": "SA", "name_cn": "理论利润:氨碱法纯碱", "freq_hint": "weekly"},
     {"emi_code": "EMI01734483", "product": "SA", "name_cn": "理论利润(双吨):联碱法纯碱", "freq_hint": "weekly"},
@@ -53,6 +53,12 @@ PROFIT_SERIES: list[dict] = [
 
     # --- closeness 2026-10-27 ---
     {"emi_code": "EMI02082696", "product": "SA", "name_cn": "毛利:纯碱(百川)", "freq_hint": "weekly"},
+
+    # --- dense crush/smelting 2026-10-29 ---
+    {"emi_code": "EMM01855423", "product": "CU", "name_cn": "现货:中国铜冶炼厂:精炼费(RC)", "freq_hint": "weekly"},
+    {"emi_code": "EMI01793711", "product": "Y", "name_cn": "大豆压榨毛利润:全国平均(汇易)", "freq_hint": "daily"},
+    {"emi_code": "EMI01793743", "product": "Y", "name_cn": "大豆压榨毛利润:进口平均(汇易)", "freq_hint": "daily"},
+    {"emi_code": "EMI01793725", "product": "M", "name_cn": "大豆压榨毛利润:国产平均(汇易)", "freq_hint": "daily"},
 ]
 
 
