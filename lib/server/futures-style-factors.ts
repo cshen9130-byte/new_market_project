@@ -1124,12 +1124,16 @@ let REPORT_FIT = {
   basisSpotTopFrac: 0.15,
   // With buffer on, enter/exit fracs size the basket; topN is unused by crossSectionLsBuffered (kept as doc intent).
     basisSpotTopN: 5 as number | null,
-  basisSpotScale: 0.22,
+    // 2026-10-29 May->Jul path amp: enter 0.15->0.18 / exit 0.35->0.38 + scale 0.22->0.16
+  // + mktVolGate 80%x0.7 -> 75%x0.5. Summer visual 4.24pp->2.41pp (012 2.4pp);
+  // pathDrop -4.09%->-2.36% (012 -2.33%); 3m 0.880->0.884, YTD 0.638->0.647, H1 0.324->0.339;
+  // roll20 1.34->0.885; end +5.15%->+4.03%. See docs/cta_basis_spot_amp_20261029.md.
+  basisSpotScale: 0.16,
   basisSpotExclude: ["EC", "SH"] as string[],
   basisSpotLive: true,
   basisSpotRebal: "weeklyFri" as "daily" | "weeklyWed" | "weeklyFri",
-  basisSpotEnterFrac: 0.15,
-  basisSpotExitFrac: 0.35,
+  basisSpotEnterFrac: 0.18,
+  basisSpotExitFrac: 0.38,
   basisSpotLongHigh: true,
   basisSpotMode: "long_only" as "ls" | "long_only" | "long_bias",
   basisSpotShortScale: 0,
@@ -1152,8 +1156,8 @@ let REPORT_FIT = {
   basisSpotVolTargetL: 20,
   basisSpotVolTargetClip: [0.35, 1.5] as [number, number],
   // mktVolGate: when CS median |ret| > historical percentile, multiply gross.
-  basisSpotMktVolGatePct: 0.80 as number | null,
-  basisSpotMktVolGateScale: 0.7,
+  basisSpotMktVolGatePct: 0.75 as number | null,
+  basisSpotMktVolGateScale: 0.5,
   basisSpotMktVolGateL: 60,
   // sectorNeutral: demean scores within sector before rank; sectorCap: max sector weight.
   basisSpotSectorNeutral: false,
