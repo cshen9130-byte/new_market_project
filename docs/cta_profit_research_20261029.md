@@ -58,3 +58,7 @@ Still thin industry-margin coverage. Priority Choice EMI/EDB wishlist remains in
 ## Harder refine (2026-10-29)
 - Diagnosed LIVE 3m: Sep gap −1.25pp dominates lvl soft (~0.39).
 - Promoted combo: L0 momL25/top0.5 + L2 top0.15/wMom0.7 @ scale3 → 3m lvl 0.67, end 2.30/2.54, Sep −0.24; corr_ret tradeoff accepted for path.
+
+
+## Round-3 (2026-10-29)
+Weekly rebal + abs_score |score| basket weights + lag/buffer wired; grid vs LIVE_hard → **plateau, no promote**. Stop further topFrac/rebal/|z| loops unless new data/construction.

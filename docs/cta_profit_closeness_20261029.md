@@ -128,3 +128,19 @@ Corr/lvl up but **MAE + Sep regress** vs hard LIVE → **no REPORT_FIT change**.
 
 ### Residual
 corr↔path tradeoff plateau without new construction (weekly rebal / |z| TS / denser EMI).
+
+
+## Round-3 weekly rebal / |score| weights (2026-10-29 Asia/Shanghai) — **plateau, no promote**
+
+Wired (defaults = LIVE_hard unchanged): `profitRebal` daily|weeklyFri|Mon|Wed, `profitCsWeight` equal|abs_score, `profitLag`, `profitEnterFrac`/`profitExitFrac`.
+
+### Grid (`tmp_profit_r3.*`, 33 configs) vs LIVE_hard
+| | 3m cr | 3m lvl | MAE | Sep | YTD end |
+|---|---:|---:|---:|---:|---:|
+| **LIVE_hard** | **0.427** | **0.671** | **0.51** | **-0.24** | **8.53** |
+| weeklyFri/Mon/Wed | ≤0.29 | ≤0.52 | ≥0.56 | ≤−0.49 | wrecked / neg |
+| abs_score daily | 0.017 | 0.329 | 1.75 | +0.09 | 24.8 (amp blow) |
+| lag1/2 | soft/neg path | soft | worse | worse | often neg |
+| best buffer daily | 0.40 | 0.65 | 0.49 | −0.42 | 8.23 — **not Pareto** |
+
+**0 clear wins.** Recommend **stop knob loop** on rebal/|z|/buffer/lag; residual needs new construction or denser EMI, not more grids on these levers.

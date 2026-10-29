@@ -151,6 +151,7 @@ LS topN8 on Δ/z legs; LO top8 on Ave leg; r = 4.75 * Σ w_k CS(score_k)`,
       "2026-10-29 dense EMI：soy crush daily(M/Y)+Cu TC/RC+AL百川；WP edb+flip 仍不敌 LIVE，未改 knobs",
       "2026-10-29 hard refine：L0 momL25/top0.5 + L2 top0.15/wMom0.7；3m lvl~0.39→0.67 end~2.3/2.54；corr_ret~0.49→0.43 tradeoff；YTD end~8.5",
       "2026-10-29 r2：corr claw-back grid 未 Pareto（MAE/Sep 回退）→ knobs 维持 hard refine",
+      "2026-10-29 r3 plateau：profitRebal/abs_score/lag/buffer 已接线默认 daily+equal；grid 无 Pareto → knobs 维持 hard refine",
       "可选：carryMom / carry / carryMomBlend / edb / edbMom / edbBlend / edbMomBlend（EDB 产业利润仍偏稀，~13 品种）。",
     ],
     formula: `score = Carry_t - Carry_{t-L}   (L in {30,20})

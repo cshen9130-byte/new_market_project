@@ -1374,6 +1374,12 @@ profitKind: "profitRetBlend" as const,
   profitEdbL: 20,
   profitEdbWeight: 0.55,
   profitFlip: false,
+  // Round-3 levers (default = LIVE_hard daily equal): weekly rebal + |score| TS basket weights
+  profitRebal: "daily" as "daily" | "weeklyFri" | "weeklyMon" | "weeklyWed",
+  profitCsWeight: "equal" as "equal" | "abs_score",
+  profitLag: 0,
+  profitEnterFrac: null as number | null,
+  profitExitFrac: null as number | null,
 }
 
 /** Calibration-only: shallow-merge knobs (and nested blend objects). Do not use in UI path. */
@@ -1439,6 +1445,8 @@ function computeDailyFactorReturns(
   // Inventory weekly rebal: hold equal-notional L/S (or LO) weights between rebal days; mark daily.
   let invHoldLegs: Array<Array<{ product: string; w: number }> | null> = []
   let invHoldSingle: Array<{ product: string; w: number }> | null = null
+  let profitHoldLegs: Array<any> = []
+  let profitHoldSingle: any = null
   const csLongScoreHist: Record<string, number[]> = {}
   let csLongHybPrevLong = new Set<string>()
   let csLongHybPrevShort = new Set<string>()
@@ -2671,10 +2679,10 @@ function computeDailyFactorReturns(
       }
     }
 
-    function profitCsReturn(opts: {
+    function profitBuildScores(opts: {
       kind?: string; momL?: number; edbL?: number; wE?: number; wMom?: number;
-      topMom?: number; topLvl?: number; scale?: number; flip?: boolean;
-    }): number | null {
+      topMom?: number; topLvl?: number; flip?: boolean; lag?: number;
+    }): { scores: Array<{ product: string; score: number }>; topFrac: number; flip: boolean } | null {
       const kind = String(opts.kind ?? "carryMom")
       const L = Math.max(5, Number(opts.edbL ?? 20) | 0)
       const momL = Math.max(1, Number(opts.momL ?? 20) | 0)
@@ -2682,29 +2690,52 @@ function computeDailyFactorReturns(
       const wMom = Number(opts.wMom ?? 0.5)
       const topMom = Number(opts.topMom ?? 0.2)
       const topLvl = Number(opts.topLvl ?? 0.3)
-      const scale = Number(opts.scale ?? 0.08)
       const flip = !!opts.flip
+      const lag = Math.max(0, Math.min(5, Number(opts.lag ?? 0) | 0))
+      const ii = i - lag
+      if (ii < 0) return null
       const carryMap = new Map(carryScores.map((s) => [s.product, s.score]))
+      // lag: rebuild carry from hist when lag>0
+      if (lag > 0) {
+        carryMap.clear()
+        for (const p of products) {
+          const hist = carryHist[p]
+          if (!hist) continue
+          const v = hist[ii]
+          if (v != null && Number.isFinite(v)) carryMap.set(p, v)
+        }
+      }
       const momScores: Array<{ product: string; score: number }> = []
       if (kind === "carryMom" || kind === "carryMomBlend" || kind === "edbMomBlend") {
         for (const p of products) {
           const hist = carryHist[p]
-          if (!hist || i - momL < 0) continue
-          const cur = hist[i], prev = hist[i - momL]
+          if (!hist || ii - momL < 0) continue
+          const cur = hist[ii], prev = hist[ii - momL]
           if (cur == null || prev == null || !Number.isFinite(cur) || !Number.isFinite(prev)) continue
           momScores.push({ product: p, score: cur - prev })
         }
       }
-      let r: number | null = null
-      if (kind === "carry") r = crossSectionLs(carryScores, nextRet, true, topLvl)
-      else if (kind === "carryMom") r = crossSectionLs(momScores, nextRet, true, topMom)
-      else if (kind === "carryMomBlend") {
-        const rMom = crossSectionLs(momScores, nextRet, true, topMom)
-        const rLvl = crossSectionLs(carryScores, nextRet, true, topLvl)
-        if (rMom != null && rLvl != null) r = wMom * rMom + (1 - wMom) * rLvl
-        else r = rMom ?? rLvl
+      let scores: Array<{ product: string; score: number }> = []
+      let topFrac = topLvl
+      if (kind === "carry") {
+        scores = [...carryMap.entries()].map(([product, score]) => ({ product, score }))
+        topFrac = topLvl
+      } else if (kind === "carryMom") {
+        scores = momScores
+        topFrac = topMom
+      } else if (kind === "carryMomBlend") {
+        // Blend scores in name-space then CS once (stable for hold/rebal)
+        const momMap = new Map(momScores.map((s) => [s.product, s.score]))
+        const names = new Set<string>([...carryMap.keys(), ...momMap.keys()])
+        for (const p of names) {
+          const c = carryMap.get(p), m = momMap.get(p)
+          let score: number | null = null
+          if (c != null && m != null) score = wMom * m + (1 - wMom) * c
+          else score = m ?? c ?? null
+          if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
+        }
+        topFrac = topMom
       } else {
-        const scores: Array<{ product: string; score: number }> = []
         const momMap = new Map(momScores.map((s) => [s.product, s.score]))
         for (const p of products) {
           const carry = carryMap.get(p)
@@ -2713,10 +2744,10 @@ function computeDailyFactorReturns(
           let edbMomScore: number | null = null
           const hist = profitHist[p]
           if (hist) {
-            const cur = hist[i]
+            const cur = hist[ii]
             if (cur != null && Number.isFinite(cur)) {
               const xs: number[] = []
-              for (let k = i - L + 1; k <= i; k++) {
+              for (let k = ii - L + 1; k <= ii; k++) {
                 if (k < 0) continue
                 const v = hist[k]
                 if (v != null && Number.isFinite(v)) xs.push(v)
@@ -2727,8 +2758,8 @@ function computeDailyFactorReturns(
                 if (sd > 1e-12) edbScore = (cur - mu) / sd
                 else edbScore = cur - mu
               } else edbScore = cur
-              if (i - L >= 0) {
-                const prev = hist[i - L]
+              if (ii - L >= 0) {
+                const prev = hist[ii - L]
                 if (prev != null && Number.isFinite(prev)) edbMomScore = cur - prev
               }
             }
@@ -2741,119 +2772,241 @@ function computeDailyFactorReturns(
           else score = carry ?? null
           if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
         }
-        const topUse = (kind === "edbMom" || kind === "edbMomBlend") ? topMom : topLvl
-        r = crossSectionLs(scores, nextRet, true, topUse)
+        topFrac = (kind === "edbMom" || kind === "edbMomBlend") ? topMom : topLvl
       }
-      if (r != null && flip) r = -r
-      return r == null ? null : r * scale
+      if (scores.length < 6) return null
+      return { scores, topFrac, flip }
     }
 
-    // 利润: carry | carryMom | carryMomBlend | edb | edbMom | edbBlend | edbMomBlend
+    function profitHoldFromScores(
+      built: { scores: Array<{ product: string; score: number }>; topFrac: number; flip: boolean },
+      csWeight: "equal" | "abs_score",
+      enterFrac: number | null,
+      exitFrac: number | null,
+      prevHeld: Array<{ product: string; w: number }> | null,
+    ): Array<{ product: string; w: number }> | null {
+      const usable = built.scores.filter((s) => Number.isFinite(s.score) && nextRet[s.product] != null)
+      if (usable.length < 6) return null
+      usable.sort((a, b) => a.score - b.score)
+      const n = usable.length
+      const nTake = Math.max(1, Math.floor(n * built.topFrac))
+      let longSide: typeof usable
+      let shortSide: typeof usable
+      const useBuf =
+        enterFrac != null && exitFrac != null && Number.isFinite(enterFrac) && Number.isFinite(exitFrac) &&
+        exitFrac >= enterFrac && enterFrac > 0 && prevHeld != null
+      if (useBuf) {
+        const enterN = Math.max(1, Math.floor(n * enterFrac!))
+        const exitN = Math.max(enterN, Math.floor(n * exitFrac!))
+        const enterHigh = new Set(usable.slice(-enterN).map((x) => x.product))
+        const enterLow = new Set(usable.slice(0, enterN).map((x) => x.product))
+        const keepHigh = new Set(usable.slice(-exitN).map((x) => x.product))
+        const keepLow = new Set(usable.slice(0, exitN).map((x) => x.product))
+        const prevLong = new Set(prevHeld!.filter((h) => h.w > 0).map((h) => h.product))
+        const prevShort = new Set(prevHeld!.filter((h) => h.w < 0).map((h) => h.product))
+        const nextHigh = new Set<string>()
+        const nextLow = new Set<string>()
+        for (const p of enterHigh) nextHigh.add(p)
+        for (const p of prevLong) if (keepHigh.has(p)) nextHigh.add(p)
+        for (const p of enterLow) nextLow.add(p)
+        for (const p of prevShort) if (keepLow.has(p)) nextLow.add(p)
+        if (!nextHigh.size) for (const p of enterHigh) nextHigh.add(p)
+        if (!nextLow.size) for (const p of enterLow) nextLow.add(p)
+        const by = new Map(usable.map((x) => [x.product, x]))
+        longSide = [...nextHigh].map((p) => by.get(p)!).filter(Boolean)
+        shortSide = [...nextLow].map((p) => by.get(p)!).filter(Boolean)
+      } else {
+        longSide = usable.slice(-nTake)
+        shortSide = usable.slice(0, nTake)
+      }
+      if (longSide.length < 1 || shortSide.length < 1) return null
+      const sign = built.flip ? -1 : 1
+      const held: Array<{ product: string; w: number }> = []
+      if (csWeight === "abs_score") {
+        const lAbs = longSide.map((x) => Math.abs(x.score))
+        const sAbs = shortSide.map((x) => Math.abs(x.score))
+        const lSum = lAbs.reduce((a, b) => a + b, 0)
+        const sSum = sAbs.reduce((a, b) => a + b, 0)
+        if (!(lSum > 0) || !(sSum > 0)) {
+          for (const x of longSide) held.push({ product: x.product, w: sign / longSide.length })
+          for (const x of shortSide) held.push({ product: x.product, w: -sign / shortSide.length })
+        } else {
+          for (let j = 0; j < longSide.length; j++) held.push({ product: longSide[j].product, w: sign * (lAbs[j] / lSum) })
+          for (let j = 0; j < shortSide.length; j++) held.push({ product: shortSide[j].product, w: -sign * (sAbs[j] / sSum) })
+        }
+      } else {
+        for (const x of longSide) held.push({ product: x.product, w: sign / longSide.length })
+        for (const x of shortSide) held.push({ product: x.product, w: -sign / shortSide.length })
+      }
+      return held
+    }
+
+    function profitMarkHold(held: Array<{ product: string; w: number }> | null, scale: number): number | null {
+      if (!held || !held.length) return null
+      let r = 0, nOk = 0
+      for (const x of held) {
+        if (nextRet[x.product] == null) continue
+        r += x.w * nextRet[x.product]
+        nOk++
+      }
+      if (nOk < 2) return null
+      return r * scale
+    }
+
+    // 利润: carry | carryMom | carryMomBlend | edb* | profitRetBlend
+    // Round-3: optional weeklyFri/Mon/Wed rebal + equal|abs_score basket weights; lag/buffer knobs.
     {
+      const profitRebal = String((REPORT_FIT as any).profitRebal ?? "daily") as
+        | "daily" | "weeklyFri" | "weeklyMon" | "weeklyWed"
+      const csWeight = String((REPORT_FIT as any).profitCsWeight ?? "equal") as "equal" | "abs_score"
+      const profitLag = Math.max(0, Math.min(5, Number((REPORT_FIT as any).profitLag ?? 0) | 0))
+      const enterFrac = (REPORT_FIT as any).profitEnterFrac
+      const exitFrac = (REPORT_FIT as any).profitExitFrac
+      const enter = enterFrac == null ? null : Number(enterFrac)
+      const exit = exitFrac == null ? null : Number(exitFrac)
+      const dowP = isoDow(dates[i])
       const kind = String((REPORT_FIT as any).profitKind ?? "carry")
+
       if (kind === "profitRetBlend" && (REPORT_FIT as any).profitRetBlend?.enabled && (REPORT_FIT as any).profitRetBlend?.legs?.length) {
         const blend = (REPORT_FIT as any).profitRetBlend
+        const legs: any[] = blend.legs
+        while (profitHoldLegs.length < legs.length) profitHoldLegs.push(null)
         let acc = 0, wsum = 0, ok = 0
-        for (const leg of blend.legs) {
-          const rr = profitCsReturn({
-            kind: String(leg.profitKind ?? "carryMom"),
-            momL: leg.profitMomL, edbL: leg.profitEdbL,
-            wE: leg.profitEdbWeight, wMom: leg.profitMomWeight,
-            topMom: leg.profitTopFrac, topLvl: leg.profitLevelTopFrac ?? leg.profitTopFrac,
-            scale: leg.profitScale, flip: leg.profitFlip,
-          })
+        for (let li = 0; li < legs.length; li++) {
+          const leg = legs[li]
+          const doRebal =
+            profitRebal === "daily" ||
+            (profitRebal === "weeklyFri" && dowP === 5) ||
+            (profitRebal === "weeklyMon" && dowP === 1) ||
+            (profitRebal === "weeklyWed" && dowP === 3) ||
+            profitHoldLegs[li] == null
+          if (doRebal) {
+            const lk = String(leg.profitKind ?? "carryMom")
+            const cw = (leg.profitCsWeight ?? csWeight) as "equal" | "abs_score"
+            const prev = profitHoldLegs[li]
+            if (lk === "carryMomBlend") {
+              const bMom = profitBuildScores({
+                kind: "carryMom", momL: leg.profitMomL, edbL: leg.profitEdbL,
+                wE: leg.profitEdbWeight, wMom: leg.profitMomWeight,
+                topMom: leg.profitTopFrac, topLvl: leg.profitLevelTopFrac ?? leg.profitTopFrac,
+                flip: leg.profitFlip, lag: leg.profitLag ?? profitLag,
+              })
+              const bLvl = profitBuildScores({
+                kind: "carry", momL: leg.profitMomL, edbL: leg.profitEdbL,
+                wE: leg.profitEdbWeight, wMom: leg.profitMomWeight,
+                topMom: leg.profitTopFrac, topLvl: leg.profitLevelTopFrac ?? leg.profitTopFrac,
+                flip: leg.profitFlip, lag: leg.profitLag ?? profitLag,
+              })
+              const prevMom = prev && prev.kind === "blend" ? prev.mom : null
+              const prevLvl = prev && prev.kind === "blend" ? prev.lvl : null
+              profitHoldLegs[li] = {
+                kind: "blend",
+                wMom: Number(leg.profitMomWeight ?? 0.5),
+                mom: bMom ? profitHoldFromScores(bMom, cw, enter, exit, prevMom) : null,
+                lvl: bLvl ? profitHoldFromScores(bLvl, cw, enter, exit, prevLvl) : null,
+              }
+            } else {
+              const built = profitBuildScores({
+                kind: lk, momL: leg.profitMomL, edbL: leg.profitEdbL,
+                wE: leg.profitEdbWeight, wMom: leg.profitMomWeight,
+                topMom: leg.profitTopFrac, topLvl: leg.profitLevelTopFrac ?? leg.profitTopFrac,
+                flip: leg.profitFlip, lag: leg.profitLag ?? profitLag,
+              })
+              const prevH = prev && prev.kind === "blend" ? null : prev
+              profitHoldLegs[li] = built ? profitHoldFromScores(built, cw, enter, exit, prevH) : null
+            }
+          }
+          let rr: number | null = null
+          const held = profitHoldLegs[li]
+          const sc = Number(leg.profitScale ?? 0.08)
+          if (held && held.kind === "blend") {
+            const rMom = profitMarkHold(held.mom, sc)
+            const rLvl = profitMarkHold(held.lvl, sc)
+            const wm = Number(held.wMom ?? 0.5)
+            if (rMom != null && rLvl != null) rr = wm * rMom + (1 - wm) * rLvl
+            else rr = rMom ?? rLvl
+          } else {
+            rr = profitMarkHold(held, sc)
+          }
           const w = Number(leg.weight ?? 1)
           if (rr != null && Number.isFinite(rr)) { acc += w * rr; wsum += Math.abs(w); ok++ }
         }
-        // require all legs present (matches offline mix); partial coverage dilutes corr_ret
         out.report_profit[i + 1] = ok === blend.legs.length && wsum > 0 ? (acc / wsum) * Number(blend.scale ?? 1) : null
       } else {
-      const L = Math.max(5, Number((REPORT_FIT as any).profitEdbL ?? 20) | 0)
-      const momL = Math.max(1, Number((REPORT_FIT as any).profitMomL ?? 20) | 0)
-      const wE = Number((REPORT_FIT as any).profitEdbWeight ?? 0.55)
-      const wMom = Number((REPORT_FIT as any).profitMomWeight ?? 0.5)
-      const topMom = Number((REPORT_FIT as any).profitTopFrac ?? 0.15)
-      const topLvl = Number((REPORT_FIT as any).profitLevelTopFrac ?? (REPORT_FIT as any).profitTopFrac ?? 0.3)
-      const scale = Number((REPORT_FIT as any).profitScale ?? 0.4)
-
-      const carryMap = new Map(carryScores.map((s) => [s.product, s.score]))
-      const momScores: Array<{ product: string; score: number }> = []
-      if (kind === "carryMom" || kind === "carryMomBlend" || kind === "edbMomBlend") {
-        for (const p of products) {
-          const hist = carryHist[p]
-          if (!hist || i - momL < 0) continue
-          const cur = hist[i]
-          const prev = hist[i - momL]
-          if (cur == null || prev == null || !Number.isFinite(cur) || !Number.isFinite(prev)) continue
-          momScores.push({ product: p, score: cur - prev })
-        }
-      }
-
-      let r: number | null = null
-      if (kind === "carry") {
-        r = crossSectionLs(carryScores, nextRet, true, topLvl)
-      } else if (kind === "carryMom") {
-        r = crossSectionLs(momScores, nextRet, true, topMom)
-      } else if (kind === "carryMomBlend") {
-        const rMom = crossSectionLs(momScores, nextRet, true, topMom)
-        const rLvl = crossSectionLs(carryScores, nextRet, true, topLvl)
-        if (rMom != null && rLvl != null) r = wMom * rMom + (1 - wMom) * rLvl
-        else r = rMom ?? rLvl
-      } else {
-        // edb / edbMom / edbBlend / edbMomBlend
-        const scores: Array<{ product: string; score: number }> = []
-        const momMap = new Map(momScores.map((s) => [s.product, s.score]))
-        for (const p of products) {
-          const carry = carryMap.get(p)
-          const cMom = momMap.get(p)
-          let edbScore: number | null = null
-          let edbMomScore: number | null = null
-          const hist = profitHist[p]
-          if (hist) {
-            const cur = hist[i]
-            if (cur != null && Number.isFinite(cur)) {
-              const xs: number[] = []
-              for (let k = i - L + 1; k <= i; k++) {
-                if (k < 0) continue
-                const v = hist[k]
-                if (v != null && Number.isFinite(v)) xs.push(v)
-              }
-              if (xs.length >= Math.max(4, Math.floor(L * 0.4))) {
-                const mu = xs.reduce((a, b) => a + b, 0) / xs.length
-                const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
-                if (sd > 1e-12) edbScore = (cur - mu) / sd
-                else edbScore = cur - mu
-              } else {
-                edbScore = cur
-              }
-              if (i - L >= 0) {
-                const prev = hist[i - L]
-                if (prev != null && Number.isFinite(prev)) edbMomScore = cur - prev
-              }
+        const doRebal =
+          profitRebal === "daily" ||
+          (profitRebal === "weeklyFri" && dowP === 5) ||
+          (profitRebal === "weeklyMon" && dowP === 1) ||
+          (profitRebal === "weeklyWed" && dowP === 3) ||
+          profitHoldSingle == null
+        if (doRebal) {
+          const cw = csWeight
+          const prev = profitHoldSingle
+          if (kind === "carryMomBlend") {
+            const bMom = profitBuildScores({
+              kind: "carryMom",
+              momL: (REPORT_FIT as any).profitMomL,
+              edbL: (REPORT_FIT as any).profitEdbL,
+              wE: (REPORT_FIT as any).profitEdbWeight,
+              wMom: (REPORT_FIT as any).profitMomWeight,
+              topMom: (REPORT_FIT as any).profitTopFrac,
+              topLvl: (REPORT_FIT as any).profitLevelTopFrac ?? (REPORT_FIT as any).profitTopFrac,
+              flip: !!(REPORT_FIT as any).profitFlip,
+              lag: profitLag,
+            })
+            const bLvl = profitBuildScores({
+              kind: "carry",
+              momL: (REPORT_FIT as any).profitMomL,
+              edbL: (REPORT_FIT as any).profitEdbL,
+              wE: (REPORT_FIT as any).profitEdbWeight,
+              wMom: (REPORT_FIT as any).profitMomWeight,
+              topMom: (REPORT_FIT as any).profitTopFrac,
+              topLvl: (REPORT_FIT as any).profitLevelTopFrac ?? (REPORT_FIT as any).profitTopFrac,
+              flip: !!(REPORT_FIT as any).profitFlip,
+              lag: profitLag,
+            })
+            const prevMom = prev && prev.kind === "blend" ? prev.mom : null
+            const prevLvl = prev && prev.kind === "blend" ? prev.lvl : null
+            profitHoldSingle = {
+              kind: "blend",
+              wMom: Number((REPORT_FIT as any).profitMomWeight ?? 0.5),
+              mom: bMom ? profitHoldFromScores(bMom, cw, enter, exit, prevMom) : null,
+              lvl: bLvl ? profitHoldFromScores(bLvl, cw, enter, exit, prevLvl) : null,
             }
-          }
-          let score: number | null = null
-          if (kind === "edb") score = edbScore
-          else if (kind === "edbMom") score = edbMomScore
-          else if (kind === "edbBlend") {
-            if (edbScore != null && carry != null) score = wE * edbScore + (1 - wE) * carry
-            else score = edbScore ?? carry ?? null
-          } else if (kind === "edbMomBlend") {
-            // blend EDB margin delta with carry momentum
-            if (edbMomScore != null && cMom != null) score = wE * edbMomScore + (1 - wE) * cMom
-            else score = edbMomScore ?? cMom ?? edbScore ?? carry ?? null
           } else {
-            score = carry ?? null
+            const built = profitBuildScores({
+              kind,
+              momL: (REPORT_FIT as any).profitMomL,
+              edbL: (REPORT_FIT as any).profitEdbL,
+              wE: (REPORT_FIT as any).profitEdbWeight,
+              wMom: (REPORT_FIT as any).profitMomWeight,
+              topMom: (REPORT_FIT as any).profitTopFrac,
+              topLvl: (REPORT_FIT as any).profitLevelTopFrac ?? (REPORT_FIT as any).profitTopFrac,
+              flip: !!(REPORT_FIT as any).profitFlip,
+              lag: profitLag,
+            })
+            const prevH = prev && prev.kind === "blend" ? null : prev
+            profitHoldSingle = built ? profitHoldFromScores(built, cw, enter, exit, prevH) : null
           }
-          if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
         }
-        const topUse = (kind === "edbMom" || kind === "edbMomBlend") ? topMom : topLvl
-        r = crossSectionLs(scores, nextRet, true, topUse)
-      }
-      if (r != null && (REPORT_FIT as any).profitFlip) r = -r
-      out.report_profit[i + 1] = r == null ? null : r * scale
+        {
+          const sc = Number((REPORT_FIT as any).profitScale ?? 0.4)
+          const held = profitHoldSingle
+          let rr: number | null = null
+          if (held && held.kind === "blend") {
+            const rMom = profitMarkHold(held.mom, sc)
+            const rLvl = profitMarkHold(held.lvl, sc)
+            const wm = Number(held.wMom ?? 0.5)
+            if (rMom != null && rLvl != null) rr = wm * rMom + (1 - wm) * rLvl
+            else rr = rMom ?? rLvl
+          } else {
+            rr = profitMarkHold(held, sc)
+          }
+          out.report_profit[i + 1] = rr
+        }
       }
     }
+
 
 
   }
