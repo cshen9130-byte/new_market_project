@@ -65,7 +65,7 @@ function barSpan(bars: OverlayPoint[]) {
 }
 
 export function isDailyOverlayBars(bars: OverlayPoint[], source?: string | null) {
-  return !!source?.startsWith("db:") || !!source?.startsWith("optbbs-pre:") || barSpan(bars) > 36 * 3600
+  return !!source?.startsWith("db:") || !!source?.startsWith("optbbs-k:") || !!source?.startsWith("optbbs-pre:") || barSpan(bars) > 36 * 3600
 }
 
 function unionOverlayBars(prev: OverlayPoint[], incoming: OverlayPoint[]) {

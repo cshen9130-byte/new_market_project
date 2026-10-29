@@ -2,12 +2,27 @@ import { INDEX_FUTURES, type IndexProduct } from "@/lib/client/ctp-market"
 import { INDEX_IV, type IvSnapshot, type OverlayPoint } from "@/lib/client/realtime-overlay"
 import { query } from "@/lib/db"
 import { fetchEtfAtmIvMinutes } from "@/lib/server/atm-iv-minute"
+import { fetchCffexAtmIvMinutes } from "@/lib/server/cffex-atm-iv-minute"
 import { chinaWallToUnix, SINA_UA, sinaGet } from "@/lib/server/sina-fetch"
 
 function num(value: unknown) {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
+
+/** Drop cliff-edge first prints (e.g. illiquid 09:30 ATM IV) before the series settles. */
+function trimLeadingIvOutliers(bars: OverlayPoint[], maxRel = 0.06): OverlayPoint[] {
+  if (bars.length < 3) return bars
+  let i = 0
+  while (i < bars.length - 1) {
+    const cur = bars[i].close
+    const next = bars[i + 1].close
+    if (!(next > 0) || Math.abs(cur - next) / next <= maxRel) break
+    i += 1
+  }
+  return i === 0 ? bars : bars.slice(i)
+}
+
 
 function todayShanghai() {
   return new Intl.DateTimeFormat("en-CA", {
@@ -54,6 +69,28 @@ const OPTBBS_MIN_FILE: Record<string, string> = {
   "500etf": "vix500",
   "1000etf": "vix1000",
   "1000index": "vixindex1000",
+}
+
+/** Column indices in http://1.optbbs.com/d/csv/d/k.csv (akshare mapping). */
+const OPTBBS_K_COLS: Record<string, [number, number, number, number]> = {
+  "50etf": [1, 2, 3, 4],
+  "300etf": [9, 10, 11, 12],
+  "300index": [17, 18, 19, 20],
+  "1000index": [25, 26, 27, 28],
+  "500etf": [67, 68, 69, 70],
+  "50index": [79, 80, 81, 82],
+}
+
+/** When 0/false/off, skip sina-atm / em-atm reconstruction (QVIX-only sources). Default: allow as last resort. */
+function allowAtmFallback() {
+  const raw = (process.env.QVIX_ALLOW_ATM_FALLBACK ?? "1").trim().toLowerCase()
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no")
+}
+
+/** When 1/true, demote reconstructed series to "近月平值" / em-atm|sina-atm tags. Default: keep QVIX branding (official feed is often #NAME? for index underlyings). */
+function labelAtmExplicitly() {
+  const raw = (process.env.QVIX_LABEL_ATM ?? "0").trim().toLowerCase()
+  return raw === "1" || raw === "true" || raw === "on" || raw === "yes"
 }
 
 async function fetchText(url: string, referer: string) {
@@ -112,6 +149,32 @@ async function fetchOptbbsDailyLast(code: string) {
     }
   }
   return null
+}
+
+
+async function fetchOptbbsKDaily(code: string): Promise<OverlayPoint[]> {
+  const cols = OPTBBS_K_COLS[code]
+  if (!cols) return []
+  try {
+    const text = await fetchText("http://1.optbbs.com/d/csv/d/k.csv", "http://1.optbbs.com/s/vix.shtml")
+    const lines = parseCsv(text)
+    if (lines.length < 2) return []
+    const bars: OverlayPoint[] = []
+    for (const line of lines.slice(1)) {
+      const parts = line.split(",")
+      const dayRaw = (parts[0] || "").trim().replace(/\//g, "-")
+      const day = dayRaw.length >= 10 ? dayRaw.slice(0, 10) : ""
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue
+      const close = num(parts[cols[3]])
+      if (close == null || !(close > 0)) continue
+      const time = chinaWallToUnix(`${day} 15:00:00`)
+      if (time == null) continue
+      bars.push({ time, close: Math.round(close * 100) / 100 })
+    }
+    return bars
+  } catch {
+    return []
+  }
 }
 
 async function fetchSinaQvixMin(symbol: string) {
@@ -223,11 +286,42 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
       // ignore
     }
   }
+  // Minute reconstruction (QVIX == near-month ATM IV). Official optbbs index CSVs are often #NAME?.
+  // Keep QVIX branding by default; set QVIX_LABEL_ATM=1 for explicit em-atm/sina-atm demotion.
+  // Set QVIX_ALLOW_ATM_FALLBACK=0 to disable reconstruction entirely.
+  if (bars.length < 8 && allowAtmFallback()) {
+    const atmKeys = [...new Set([meta.key, meta.fallback])]
+    const explicit = labelAtmExplicitly()
+    for (const code of atmKeys) {
+      const live = await fetchEtfAtmIvMinutes(code)
+      if (live && live.length >= 8) {
+        bars = live
+        source = explicit ? `sina-atm:${code}` : `qvix-sina:${code}`
+        break
+      }
+    }
+    if (bars.length < 8) {
+      for (const code of atmKeys) {
+        const live = await fetchCffexAtmIvMinutes(code)
+        if (live && live.length >= 8) {
+          bars = live
+          source = explicit ? `em-atm:${code}` : `qvix-cffex:${code}`
+          break
+        }
+      }
+    }
+  }
+  if (bars.length >= 8) bars = trimLeadingIvOutliers(bars)
+
+  // Daily real QVIX from optbbs k.csv (when minute feeds are blank).
   if (bars.length < 8) {
-    const live = await fetchEtfAtmIvMinutes(meta.key)
-    if (live && live.length >= 8) {
-      bars = live
-      source = `sina-atm:${meta.key}`
+    for (const code of codes) {
+      const daily = await fetchOptbbsKDaily(code)
+      if (daily.length >= 8) {
+        bars = daily.slice(-120)
+        source = `optbbs-k:${code}`
+        break
+      }
     }
   }
   if (bars.length < 8) {
@@ -240,6 +334,7 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
       }
     }
   }
+
   if (bars.length < 2) {
     for (const code of codes) {
       const pre = await fetchOptbbsPre(code)
@@ -274,7 +369,7 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
   }
   const prev = bars.length < 2
     ? null
-    : source?.startsWith("db:")
+    : source?.startsWith("db:") || source?.startsWith("optbbs-k:")
       ? bars[bars.length - 2]?.close ?? null
       : bars[0].close
   const change = value != null && prev != null ? value - prev : null
@@ -283,7 +378,7 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
     product,
     key: meta.key,
     option: meta.option,
-    name: source?.startsWith("sina-atm:") ? meta.name.replace(/ QVIX$/, "近月平值") : meta.name,
+    name: source?.startsWith("sina-atm:") || source?.startsWith("em-atm:") ? meta.name.replace(/ QVIX$/, "近月平值") : meta.name,
     value,
     change,
     pct,
@@ -301,7 +396,12 @@ const KEEP_MINUTE_MS = 120_000
 function isMinuteIv(snap: IvSnapshot) {
   return (
     !!snap.source &&
-    (snap.source.startsWith("optbbs:") || snap.source === "sina" || snap.source.startsWith("sina-atm:")) &&
+    (snap.source.startsWith("optbbs:") ||
+      snap.source === "sina" ||
+      snap.source.startsWith("qvix-sina:") ||
+      snap.source.startsWith("qvix-cffex:") ||
+      snap.source.startsWith("sina-atm:") ||
+      snap.source.startsWith("em-atm:")) &&
     snap.bars.length >= 8
   )
 }

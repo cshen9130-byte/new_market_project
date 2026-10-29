@@ -141,12 +141,12 @@ export function cffexQuoteSymbolsToFetch(now = new Date()): string[] {
   return [...new Set([...allListedCffexIndexContractsOnYmd(today), ...allListedCffexIndexContractsOnYmd(prior)])]
 }
 
-/** CFFEX listed window: 当月 / 次月 / 当季 / 下季. 远月 here is the next monthly (次月). */
+/** CFFEX listed window: 近月 / 远月 / 近季 / 远季. 远月 here is the next monthly (次月). */
 export const CFFEX_CONTRACT_ROLES = [
   { id: "near", label: "近月", index: 0 },
   { id: "next", label: "远月", index: 1 },
-  { id: "quarter", label: "当季", index: 2 },
-  { id: "nextQuarter", label: "下季", index: 3 },
+  { id: "quarter", label: "近季", index: 2 },
+  { id: "nextQuarter", label: "远季", index: 3 },
 ] as const
 
 export type CffexContractRole = (typeof CFFEX_CONTRACT_ROLES)[number]["id"]
@@ -159,6 +159,36 @@ export function cffexContractForRole(
   const contracts = listedCffexIndexContracts(product, now)
   const meta = CFFEX_CONTRACT_ROLES.find((item) => item.id === role) ?? CFFEX_CONTRACT_ROLES[0]
   return contracts[meta.index] ?? contracts[0]
+}
+
+
+/** Reverse-map a specific-month index futures symbol to its listed role, if any. */
+export function cffexRoleOfContract(
+  symbol: string,
+  now = new Date(),
+): CffexContractRole | null {
+  const parsed = parseIndexFuturesMonth(symbol)
+  if (!parsed) return null
+  const want = symbol.trim().toUpperCase()
+  const contracts = listedCffexIndexContracts(parsed.product, now)
+  const i = contracts.findIndex((c) => c === want)
+  if (i < 0) return null
+  return CFFEX_CONTRACT_ROLES.find((r) => r.index === i)?.id ?? null
+}
+
+/** Option month code (HO/IO/MO + YYMM) for a futures product role. IC has no CFFEX index option. */
+export function cffexOptionMonthForRole(
+  product: string,
+  role: CffexContractRole,
+  now = new Date(),
+): string | null {
+  const fut = cffexContractForRole(product, role, now)
+  const parsed = parseIndexFuturesMonth(fut)
+  if (!parsed) return null
+  const opt =
+    parsed.product === "IH" ? "HO" : parsed.product === "IF" ? "IO" : parsed.product === "IM" ? "MO" : null
+  if (!opt) return null
+  return `${opt}${String(parsed.year % 100).padStart(2, "0")}${String(parsed.month).padStart(2, "0")}`
 }
 
 export function allListedCffexIndexContracts(now = new Date()): string[] {

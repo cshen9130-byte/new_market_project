@@ -151,7 +151,7 @@ export function IndexBasisContractsTable({
         <div>
           <div className="text-sm font-semibold">合约升贴水</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            中金所指数期货：近月 / 远月 / 当季 / 下季
+            中金所指数期货：近月 / 远月 / 近季 / 远季
             {asOf ? ` · 数据日期 ${asOf}（周${weekdayLabel(asOf)}）` : ""}
             {stale ? " · 非今日（可能为最近交易日）" : ""}
           </p>

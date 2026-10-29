@@ -123,12 +123,6 @@ function formatCumulativeAxisLabel(value: string, index: number, allDates: strin
   return ""
 }
 
-function intervalReturnColorClass(value: number): string {
-  if (value < 0) return "text-red-500"
-  if (value > 0) return "text-green-600"
-  return "text-zinc-500"
-}
-
 function formatIntervalReturnPct(value: number): string {
   const sign = value > 0 ? "+" : ""
   return `${sign}${value.toFixed(2)}%`
@@ -399,7 +393,12 @@ export function FuturesStyleView() {
   const chartOption = useMemo(() => {
     const zoomWindow = chartDates.length > 8 ? Math.round((8 / chartDates.length) * 100) : 100
     const zoomStart = 100 - zoomWindow
-    const y = yAxisRange(chartSeries, -4, 4)
+    // Y domain from legend-visible series only so toggling off a tall series rescales.
+    const y = yAxisRange(
+      chartSeries.filter((s) => !hiddenSeries.has(s.name)),
+      -4,
+      4,
+    )
 
     return {
       backgroundColor: "transparent",
@@ -534,7 +533,12 @@ export function FuturesStyleView() {
   )
 
   const cumulativeChartOption = useMemo(() => {
-    const y = yAxisRange(cumulativeSeries, -20, 15)
+    // Y domain from legend-visible series only so toggling off a tall series rescales.
+    const y = yAxisRange(
+      cumulativeSeries.filter((s) => !hiddenCumulativeSeries.has(s.name)),
+      -20,
+      15,
+    )
     return {
       backgroundColor: "transparent",
       animation: false,
@@ -916,7 +920,7 @@ export function FuturesStyleView() {
                         key={`${row.name}-${colIndex}`}
                         className={[
                           "px-3 py-2 text-center tabular-nums border-b border-zinc-50 whitespace-nowrap",
-                          intervalReturnColorClass(value),
+                          returnColorClass(value),
                           rowBg,
                         ].join(" ")}
                       >

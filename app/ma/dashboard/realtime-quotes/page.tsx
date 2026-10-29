@@ -333,7 +333,7 @@ export default function RealtimeQuotesPage() {
       <div>
         <h2 className="text-lg font-semibold tracking-tight">年化基差率</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          四张图共用下方周期、合约月份与缩放。近月 / 远月 / 当季 / 下季对应中金所当月、次月、当季、下季合约。
+          四张图共用下方周期、合约月份与缩放。近月 / 远月 / 近季 / 远季对应中金所当月、次月、当季、下季合约。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex flex-wrap items-center gap-2">

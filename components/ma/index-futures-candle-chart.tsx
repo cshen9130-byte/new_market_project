@@ -9,7 +9,8 @@ import {
   type CtpCandle,
   type CtpTick,
 } from "@/lib/client/ctp-market"
-import { formatCandleTime, type TimeframeId } from "@/lib/client/timeframes"
+import { formatCandleTime, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
+import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
 
 export type ChartZoomRange = { start: number; end: number }
 
@@ -164,6 +165,17 @@ export function IndexFuturesCandleChart({
             borderColor0: "#22c55e",
           },
         }
+    const sessionMark =
+      isIntradayTimeframe(interval)
+        ? sessionOpenEchartsMarkLine(
+            times,
+            tfCandles.map((c) => c.time),
+            false,
+          )
+        : undefined
+    const priceWithSession = sessionMark
+      ? { ...priceSeries, markLine: sessionMark }
+      : priceSeries
     return {
       animation: false,
       backgroundColor: "transparent",
@@ -225,11 +237,11 @@ export function IndexFuturesCandleChart({
           xAxisIndex: [0, 1],
           start: effectiveZoom.start,
           end: effectiveZoom.end,
-          filterMode: "filter",
+          filterMode: "none", // keep categories so session markLine can resolve
         },
       ],
       series: [
-        priceSeries,
+        priceWithSession,
         {
           name: "成交量",
           type: "bar",

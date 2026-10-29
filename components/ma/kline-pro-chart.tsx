@@ -1,21 +1,98 @@
 "use client"
 
-import { useCallback, useEffect, useImperativeHandle, useRef, type Ref } from "react"
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react"
 import type { Chart, KLineData } from "klinecharts"
 
 import { isBuyMark, snapOrderMarks, type ChartOrderMark } from "@/lib/client/chart-order-marks"
 import type { CtpCandle } from "@/lib/client/ctp-market"
-import { klinePeriod, type TimeframeId } from "@/lib/client/timeframes"
+import { isIntradayTimeframe, klinePeriod, type TimeframeId } from "@/lib/client/timeframes"
+import { CFFEX_SESSION_OPENS, sessionOpenIndices } from "@/lib/client/session-opens"
 import { cn } from "@/lib/utils"
 
 const DEFAULT_BAR_SPACE = 6
 const ZOOM_IN_SCALE = 1.25
 const ZOOM_OUT_SCALE = 0.8
+const Y_AXIS_RESERVE_PX = 56
+const FOLLOW_RIGHT_OFFSET_PX = 80
+const FIXED_WINDOW_BARS = 120
+const FIXED_WINDOW_OFFSET_PX = 40
+const AUTO_SCALE_MAX_BAR_SPACE = 160
+const VIEWPORT_MODE_STORAGE_KEY = "ma.kline.viewportMode"
+
+export type ChartViewportMode = "auto-scale" | "follow-right" | "fixed-window"
+
+export const CHART_VIEWPORT_MODES: Array<{ id: ChartViewportMode; label: string; title: string }> = [
+  { id: "auto-scale", label: "自动缩放", title: "当日首根K线贴左，随新K线自动缩放铺满，右侧无空白" },
+  { id: "follow-right", label: "跟随右侧", title: "固定柱宽，最新K线贴右并保留右侧边距" },
+  { id: "fixed-window", label: "固定窗口", title: "固定显示最近约120根K线，跟随右侧" },
+]
 
 export type KlineChartHandle = {
   zoomIn: () => void
   zoomOut: () => void
   resetZoom: () => void
+  setViewportMode: (mode: ChartViewportMode) => void
+  getViewportMode: () => ChartViewportMode
+}
+
+function isChartViewportMode(value: unknown): value is ChartViewportMode {
+  return value === "auto-scale" || value === "follow-right" || value === "fixed-window"
+}
+
+export function readStoredViewportMode(): ChartViewportMode {
+  if (typeof window === "undefined") return "auto-scale"
+  try {
+    const raw = window.localStorage.getItem(VIEWPORT_MODE_STORAGE_KEY)
+    if (isChartViewportMode(raw)) return raw
+  } catch {
+    /* ignore */
+  }
+  return "auto-scale"
+}
+
+function writeStoredViewportMode(mode: ChartViewportMode) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(VIEWPORT_MODE_STORAGE_KEY, mode)
+  } catch {
+    /* ignore */
+  }
+}
+
+function chartContentWidth(host: HTMLElement | null) {
+  const width = host?.clientWidth ?? 0
+  return Math.max(80, width - Y_AXIS_RESERVE_PX)
+}
+
+function applyViewportMode(chart: Chart | null, host: HTMLElement | null, mode: ChartViewportMode) {
+  if (!chart) return
+  const data = chart.getDataList()
+  const count = data?.length ?? 0
+  if (count <= 0) return
+  const width = chartContentWidth(host)
+
+  if (mode === "auto-scale") {
+    const space = Math.min(AUTO_SCALE_MAX_BAR_SPACE, Math.max(1, width / count))
+    chart.setMaxOffsetRightDistance(0)
+    chart.setOffsetRightDistance(0)
+    chart.setBarSpace(space)
+    chart.scrollToRealTime(0)
+    return
+  }
+
+  if (mode === "fixed-window") {
+    const space = Math.min(50, Math.max(1, width / FIXED_WINDOW_BARS))
+    chart.setRightMinVisibleBarCount(1)
+    chart.setOffsetRightDistance(FIXED_WINDOW_OFFSET_PX)
+    chart.setBarSpace(space)
+    chart.scrollToRealTime(0)
+    return
+  }
+
+  chart.setRightMinVisibleBarCount(1)
+  chart.setOffsetRightDistance(FOLLOW_RIGHT_OFFSET_PX)
+  chart.setBarSpace(DEFAULT_BAR_SPACE)
+  chart.scrollToRealTime(0)
 }
 
 function zoomKline(chart: Chart | null, direction: "in" | "out") {
@@ -25,14 +102,9 @@ function zoomKline(chart: Chart | null, direction: "in" | "out") {
   chart.zoomAtDataIndex(direction === "in" ? ZOOM_IN_SCALE : ZOOM_OUT_SCALE, last)
 }
 
-function resetKlineZoom(chart: Chart | null, barSpace: number) {
-  if (!chart) return
-  chart.setBarSpace(barSpace)
-  chart.scrollToRealTime()
-}
-
 const ORDER_GROUP = "strategy-orders"
 const DRAW_GROUP = "drawings"
+const SESSION_GROUP = "session-opens"
 let orderOverlayRegistered = false
 
 const TOOLS: Array<{ id: string; overlay?: string; label: string }> = [
@@ -120,6 +192,8 @@ type Props = {
   compact?: boolean
   activeTool?: string
   onTool?: (id: string) => void
+  viewportMode?: ChartViewportMode
+  onViewportModeChange?: (mode: ChartViewportMode) => void
   ref?: Ref<KlineChartHandle | null>
 }
 
@@ -196,13 +270,51 @@ function applyOrderMarks(
   )
 }
 
+
+function applySessionMarks(chart: Chart, candles: CtpCandle[], interval: TimeframeId) {
+  chart.removeOverlay({ groupId: SESSION_GROUP })
+  if (!isIntradayTimeframe(interval) || candles.length < 2) return
+  const times = candles.map((c) => c.time)
+  for (const mark of CFFEX_SESSION_OPENS) {
+    for (const idx of sessionOpenIndices(times, mark.hhmm)) {
+      if (idx < 0 || idx >= candles.length) continue
+      const bar = candles[idx]
+      const ts = bar.time * 1000
+      const mid = (bar.high + bar.low) / 2
+      chart.createOverlay({
+        name: "verticalStraightLine",
+        id: `session-${mark.label}-${bar.time}`,
+        groupId: SESSION_GROUP,
+        lock: true,
+        visible: true,
+        zLevel: 0,
+        points: [{ timestamp: ts, value: mid }],
+        styles: {
+          line: { color: "#4a5568", style: "dashed", size: 1 },
+        },
+      })
+    }
+  }
+}
+
 type AppliedSeries = { first: number; last: number; len: number; fingerprint?: string }
 
 function barFingerprint(bar: CtpCandle) {
   return `${bar.time}:${bar.open}:${bar.high}:${bar.low}:${bar.close}:${bar.volume}`
 }
 
-export function KlineProChart({ symbol, interval, candles, marks, compact, activeTool = "cross", onTool, ref }: Props) {
+export function KlineProChart({
+  symbol,
+  interval,
+  candles,
+  marks,
+  compact,
+  activeTool = "cross",
+  onTool,
+  viewportMode: viewportModeProp,
+  onViewportModeChange,
+  ref,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<Chart | null>(null)
   const candlesRef = useRef(candles)
@@ -214,16 +326,50 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
   const appliedIntervalRef = useRef<TimeframeId | null>(null)
   const marksRef = useRef(marks)
   const defaultBarSpaceRef = useRef(DEFAULT_BAR_SPACE)
+  const [viewportModeState, setViewportModeState] = useState<ChartViewportMode>(() => readStoredViewportMode())
+  const viewportMode = viewportModeProp ?? viewportModeState
+  const viewportModeRef = useRef(viewportMode)
   candlesRef.current = candles
   symbolRef.current = symbol
   intervalRef.current = interval
   marksRef.current = marks
+  viewportModeRef.current = viewportMode
+
+  const setViewportMode = useCallback(
+    (mode: ChartViewportMode) => {
+      writeStoredViewportMode(mode)
+      if (viewportModeProp == null) setViewportModeState(mode)
+      onViewportModeChange?.(mode)
+      viewportModeRef.current = mode
+      applyViewportMode(chartRef.current, hostRef.current, mode)
+    },
+    [onViewportModeChange, viewportModeProp],
+  )
 
   const zoomIn = useCallback(() => zoomKline(chartRef.current, "in"), [])
   const zoomOut = useCallback(() => zoomKline(chartRef.current, "out"), [])
-  const resetZoom = useCallback(() => resetKlineZoom(chartRef.current, defaultBarSpaceRef.current), [])
+  const resetZoom = useCallback(() => {
+    applyViewportMode(chartRef.current, hostRef.current, viewportModeRef.current)
+  }, [])
 
-  useImperativeHandle(ref, () => ({ zoomIn, zoomOut, resetZoom }), [zoomIn, zoomOut, resetZoom])
+  useImperativeHandle(
+    ref,
+    () => ({
+      zoomIn,
+      zoomOut,
+      resetZoom,
+      setViewportMode,
+      getViewportMode: () => viewportModeRef.current,
+    }),
+    [zoomIn, zoomOut, resetZoom, setViewportMode],
+  )
+
+  useEffect(() => {
+    if (viewportModeProp != null) {
+      viewportModeRef.current = viewportModeProp
+      applyViewportMode(chartRef.current, hostRef.current, viewportModeProp)
+    }
+  }, [viewportModeProp])
 
   useEffect(() => {
     const el = hostRef.current
@@ -239,6 +385,9 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
         locale: "zh-CN",
         timezone: "UTC",
         styles: DARK_STYLES,
+        layout: {
+          barSpaceLimit: { min: 1, max: AUTO_SCALE_MAX_BAR_SPACE },
+        },
       })
       if (!chart) return
       chartRef.current = chart
@@ -280,7 +429,16 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
       chart.createIndicator("VOL")
       if (!compact) chart.createIndicator("MACD")
       applyOrderMarks(chart, marksRef.current, candlesRef.current, intervalRef.current)
-      ro = new ResizeObserver(() => chart?.resize())
+      // After first layout, apply preferred viewport (default auto-scale).
+      requestAnimationFrame(() => {
+        applyViewportMode(chart, hostRef.current, viewportModeRef.current)
+      })
+      ro = new ResizeObserver(() => {
+        chart?.resize()
+        if (viewportModeRef.current === "auto-scale" || viewportModeRef.current === "fixed-window") {
+          applyViewportMode(chart, hostRef.current, viewportModeRef.current)
+        }
+      })
       ro.observe(hostRef.current)
     })
 
@@ -330,14 +488,25 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
     const seriesReplaced = !prev || first !== prev.first || candles.length + 8 < (prev.len || 0)
     const historyExtended = !!prev && first < prev.first - 30 && candles.length > prev.len
     const needInit = chartLen === 0 && candles.length > 1
+    const lenGrew = !!prev && candles.length > prev.len
     appliedRef.current = { first, last: last.time, len: candles.length, fingerprint }
     if (needInit || historyExtended || seriesReplaced) {
       chart.resetData()
       applyOrderMarks(chart, marksRef.current, candles, interval)
+      applySessionMarks(chart, candles, interval)
+      requestAnimationFrame(() => {
+        applyViewportMode(chart, hostRef.current, viewportModeRef.current)
+      })
       return
     }
     if (prev?.fingerprint === fingerprint) return
     if (subRef.current) subRef.current(toBar(last))
+    // Auto-scale / fixed-window should re-fit when a new candle prints or the last bar updates.
+    if (viewportModeRef.current === "auto-scale" || (viewportModeRef.current === "fixed-window" && lenGrew)) {
+      applyViewportMode(chart, hostRef.current, viewportModeRef.current)
+    } else if (viewportModeRef.current === "follow-right" && lenGrew) {
+      chart.scrollToRealTime(0)
+    }
   }, [candles, symbol, interval])
 
   const marksKey = (marks || []).map((mark) => mark.id).join("|")
@@ -347,12 +516,35 @@ export function KlineProChart({ symbol, interval, candles, marks, compact, activ
     const chart = chartRef.current
     if (!chart) return
     applyOrderMarks(chart, marksRef.current, candlesRef.current, intervalRef.current)
+    applySessionMarks(chart, candlesRef.current, intervalRef.current)
   }, [marksKey, seriesKey])
+
+  const modeSelect = (
+    <label className="flex flex-col gap-0.5 px-0.5 py-1" title="图表视窗设置">
+      <span className="text-center text-[9px] leading-none text-[#787b86]">视窗</span>
+      <select
+        value={viewportMode}
+        onChange={(e) => {
+          const next = e.target.value
+          if (isChartViewportMode(next)) setViewportMode(next)
+        }}
+        className="w-full cursor-pointer rounded border border-[#2a2e39] bg-[#131722] px-0.5 py-1 text-[10px] text-[#adb3bd] outline-none hover:border-[#4c84ff] hover:text-white"
+        aria-label="图表视窗设置"
+      >
+        {CHART_VIEWPORT_MODES.map((mode) => (
+          <option key={mode.id} value={mode.id} title={mode.title}>
+            {mode.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
 
   return (
     <div className="flex h-full min-h-0">
       {compact ? null : (
-        <div className="flex w-11 shrink-0 flex-col gap-0.5 border-r border-[#2a2e39] bg-[#1e222d] py-1">
+        <div className="flex w-14 shrink-0 flex-col gap-0.5 border-r border-[#2a2e39] bg-[#1e222d] py-1">
+          {modeSelect}
           {TOOLS.map((tool) => (
             <button
               key={tool.id}

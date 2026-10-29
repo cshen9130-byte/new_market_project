@@ -6,7 +6,13 @@ import { Bot, LayoutGrid, LineChart, Lock, Maximize2, Minimize2, RotateCcw, Unlo
 
 import { IndexBasisRateChart } from "@/components/ma/index-basis-rate-chart"
 import { IndexIvChart } from "@/components/ma/index-iv-chart"
-import { KlineProChart, type KlineChartHandle } from "@/components/ma/kline-pro-chart"
+import {
+  CHART_VIEWPORT_MODES,
+  KlineProChart,
+  readStoredViewportMode,
+  type ChartViewportMode,
+  type KlineChartHandle,
+} from "@/components/ma/kline-pro-chart"
 import { PaperNavChart } from "@/components/ma/paper-nav-chart"
 import {
   PaperAllWeatherOrderDialog,
@@ -24,8 +30,14 @@ import {
   INDEX_FUTURES,
   type CtpCandle,
   type CtpTick,
-  pickMostActiveContract,
 } from "@/lib/client/ctp-market"
+import {
+  CFFEX_CONTRACT_ROLES,
+  cffexContractForRole,
+  cffexOptionMonthForRole,
+  cffexRoleOfContract,
+  type CffexContractRole,
+} from "@/lib/client/cffex-expiry"
 import { TimeframeSelect } from "@/components/ma/timeframe-select"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import {
@@ -80,12 +92,18 @@ export function ProTradingWorkspace({
   const [interval, setInterval] = useState<TimeframeId>("1m")
   const [basisInterval, setBasisInterval] = useState<TimeframeId>("1m")
   const [ivInterval, setIvInterval] = useState<TimeframeId>("1m")
+  const [contractRole, setContractRole] = useState<CffexContractRole>(() =>
+    (initialSymbol && cffexRoleOfContract(initialSymbol)) || "next",
+  )
+  const [ivMonth, setIvMonth] = useState<string | null>(null)
+  const [ivMonthPinned, setIvMonthPinned] = useState(false)
   const [tfLocked, setTfLocked] = useState(true)
   const [layout, setLayout] = useState<ProTradingLayout>(initialLayout)
   const [chartMode, setChartMode] = useState<"sleeves" | "single">("sleeves")
   const [showNavChart, setShowNavChart] = useState(false)
   const [mounted, setMounted] = useState(false)
   const klineRef = useRef<KlineChartHandle>(null)
+  const [viewportMode, setViewportMode] = useState<ChartViewportMode>(() => readStoredViewportMode())
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
   const awSymbols = paper.state.products
@@ -109,7 +127,11 @@ export function ProTradingWorkspace({
     if (!initialSymbol) return
     setSymbol(initialSymbol)
     setQuery(initialSymbol)
-  }, [open, initialSymbol, initialLayout])
+    const role = cffexRoleOfContract(initialSymbol) || "next"
+    setContractRole(role)
+    const prod = productOfSymbol(initialSymbol)
+    if (prod && ivMonthPinned) setIvMonth(cffexOptionMonthForRole(prod, role))
+  }, [open, initialSymbol, initialLayout, ivMonthPinned])
 
   useEffect(() => {
     if (layout !== "paper") setShowNavChart(false)
@@ -251,12 +273,41 @@ export function ProTradingWorkspace({
     if (!resolved) return
     setSymbol(resolved)
     setQuery(resolved)
+    const role = cffexRoleOfContract(resolved)
+    if (role) {
+      setContractRole(role)
+      const prod = productOfSymbol(resolved)
+      if (prod && ivMonthPinned) setIvMonth(cffexOptionMonthForRole(prod, role))
+    }
     if (isNhciSymbol(resolved) && isIntradayTimeframe(interval)) {
       setInterval("1d")
       if (tfLocked) {
         setBasisInterval("1d")
         setIvInterval("1d")
       }
+    }
+  }
+
+  function applyProductRole(nextProduct: string, role: CffexContractRole = contractRole) {
+    const picked = cffexContractForRole(nextProduct, role)
+    if (!picked) return
+    setContractRole(role)
+    if (layout === "paper") focusChart(picked)
+    else commit(picked)
+    setIvMonth(cffexOptionMonthForRole(nextProduct, role))
+    setIvMonthPinned(false)
+  }
+
+  function onContractRoleChange(role: CffexContractRole) {
+    setContractRole(role)
+    if (product) {
+      const picked = cffexContractForRole(product, role)
+      if (picked) {
+        if (layout === "paper") focusChart(picked)
+        else commit(picked)
+      }
+      setIvMonth(cffexOptionMonthForRole(product, role))
+      setIvMonthPinned(false)
     }
   }
 
@@ -294,13 +345,7 @@ export function ProTradingWorkspace({
             <button
               key={item.product}
               type="button"
-              onClick={() => {
-                const picked = pickMostActiveContract(symbols, item.product, quotes)
-                if (picked) {
-                  if (layout === "paper") focusChart(picked)
-                  else commit(picked)
-                }
-              }}
+              onClick={() => applyProductRole(item.product)}
               className={cn(
                 "rounded px-2 py-1 text-xs",
                 product === item.product ? "bg-[#4c84ff] text-white" : "bg-[#1e222d] text-[#adb3bd] hover:text-white",
@@ -323,6 +368,20 @@ export function ProTradingWorkspace({
             NHCI
           </button>
         </div>
+        <select
+          value={contractRole}
+          onChange={(e) => onContractRoleChange(e.target.value as CffexContractRole)}
+          disabled={isNhciSymbol(symbol) || !product}
+          title="合约月份：近月 / 远月 / 近季 / 远季"
+          className="h-8 rounded border border-[#2a2e39] bg-[#1e222d] px-2 text-xs text-[#d1d4dc] outline-none focus:border-[#4c84ff] disabled:opacity-40"
+        >
+          {CFFEX_CONTRACT_ROLES.map((role) => (
+            <option key={role.id} value={role.id}>
+              {role.label}
+              {product ? ` ${cffexContractForRole(product, role.id)}` : ""}
+            </option>
+          ))}
+        </select>
         <TimeframeSelect
           value={interval}
           onChange={(id) => selectTimeframe(id, "kline")}
@@ -374,6 +433,28 @@ export function ProTradingWorkspace({
             复位
           </button>
         </div>
+        <label
+          className="inline-flex h-7 shrink-0 items-center gap-1 rounded border border-[#2a2e39] bg-[#1e222d] px-2 text-[11px] text-[#adb3bd]"
+          title="图表视窗设置：自动缩放 / 跟随右侧 / 固定窗口"
+        >
+          <span className="text-[#787b86]">视窗</span>
+          <select
+            value={viewportMode}
+            onChange={(e) => {
+              const next = e.target.value as ChartViewportMode
+              setViewportMode(next)
+              klineRef.current?.setViewportMode(next)
+            }}
+            className="max-w-[7.5rem] cursor-pointer border-0 bg-transparent py-0 text-[11px] text-[#adb3bd] outline-none hover:text-white"
+            aria-label="图表视窗设置"
+          >
+            {CHART_VIEWPORT_MODES.map((mode) => (
+              <option key={mode.id} value={mode.id} title={mode.title}>
+                {mode.label}
+              </option>
+            ))}
+          </select>
+        </label>
         {layout === "paper" ? (
           <>
           <button
@@ -456,7 +537,7 @@ export function ProTradingWorkspace({
           <ResizablePanelGroup direction="horizontal">
             <ResizablePanel defaultSize={74} minSize={48}>
               {symbol ? (
-                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} />
+                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} viewportMode={viewportMode} onViewportModeChange={setViewportMode} />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
               )}
@@ -495,6 +576,11 @@ export function ProTradingWorkspace({
                       interval={tfLocked ? interval : ivInterval}
                       onIntervalChange={(id) => selectTimeframe(id, "iv")}
                       linked={tfLocked}
+                      ivMonth={ivMonth}
+                      onIvMonthChange={(m) => {
+                        setIvMonthPinned(!!m)
+                        setIvMonth(m)
+                      }}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">
@@ -559,6 +645,8 @@ export function ProTradingWorkspace({
                           marks={orderMarks}
                           activeTool={tool}
                           onTool={setTool}
+                          viewportMode={viewportMode}
+                          onViewportModeChange={setViewportMode}
                         />
                       </div>
                     </div>

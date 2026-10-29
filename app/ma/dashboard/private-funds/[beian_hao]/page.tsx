@@ -13,6 +13,7 @@ import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -1046,6 +1047,7 @@ export default function PrivateFundDetailPage() {
   const [ddBenchVisible, setDdBenchVisible] = useState(true)
   const [ddExcessVisible, setDdExcessVisible] = useState(true)
   const [returnLabelMode, setReturnLabelMode] = useState<ReturnLabelMode>("cumulative")
+  const [showEpisodeMarks, setShowEpisodeMarks] = useState(false)
   const [showTableBenchmarkChg, setShowTableBenchmarkChg] = useState(false)
   const [detailTab, setDetailTab] = useState<FundDetailTab>("performance")
 
@@ -2363,6 +2365,13 @@ export default function PrivateFundDetailPage() {
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-[7.5rem] text-xs">
+                  <DropdownMenuCheckboxItem
+                    checked={showEpisodeMarks}
+                    onCheckedChange={(checked) => setShowEpisodeMarks(checked === true)}
+                    title="按最大回撤排序的前5个谷底"
+                  >
+                    标注
+                  </DropdownMenuCheckboxItem>
                   <DropdownMenuItem onClick={handleDownloadNavChartImage}>下载图片</DropdownMenuItem>
                   <DropdownMenuItem onClick={handleDownloadNavChartData}>下载数据</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => setNavChartLightboxOpen(true)}>查看大图</DropdownMenuItem>
@@ -2382,7 +2391,7 @@ export default function PrivateFundDetailPage() {
               showExcess={chartMode === "return" && !!appliedBench && excessSeriesVisible}
               benchmarkLabel={benchmarkLabel}
               returnLabelMode={returnLabelMode}
-              episodeMarks={returnChartEpisodeMarks}
+              episodeMarks={showEpisodeMarks ? returnChartEpisodeMarks : []}
               materialMarks={materialChartMarks}
               onMaterialMarkClick={handleMaterialMarkClick}
             />

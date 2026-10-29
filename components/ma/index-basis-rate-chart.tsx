@@ -21,7 +21,8 @@ import {
   type IndexProduct,
 } from "@/lib/client/ctp-market"
 import { INDEX_CHART_COLOR, type SpotSnapshot } from "@/lib/client/realtime-overlay"
-import { formatCandleTime, getTimeframe, type TimeframeId } from "@/lib/client/timeframes"
+import { formatCandleTime, getTimeframe, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
+import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
 
 type Props = {
   title: string
@@ -174,6 +175,8 @@ export function IndexBasisRateChart({
           type: "inside",
           start: zoom?.start ?? 0,
           end: zoom?.end ?? 100,
+          // Keep full category axis so session/zero markLine never hits filtered holes.
+          filterMode: "none",
         },
       ],
       xAxis: {
@@ -204,13 +207,25 @@ export function IndexBasisRateChart({
           lineStyle: { width: 1.8, color },
           itemStyle: { color },
           areaStyle: { color: `${color}22`, origin: 0 },
-          markLine: {
-            silent: true,
-            symbol: "none",
-            lineStyle: { color: "#94a3b8", type: "dashed", width: 1 },
-            data: [{ yAxis: 0 }],
-            label: { show: false },
-          },
+          markLine: (() => {
+            const zero = { yAxis: 0, label: { show: false } }
+            const session =
+              isIntradayTimeframe(interval)
+                ? sessionOpenEchartsMarkLine(
+                    times,
+                    series.map((p) => p.time),
+                    dark,
+                    [zero],
+                  )
+                : {
+                    silent: true,
+                    symbol: "none",
+                    lineStyle: { color: "#94a3b8", type: "dashed", width: 1 },
+                    data: [zero],
+                    label: { show: false },
+                  }
+            return session
+          })(),
         },
       ],
     }
