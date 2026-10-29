@@ -41,7 +41,7 @@ PROFIT_SERIES: list[dict] = [
     {"emi_code": "EMM01855422", "product": "CU", "name_cn": "现货:中国铜冶炼厂:粗炼费TC", "freq_hint": "weekly"},
     {"emi_code": "EMI02082729", "product": "HC", "name_cn": "毛利:热轧", "freq_hint": "weekly"},
     {"emi_code": "EMI02082712", "product": "AL", "name_cn": "毛利:电解铝(百川)", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082691", "product": "V", "name_cn": "毛利:PVC糊树脂", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082691", "product": "V", "name_cn": "毛利:聚氯乙烯(PVC百川)", "freq_hint": "weekly"},
     {"emi_code": "EMI01734485", "product": "SA", "name_cn": "理论利润:氨碱法纯碱", "freq_hint": "weekly"},
     {"emi_code": "EMI01734483", "product": "SA", "name_cn": "理论利润(双吨):联碱法纯碱", "freq_hint": "weekly"},
     {"emi_code": "EMI01732831", "product": "M", "name_cn": "全国大豆压榨毛利润", "freq_hint": "daily"},

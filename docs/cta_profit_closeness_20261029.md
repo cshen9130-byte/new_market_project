@@ -103,3 +103,28 @@ Safer near-miss (not promoted): `cmb_wm0.7_lt0.35` — lvl 0.465, cr 0.481, YTD 
 - corr_ret tradeoff (3m 0.49→0.43; YTD 0.20→0.14)
 - Jul gap slightly worse (−0.59→−1.04); Sep fixed
 - Still missing dense daily NI/PB/SN / blacks / crack EMI for true WP edb+flip
+
+
+## Round-2 corr recovery (2026-10-29 Asia/Shanghai) — no promote
+
+Post hard-promote baseline (combo_m25_t0.5_wm0.7). Goal: claw back corr_ret without giving up lvl/Sep.
+
+### Data note (妙想)
+- EMI02082691 → V 毛利:聚氯乙烯(PVC百川) weekly — already in DB (95 nn); name_cn refreshed.
+- EMI02082729 → HC 热轧 weekly — already mapped.
+- EMI01968337 EG monthly — skipped.
+
+### Grid
+`tmp_profit_r2.*` — 387 configs (momL/top/wMom frontier, old×hard mixes, reweights, scale).
+
+### Best vs LIVE_hard (no clear Pareto)
+| | 3m cr | 3m lvl | 3m end/W | MAE | Sep | YTD end |
+|---|---:|---:|---:|---:|---:|---:|
+| LIVE_hard | 0.427 | **0.671** | **2.30/2.54** | **0.51** | **-0.24** | 8.53 |
+| best r2 (m24/t0.55/wm0.7) | **0.462** | **0.702** | 1.92/2.54 | 0.69 | -0.62 | 8.00 |
+| OLD_amp3 | 0.489 | 0.393 | 1.29/2.54 | 0.49 | -1.25 | 8.05 |
+
+Corr/lvl up but **MAE + Sep regress** vs hard LIVE → **no REPORT_FIT change**.
+
+### Residual
+corr↔path tradeoff plateau without new construction (weekly rebal / |z| TS / denser EMI).
