@@ -1130,12 +1130,17 @@ let REPORT_FIT = {
   // JA cr 0.027->0.284; J/F/M/A 0.36/1.05/1.67/1.63 -> -0.41/1.09/-0.04/0.80; H1 cr 0.339->0.476;
   // 3m 0.884->0.858; YTD 0.647->0.680 end +4.03->+3.54; summer 2.43->0.01 to 2.25->0.23.
   // See docs/cta_basis_spot_h1_dir_20261029.md.
-  basisSpotScale: 0.22,
+  // 2026-10-29 peer research: no public GTJAQH012 formula. 华泰 require_expand / 中泰 Δ failed on LS+invvol.
+  // Residual pass: enter 0.18→0.19 / exit 0.38→0.39 + nameClip 0.18 + scale 0.22→0.24.
+  // vs LIVE ls+invvol: JA 0.284→0.326; JFM -0.41/1.09/-0.04/0.80 → -0.62/0.90/0.02/1.07;
+  // H1 0.476→0.499; 3m 0.858→0.852; YTD 0.680→0.698 end +3.54→+5.34 (012~+5.6);
+  // summer 2.25→0.23 to 3.05→0.86 (012 3.34→0.93). See docs/cta_basis_spot_peer_20261029.md.
+  basisSpotScale: 0.24,
   basisSpotExclude: ["EC", "SH"] as string[],
   basisSpotLive: true,
   basisSpotRebal: "weeklyFri" as "daily" | "weeklyWed" | "weeklyFri",
-  basisSpotEnterFrac: 0.18,
-  basisSpotExitFrac: 0.38,
+  basisSpotEnterFrac: 0.19,
+  basisSpotExitFrac: 0.39,
   basisSpotLongHigh: true,
   basisSpotMode: "ls" as "ls" | "long_only" | "long_bias",
   basisSpotShortScale: 0,
@@ -1165,7 +1170,7 @@ let REPORT_FIT = {
   basisSpotSectorNeutral: false,
   basisSpotSectorCap: null as number | null,
   // nameClip: max |w| per name after equal/invvol (softens concentration).
-  basisSpotNameClip: null as number | null,
+  basisSpotNameClip: 0.18 as number | null,
   // dynScaleDispersion: scale *= clip(medDisp/curDisp, lo, hi) using score |ann| of held.
   basisSpotDynScaleDisp: false,
   basisSpotDynScaleClip: [0.5, 1.25] as [number, number],
