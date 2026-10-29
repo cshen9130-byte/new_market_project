@@ -17,4 +17,10 @@ REPORT_FIT price/OI reconstructions power the UI. This CSV is ground truth for r
 | 库存 | GTJAQH007.WI | 库存 |
 | 利润 | GTJAQH009.WI | 利润 |
 
-See calibration report: box `/workspace/cta-digitize/out/wind_calibrate_refine.*`
+## Brochure vs Excel naming
+
+CTA因子组合3号 brochure labels **长期截面 → GTJAQH022.WI** (价格对时间回归) and **基差 → GTJAQH021.WI**.
+The 001–013 Excel dump has neither 021 nor 022; UI calib uses closest labels **013=截面动量** and **012=基差**.
+Do not treat brochure numbers as Excel codes without verifying.
+
+See also: `docs/cta_cs_long_research_20261029.md`, box `/workspace/cta-digitize/out/wind_calibrate_refine.*`

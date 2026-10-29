@@ -1174,8 +1174,14 @@ let REPORT_FIT = {
   // dynScaleDispersion: scale *= clip(medDisp/curDisp, lo, hi) using score |ann| of held.
   basisSpotDynScaleDisp: false,
   basisSpotDynScaleClip: [0.5, 1.25] as [number, number],
-  // 2026-10-27 cs_long push: 3-leg blend beats simple L120 (3m 0.333/0.776, 1y 0.679/0.944 vs 0.211/0.639, 0.637/0.930)
-  // PRIOR simple path kept as flags: L120 top0.15 negZfalse demean secNeutral scale-1, blend disabled
+    // 2026-10-27 cs_long push: 3-leg blend beats simple L120 (3m 0.333/0.776, 1y 0.679/0.944 vs 0.211/0.639, 0.637/0.930)
+  // 2026-10-29 research: brochure CTA3 = GTJAQH022 价格对时间回归; Excel calib = GTJAQH013 截面动量 (022 absent
+  // from 001–013 dump — same naming mismatch pattern as 基差 021 vs 012). No public Guojun closed-form.
+  // Peers: 华泰 panel mom R=120/250; 东证 CS L/S top/bot 50% multi-window; MatrixCQY 252d tercile.
+  // Empirically: raise z/neg_z weights (0.2/0.35/0.45) + scale 0.95 vs LIVE 0.5/0.25/0.25×1:
+  // 3m cr 0.333→0.461 lvl 0.776→0.858; YTD cr 0.705→0.723 end 19.4→12.4 (013~+12.5); H1 0.779→0.788.
+  // Residual: Jan–Feb misses 013 early DD (ours flat/+). See docs/cta_cs_long_research_20261029.md.
+  // PRIOR: weights 0.5/0.25/0.25 scale 1.
   csLongL: 120,
   csLongR2: 0.15,
   csLongTopFrac: 0.15,
@@ -1185,11 +1191,11 @@ let REPORT_FIT = {
   csLongScale: -1.0,
   csLongBlend: {
     enabled: true,
-    scale: 1,
+    scale: 0.95,
     legs: [
-      { kind: "neg_slope" as const, L: 120, topFrac: 0.15, sectorNeutral: true, powerDaily: 1, weight: 0.5 },
-      { kind: "z" as const, L: 120, topFrac: 0.2, sectorNeutral: false, powerDaily: 1, weight: 0.25 },
-      { kind: "neg_z" as const, L: 250, topFrac: 0.2, sectorNeutral: true, powerDaily: 1, weight: 0.25 },
+      { kind: "neg_slope" as const, L: 120, topFrac: 0.15, sectorNeutral: true, powerDaily: 1, weight: 0.2 },
+      { kind: "z" as const, L: 120, topFrac: 0.2, sectorNeutral: false, powerDaily: 1, weight: 0.35 },
+      { kind: "neg_z" as const, L: 250, topFrac: 0.2, sectorNeutral: true, powerDaily: 1, weight: 0.45 },
     ],
   },
   // round14 CE: 8-leg multi-field shock blend (ret~0.56 lvl~0.90)
