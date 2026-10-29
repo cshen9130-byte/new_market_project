@@ -125,21 +125,22 @@ r = (Σ w r_{t+1} / Σ|w|) × (−0.7)`,
   },
   report_inventory: {
     key: "report_inventory",
-    title: "库存（国君 CTA 周报 · 注册仓单）",
-    summary: "默认 invRetBlend 三腿（社库+仓单）；vs GTJAQH007 3m corr_ret≈0.657。",
+    title: "库存（国君 CTA 周报 · 注册仓单/社会库存）",
+    summary: "invRetBlend 4-leg social+仓单+socialZ120 ×6.5; vs GTJAQH007 YTD lvl~0.87 end~7.4% (Wind~8.2); 3m end~4.4 (Wind~4.0)",
     paragraphs: [
-      "默认 invKind=invRetBlend（三腿：社库L5 w0.6 + 社库L10 lag1 w0.2 + 仓单L5 w0.2）。",
-      "校准 vs GTJAQH007：3m corr_ret≈0.657 / corr_lvl≈0.826（先前双腿 0.611/0.819）；1y corr_ret≈0.417。",
-      "备选 invKind：social / warehouse / socialZ / socialMulti / socialBlend / dOi；离线 ridge/GBM 未稳定抬升 OOS。",
+      "默认 invKind=invRetBlend（截面库存变化率，多去库/空累库）：social L5 w0.3 + warehouse L5 w0.25 + social L10 lag2 w0.2 + socialZ(120) w0.25，blend scale 6.5。",
+      "校准 vs Excel GTJAQH007（标签库存；brochure CTA3 常写 GTJAQH017，001–013 无 017）：YTD corr_lvl 0.68→0.87、end 0.9→7.4（Wind~8.2）；3m end 0.6→4.4（Wind~4.0）；3m corr_ret~0.645（略低于旧 0.657，换路径/振幅）。",
+      "可选 invKind：social / warehouse / socialZ / socialMulti / socialBlend / dOi。国君公开细则未披露参数；同业兴证/华泰/天风多为 Ave_CR 或环比 CS L/S。",
     ],
-    formula: `score_leg = -d% inventory (L per leg)
-r = sum w_k * CS_LS(score_leg_k) * scale_k   (3-leg invRetBlend)`,
+    formula: `score_leg = -Δ% inventory or -z(level) (per leg)
+r = scale * sum w_k * CS_LS(score_leg_k)   (4-leg invRetBlend ×6.5)`,
     bullets: [
-      "数据：raw_futures_warehouse_receipts_daily。对照：Wind GTJAQH007（校准-only）。",
-      "要再抬 corr_ret，需要更多品种的社会/港口/厂库库存序列（见 Choice wishlist）。",
+      "数据：raw_edb_commodity_inventory_daily（社会/港口等）+ raw_futures_warehouse_receipts_daily（仓单）；Wind GTJAQH007 仅离线校准。",
+      "残差：Apr–May/Aug 振幅仍偏软；无公开国君闭式公式。详见 docs/cta_inventory_research_20261029.md。",
     ],
   },
-  report_profit: {
+
+    report_profit: {
     key: "report_profit",
     title: "利润（国君 CTA 周报 · Carry 动量）",
     summary: "默认 profitRetBlend（carryMom 多 horizon 合成）；vs GTJAQH009 3m corr_ret≈0.489。",

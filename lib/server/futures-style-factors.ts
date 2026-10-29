@@ -1263,10 +1263,11 @@ let REPORT_FIT = {
   longRuleVolL: 40,
   longRuleVolCap: 1.2,
   longRuleScale: -0.7,
-  // inventory: 2026-10-27 expand EDB social (22 products) — social L5 beats warehouse on corr_ret
-  // 3m corr_ret 0.422 vs warehouse 0.358; 1y corr_ret 0.341 vs 0.110 (lvl still weaker than warehouse)
-  // warehouse / socialBlend kept as flags; Wind GTJAQH007 calibration only
-  // 2026-10-27 push2: invRetBlend retune 3m~0.657; prior 3-leg~0.649; profitRetBlend 3-leg~0.489 vs 0.433
+  // inventory: 2026-10-29 peer research + amp/path vs GTJAQH007 (Excel 库存; brochure CTA3=017)
+  // Brochure: CS 库存变化率, 多去库/空累库. No Guojun closed-form; peers Xingzheng/Huatai/TF Ave_CR & d%.
+  // Promote: 4-leg invRetBlend + socialZ120 (level) + scale 6.5; weights 0.3/0.25/0.2/0.25
+  // vs LIVE 3-leg: YTD lvl 0.68→0.87, YTD end 0.9→7.4 (Wind~8.2), 3m end 0.6→4.4 (Wind~4.0); 3m cr~0.645
+  // PRIOR 2026-10-27 push2 3-leg social+wh (3m cr~0.657/lvl0.808) amp too small vs Wind
   invKind: "invRetBlend" as const,
   invTopFrac: 0.25,
   invScale: 0.2,
@@ -1277,29 +1278,24 @@ let REPORT_FIT = {
   invSocialL2: 1,
   invSocialWeight: 0.7,
   invLag: 0,
-  invZWin: 60,
+  invZWin: 120,
   invMinCov: 6,
   invDoiFallback: true,
   invFlip: false,
-  // PRIOR_LIVE_FLAGS (kept for rollback; not active)
-  // prior push1 invRetBlend 3-leg: socialL5 w0.6 + socialL10 lag1 w0.2 + whL5 w0.2 → 3m 0.649/0.826
-  // prior push1 profitRetBlend 2-leg: L30 top0.35 s0.08 ⊕ L20 top0.2 s0.05 → 3m 0.433/0.699
-  // prior invRetBlend 2-leg: social L5 top0.2 scale0.3 lag1 w0.3 + social L5 top0.3 scale0.15 lag0 w0.7 → 3m 0.611/0.819
-  // prior profitKind carryMom L30 top0.3 scale0.05 → 3m 0.341/0.523, 1y 0.204/0.857
-  // closer: 3-leg social+warehouse (3m corr_ret 0.649 vs prior 0.611)
-  // push2: 3-leg retune (3m 0.657/0.808, 1y 0.418/0.702) vs prior 0.649/0.826
   invRetBlend: {
     enabled: true,
-    scale: 1,
+    scale: 6.5,
     legs: [
       { invKind: "social" as const, invSocialL: 5, invTopFrac: 0.3, invScale: 0.1, invLag: 0, weight: 0.3 },
-      { invKind: "warehouse" as const, invWhL: 5, invTopFrac: 0.35, invScale: 0.15, invLag: 0, weight: 0.3 },
-      { invKind: "social" as const, invSocialL: 10, invTopFrac: 0.4, invScale: 0.1, invLag: 2, weight: 0.4 },
+      { invKind: "warehouse" as const, invWhL: 5, invTopFrac: 0.35, invScale: 0.12, invLag: 0, weight: 0.25 },
+      { invKind: "social" as const, invSocialL: 10, invTopFrac: 0.4, invScale: 0.08, invLag: 2, weight: 0.2 },
+      { invKind: "socialZ" as const, invZWin: 120, invTopFrac: 0.25, invScale: 0.08, invLag: 0, weight: 0.25 },
     ],
   },
   // closeness: carryMom L30 top0.3 lifts 3m corr_ret 0.275→0.341 and 1y 0.107→0.204
   // closer: 2-leg multi-horizon carryMom (3m corr_ret 0.433 vs L30-only 0.341)
-  profitKind: "profitRetBlend" as const,
+  
+profitKind: "profitRetBlend" as const,
   profitTopFrac: 0.3,
   profitLevelTopFrac: 0.35,
   profitMomL: 30,
