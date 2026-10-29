@@ -1346,9 +1346,10 @@ profitKind: "profitRetBlend" as const,
   profitMomWeight: 0.5,
   profitScale: 0.05,
   // push2: 3-leg carryMom+blend (3m 0.489/0.709) vs prior 2-leg 0.433/0.699
+  // 2026-10-29 amp pass: scale 1->3 (YTD end 8.05 vs Wind 8.33; 3m MAE 1.06->0.49; corr_ret unchanged)
   profitRetBlend: {
     enabled: true,
-    scale: 1,
+    scale: 3,
     legs: [
       { profitKind: "carryMom" as const, profitMomL: 30, profitTopFrac: 0.4, profitScale: 0.05, weight: 0.4 },
       { profitKind: "carryMom" as const, profitMomL: 20, profitTopFrac: 0.35, profitScale: 0.03, weight: 0.1 },

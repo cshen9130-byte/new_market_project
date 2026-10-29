@@ -142,20 +142,22 @@ LS topN8 on Δ/z legs; LO top8 on Ave leg; r = 4.75 * Σ w_k CS(score_k)`,
 
     report_profit: {
     key: "report_profit",
-    title: "利润（国君 CTA 周报 · Carry 动量）",
-    summary: "默认 profitRetBlend（carryMom 多 horizon 合成）；vs GTJAQH009 3m corr_ret≈0.489。",
+    title: "利润（国君 CTA 经典 / Carry 代理）",
+    summary: "默认 profitRetBlend（carryMom 多 horizon 合成）×scale3；校准 GTJAQH009；WP=产业利润历史偏低/偏高时序择时",
     paragraphs: [
-      "默认 profitKind=profitRetBlend（carryMom L30 top0.35 scale0.08 ⊕ L20 top0.2 scale0.05，等权；全日腿齐全才出信号）。",
-      "校准 vs GTJAQH009：3m corr_ret≈0.489 / corr_lvl≈0.699（先前 L30-only 0.341/0.523）；1y corr_ret≈0.174（守 0.85×先验底）。",
-      "备选：carryMom / carry / carryMomBlend / edb / edbMom / edbBlend；EDB 覆盖仍偏稀。",
+      "国君经典-8 白皮书：时序；基于产业利润估值回归；做多当前利润相对历史偏低、做空偏高；Wind GTJAQH009.WI / Bloomberg GTJAFPRF。",
+      "默认 profitKind=profitRetBlend（push2 3-leg）：carryMom L30 top0.4 scale0.05 w0.4 + carryMom L20 top0.35 scale0.03 w0.1 + carryMomBlend L20 (wMom0.4) scale0.08 w0.5；全腿齐才出信号。",
+      "2026-10-29 amp：profitRetBlend.scale 1→3（corr_ret 不变；YTD end ~8.05 vs Wind 8.33；3m MAE 1.06→0.49）。纯 EDB level-z+flip 在当前利润广度下未胜 LIVE。",
+      "可选：carryMom / carry / carryMomBlend / edb / edbMom / edbBlend / edbMomBlend（EDB 产业利润仍偏稀，~13 品种）。",
     ],
     formula: `score = Carry_t - Carry_{t-L}   (L in {30,20})
-r = 0.5*CS_LS(L30)*0.08 + 0.5*CS_LS(L20)*0.05`,
+r = blend(legs) * scale3`,
     bullets: [
-      "对照：Wind GTJAQH009。更多盘面加工利润 EMI 见 Choice wishlist。",
+      "校准：Wind GTJAQH009（USE_WIND_GTJAQH=false live）；缺口：更多加工/冶炼/压榨利润 EMI → Choice wishlist。",
     ],
   },
-  report_basis_mom: {
+
+report_basis_mom: {
     key: "report_basis_mom",
     title: "基差动量（CTA/REPORT_FIT）",
     summary: "Carry 相对 20 日前变化的截面动量。",
