@@ -250,7 +250,7 @@ function priceTimeRegression(
   closes: number[],
   endIdx: number,
   window: number,
-): { slope: number; r2: number; z: number } | null {
+): { slope: number; r2: number; z: number; tStat: number } | null {
   // Match report-fit searcher: require a full window of index span before fitting.
   if (endIdx + 1 < window) return null
   const xs: number[] = []
@@ -291,8 +291,49 @@ function priceTimeRegression(
   const r2 = ssTot < 1e-18 ? 0 : 1 - ssRes / ssTot
   const sig = Math.sqrt(ssRes / Math.max(n - 2, 1))
   const z = sig > 1e-12 ? (ys[n - 1] - fits[n - 1]) / sig : 0
-  return { slope, r2, z }
+  // t-stat of slope (WP「强度」candidate alongside R²)
+  const seSlope = den > 1e-18 ? sig / Math.sqrt(den) : 0
+  const tStat = seSlope > 1e-12 ? slope / seSlope : 0
+  return { slope, r2, z, tStat }
 }
+
+/** Map OLS regression to CS score. WP 长期截面: 因子值 = 回归系数 × 强度 (R² or |t|). */
+function olsCsScore(
+  reg: { slope: number; r2: number; z: number; tStat?: number },
+  kind: string,
+): number | null {
+  const tAbs = Math.abs(Number(reg.tStat ?? 0))
+  switch (kind) {
+    case "slope":
+    case "ols_slope":
+      return reg.slope
+    case "neg_slope":
+    case "ols_neg_slope":
+      return -reg.slope
+    case "z":
+    case "ols_z":
+      return reg.z
+    case "neg_z":
+    case "ols_neg_z":
+      return -reg.z
+    case "slope_r2":
+    case "ols_slope_r2":
+      return reg.slope * reg.r2
+    case "neg_slope_r2":
+    case "ols_neg_slope_r2":
+      return -reg.slope * reg.r2
+    case "slope_t":
+    case "ols_slope_t":
+      return reg.slope * tAbs
+    case "neg_slope_t":
+    case "ols_neg_slope_t":
+      return -reg.slope * tAbs
+    default:
+      return null
+  }
+}
+
+
 
 function tsMomEqualWeight(
   products: string[],
@@ -1201,7 +1242,7 @@ let REPORT_FIT = {
   // 2026-10-29 csLong V2: peer/other-AI score formulas + LO/LS + weekly/buffer (calib vs GTJAQH013).
   // When csLongV2=true, replaces blend/simple OLS path below.
   csLongV2: false,
-  csLongScoreKind: "ret" as "ret" | "risk_adj" | "avg_mom" | "ols_slope" | "ols_neg_slope" | "ols_z" | "ols_neg_z",
+  csLongScoreKind: "ret" as "ret" | "risk_adj" | "avg_mom" | "ols_slope" | "ols_neg_slope" | "ols_z" | "ols_neg_z" | "ols_slope_r2" | "ols_neg_slope_r2" | "ols_slope_t" | "ols_neg_slope_t",
   csLongK: 120,
   csLongAvgMomN: 6,
   csLongSkip: 0,
@@ -1225,7 +1266,7 @@ let REPORT_FIT = {
   // Honest: Wind CSV max 2026-10-02 (last real 9/30); 国君 chart to 10/08 not in calib; late-Sep hockey-stick only partially matched.
   // See docs/cta_cs_long_loop_20261029.md.
   csLongHybridW: 0.38,
-  csLongHybridKind: 'ols_neg_slope' as 'ret' | 'risk_adj' | 'avg_mom' | 'ols_slope' | 'ols_neg_slope' | 'ols_z' | 'ols_neg_z',
+  csLongHybridKind: 'ols_neg_slope' as 'ret' | 'risk_adj' | 'avg_mom' | 'ols_slope' | 'ols_neg_slope' | 'ols_z' | 'ols_neg_z' | 'ols_slope_r2' | 'ols_neg_slope_r2' | 'ols_slope_t' | 'ols_neg_slope_t',
   csLongHybridK: 60,
   csLongHybridMode: 'long_only' as 'ls' | 'long_only',
   csLongHybridRebal: 'weeklyFri' as 'daily' | 'weeklyFri' | 'monthly',
@@ -2012,13 +2053,13 @@ function computeDailyFactorReturns(
             cursor -= 20
           }
           if (monthRets.length >= Math.max(2, Math.floor(avgN * 0.5))) score = mean(monthRets)
-        } else if (kind === "ols_slope" || kind === "ols_neg_slope" || kind === "ols_z" || kind === "ols_neg_z") {
+        } else if (kind === "ols_slope" || kind === "ols_neg_slope" || kind === "ols_z" || kind === "ols_neg_z" || kind === "ols_slope_r2" || kind === "ols_neg_slope_r2" || kind === "ols_slope_t" || kind === "ols_neg_slope_t" || kind.endsWith("_r2") || kind.endsWith("_t")) {
           const reg = priceTimeRegression(closes, endScore, K)
           if (reg != null && reg.r2 >= REPORT_FIT.csLongR2) {
-            if (kind === "ols_slope") score = reg.slope
-            else if (kind === "ols_neg_slope") score = -reg.slope
-            else if (kind === "ols_z") score = reg.z
-            else score = -reg.z
+            {
+              const s = olsCsScore(reg, kind)
+              if (s != null) score = s
+            }
           }
         }
         if (score == null || !Number.isFinite(score)) continue
@@ -2114,7 +2155,8 @@ function computeDailyFactorReturns(
         for (const p of products) {
           const reg = priceTimeRegression(closeHist[p], i, leg.L)
           if (reg == null || reg.r2 < REPORT_FIT.csLongR2) continue
-          const score = leg.kind === "neg_slope" ? -reg.slope : leg.kind === "z" ? reg.z : -reg.z
+          const score = olsCsScore(reg, String(leg.kind))
+          if (score == null || !Number.isFinite(score)) continue
           scores.push({ product: p, score })
         }
         demeanInPlace(scores, !!leg.sectorNeutral)
@@ -2151,13 +2193,13 @@ function computeDailyFactorReturns(
           const closes = closeHist[p]
           if (!closes) continue
           let score: number | null = null
-          if (kind === 'ols_neg_slope' || kind === 'ols_slope' || kind === 'ols_z' || kind === 'ols_neg_z') {
+          if (kind === 'ols_neg_slope' || kind === 'ols_slope' || kind === 'ols_z' || kind === 'ols_neg_z' || kind === 'ols_slope_r2' || kind === 'ols_neg_slope_r2' || kind === 'ols_slope_t' || kind === 'ols_neg_slope_t' || kind.endsWith('_r2') || kind.endsWith('_t')) {
             const reg = priceTimeRegression(closes, i, K)
             if (reg != null && reg.r2 >= REPORT_FIT.csLongR2) {
-              if (kind === 'ols_slope') score = reg.slope
-              else if (kind === 'ols_neg_slope') score = -reg.slope
-              else if (kind === 'ols_z') score = reg.z
-              else score = -reg.z
+              {
+                const s = olsCsScore(reg, kind)
+                if (s != null) score = s
+              }
             }
           } else if (kind === 'ret') {
             score = rollingReturn(closes, i, K)
