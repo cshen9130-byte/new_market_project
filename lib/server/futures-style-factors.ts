@@ -1124,18 +1124,20 @@ let REPORT_FIT = {
   basisSpotTopFrac: 0.15,
   // With buffer on, enter/exit fracs size the basket; topN is unused by crossSectionLsBuffered (kept as doc intent).
     basisSpotTopN: 5 as number | null,
-    // 2026-10-29 May->Jul path amp: enter 0.15->0.18 / exit 0.35->0.38 + scale 0.22->0.16
-  // + mktVolGate 80%x0.7 -> 75%x0.5. Summer visual 4.24pp->2.41pp (012 2.4pp);
-  // pathDrop -4.09%->-2.36% (012 -2.33%); 3m 0.880->0.884, YTD 0.638->0.647, H1 0.324->0.339;
-  // roll20 1.34->0.885; end +5.15%->+4.03%. See docs/cta_basis_spot_amp_20261029.md.
-  basisSpotScale: 0.16,
+    // 2026-10-29 May->Jul path amp: enter 0.15->0.18 / exit 0.35->0.38 + scale 0.22->0.16 + gate 75x0.5.
+  // 2026-10-29 H1 dir pass: long_only cannot match 012 Jan-Apr (ours up, 012 down/flat; JA cr~0.03).
+  // Promote mode=ls + csWeight=invvol + scale 0.16->0.22 (keep e18/38 g75x0.5). vs LO LIVE:
+  // JA cr 0.027->0.284; J/F/M/A 0.36/1.05/1.67/1.63 -> -0.41/1.09/-0.04/0.80; H1 cr 0.339->0.476;
+  // 3m 0.884->0.858; YTD 0.647->0.680 end +4.03->+3.54; summer 2.43->0.01 to 2.25->0.23.
+  // See docs/cta_basis_spot_h1_dir_20261029.md.
+  basisSpotScale: 0.22,
   basisSpotExclude: ["EC", "SH"] as string[],
   basisSpotLive: true,
   basisSpotRebal: "weeklyFri" as "daily" | "weeklyWed" | "weeklyFri",
   basisSpotEnterFrac: 0.18,
   basisSpotExitFrac: 0.38,
   basisSpotLongHigh: true,
-  basisSpotMode: "long_only" as "ls" | "long_only" | "long_bias",
+  basisSpotMode: "ls" as "ls" | "long_only" | "long_bias",
   basisSpotShortScale: 0,
   basisSpotSpotLag: 0,
   // CS basket weights within long (and short) legs. equal = prior live.
@@ -1143,7 +1145,7 @@ let REPORT_FIT = {
   // vol: high-vol gets larger weight. Vol lookback = basisSpotVolL (rets).
   // basisSpotRuleHygiene: per-rebal drop stale spot or extreme |S/F-1|>0.25 (rule-based, not Wind day-match).
   // zscore|abs_score: within-basket magnitude weights (not full-book vol CS). Default equal.
-  basisSpotCsWeight: "equal" as "equal" | "invvol" | "vol" | "zscore" | "abs_score",
+  basisSpotCsWeight: "invvol" as "equal" | "invvol" | "vol" | "zscore" | "abs_score",
   basisSpotVolL: 20,
   // 2026-10-28 research: 华泰 ann_pct=(S/F-1)*365/T Pareto vs level on 3m+YTD+H1 (0.881/0.626/0.312); scale 0.30→0.25 end match. See docs/cta_basis_factor_research_20261028.md + tmp_basis_spot_research_grid.md
   basisSpotRuleHygiene: true,
