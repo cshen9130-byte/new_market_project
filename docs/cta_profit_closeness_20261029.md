@@ -68,3 +68,38 @@ Loader: `loadEdbIndustryProfit` now `DISTINCT ON (trade_date, product)` preferri
 
 ### Residual gaps
 NI/PB/SN smelting; I/J/JM blacks; SC/FU/BU cracks; MA/PP/L/EG processing; CF/SR/C ags — still sparse or missing daily EMI.
+
+
+## Harder refine pass (2026-10-29 Asia/Shanghai) — PROMOTED
+
+### Diagnose (LIVE 3m vs GTJAQH009)
+| month | ours | Wind | gap |
+|---|---:|---:|---:|
+| 2026-07 | 0.98 | 1.57 | -0.59 |
+| 2026-08 | 1.33 | 1.43 | -0.10 |
+| 2026-09 | 1.29 | 2.54 | **-1.25** |
+
+Main residual was **Sep under-run** + soft 3m lvl corr (~0.39).
+
+### Grid
+`tmp_profit_hard_refine.*` (207) + `tmp_profit_hard_verify.*` — lookbacks/topFrac/wMom/4-leg/tiny edb hybrids.
+
+### Before / after vs GTJAQH009 (eval to 2026-10-02)
+
+| | 3m cr | 3m lvl | 3m end/W | 3m MAE | Sep gap | YTD cr | YTD end/W | YTD MAE |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **BEFORE** (scale3 LIVE) | 0.489 | 0.393 | 1.29/2.54 | 0.49 | -1.25 | 0.202 | 8.06/8.33 | 2.33 |
+| **AFTER** combo_m25_t0.5_wm0.7 | **0.427** | **0.671** | **2.30/2.54** | 0.51 | **-0.24** | 0.144 | **8.53/8.33** | **2.19** |
+
+Safer near-miss (not promoted): `cmb_wm0.7_lt0.35` — lvl 0.465, cr 0.481, YTD 8.32; Sep still ~-1.2.
+
+### Promote knobs
+`profitRetBlend.scale` stays **3**; legs:
+1. carryMom L**25** top**0.5** scale0.05 w0.4
+2. carryMom L20 top0.35 scale0.03 w0.1 (unchanged)
+3. carryMomBlend L20 top**0.15** lvlTop0.35 wMom**0.7** scale0.08 w0.5
+
+### Residual
+- corr_ret tradeoff (3m 0.49→0.43; YTD 0.20→0.14)
+- Jul gap slightly worse (−0.59→−1.04); Sep fixed
+- Still missing dense daily NI/PB/SN / blacks / crack EMI for true WP edb+flip

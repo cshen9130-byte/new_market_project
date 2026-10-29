@@ -53,3 +53,8 @@ Still thin industry-margin coverage. Priority Choice EMI/EDB wishlist remains in
 - Upserted daily soy crush (农业部+汇易 → M/Y) + Cu RC + AL 百川 remap; catalog 17→21 codes / 13→14 products.
 - Re-grid WP `edb`+flip / edbMom / tiny LIVE blends (`tmp_profit_dense_grid.*`): **LIVE still wins**; no REPORT_FIT change.
 - Loader prefers one EMI per product (daily + primary). Residual: metals/blacks/chem beyond CU/ZN/AL/RB/HC/TA/V/SA/Y/M.
+
+
+## Harder refine (2026-10-29)
+- Diagnosed LIVE 3m: Sep gap −1.25pp dominates lvl soft (~0.39).
+- Promoted combo: L0 momL25/top0.5 + L2 top0.15/wMom0.7 @ scale3 → 3m lvl 0.67, end 2.30/2.54, Sep −0.24; corr_ret tradeoff accepted for path.

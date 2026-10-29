@@ -1361,13 +1361,14 @@ profitKind: "profitRetBlend" as const,
   profitScale: 0.05,
   // push2: 3-leg carryMom+blend (3m 0.489/0.709) vs prior 2-leg 0.433/0.699
   // 2026-10-29 amp pass: scale 1->3 (YTD end 8.05 vs Wind 8.33; 3m MAE 1.06->0.49; corr_ret unchanged)
+  // 2026-10-29 hard refine: L0 momL25 top0.5 + L2 top0.15 wMom0.7 (3m lvl 0.39→0.67; Sep gap -1.25→-0.24; cr tradeoff)
   profitRetBlend: {
     enabled: true,
     scale: 3,
     legs: [
-      { profitKind: "carryMom" as const, profitMomL: 30, profitTopFrac: 0.4, profitScale: 0.05, weight: 0.4 },
+      { profitKind: "carryMom" as const, profitMomL: 25, profitTopFrac: 0.5, profitScale: 0.05, weight: 0.4 },
       { profitKind: "carryMom" as const, profitMomL: 20, profitTopFrac: 0.35, profitScale: 0.03, weight: 0.1 },
-      { profitKind: "carryMomBlend" as const, profitMomL: 20, profitTopFrac: 0.2, profitLevelTopFrac: 0.35, profitMomWeight: 0.4, profitScale: 0.08, weight: 0.5 },
+      { profitKind: "carryMomBlend" as const, profitMomL: 20, profitTopFrac: 0.15, profitLevelTopFrac: 0.35, profitMomWeight: 0.7, profitScale: 0.08, weight: 0.5 },
     ],
   },
   profitEdbL: 20,
