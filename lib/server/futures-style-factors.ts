@@ -1263,11 +1263,10 @@ let REPORT_FIT = {
   longRuleVolL: 40,
   longRuleVolCap: 1.2,
   longRuleScale: -0.7,
-  // inventory: 2026-10-29 peer research + amp/path vs GTJAQH007 (Excel 库存; brochure CTA3=017)
-  // Brochure: CS 库存变化率, 多去库/空累库. No Guojun closed-form; peers Xingzheng/Huatai/TF Ave_CR & d%.
-  // Promote: 4-leg invRetBlend + socialZ120 (level) + scale 6.5; weights 0.3/0.25/0.2/0.25
-  // vs LIVE 3-leg: YTD lvl 0.68→0.87, YTD end 0.9→7.4 (Wind~8.2), 3m end 0.6→4.4 (Wind~4.0); 3m cr~0.645
-  // PRIOR 2026-10-27 push2 3-leg social+wh (3m cr~0.657/lvl0.808) amp too small vs Wind
+  // inventory: 2026-10-29 HARDER loop vs GTJAQH007 (Excel 库存; brochure 017 slogan only)
+  // Other-AI: Ave_CR Inv/MA-1 + LO TopN helped soft months; pure Ave LS / pctile LS failed path.
+  // Promote R3: 4-leg topN8 LS + socialAve80 LO aw0.18, blend scale 4.75
+  // vs 479b21f4: 3m cr 0.645→0.697, YTD cr 0.487→0.569, lvl 0.87→0.94, end 7.4→8.8 (Wind~8.2)
   invKind: "invRetBlend" as const,
   invTopFrac: 0.25,
   invScale: 0.2,
@@ -1284,17 +1283,18 @@ let REPORT_FIT = {
   invFlip: false,
   invRetBlend: {
     enabled: true,
-    scale: 6.5,
+    scale: 4.75,
     legs: [
-      { invKind: "social" as const, invSocialL: 5, invTopFrac: 0.3, invScale: 0.1, invLag: 0, weight: 0.3 },
-      { invKind: "warehouse" as const, invWhL: 5, invTopFrac: 0.35, invScale: 0.12, invLag: 0, weight: 0.25 },
-      { invKind: "social" as const, invSocialL: 10, invTopFrac: 0.4, invScale: 0.08, invLag: 2, weight: 0.2 },
-      { invKind: "socialZ" as const, invZWin: 120, invTopFrac: 0.25, invScale: 0.08, invLag: 0, weight: 0.25 },
+      { invKind: "social" as const, invSocialL: 5, invTopN: 8, invScale: 0.1, invLag: 0, weight: 0.246 },
+      { invKind: "warehouse" as const, invWhL: 5, invTopN: 8, invScale: 0.12, invLag: 0, weight: 0.205 },
+      { invKind: "social" as const, invSocialL: 10, invTopN: 8, invScale: 0.08, invLag: 2, weight: 0.164 },
+      { invKind: "socialZ" as const, invZWin: 120, invTopN: 8, invScale: 0.08, invLag: 0, weight: 0.205 },
+      { invKind: "socialAve" as const, invSocialL: 80, invMode: "long_only" as const, invTopN: 8, invScale: 0.12, invLag: 0, weight: 0.18 },
     ],
   },
+
   // closeness: carryMom L30 top0.3 lifts 3m corr_ret 0.275→0.341 and 1y 0.107→0.204
   // closer: 2-leg multi-horizon carryMom (3m corr_ret 0.433 vs L30-only 0.341)
-  
 profitKind: "profitRetBlend" as const,
   profitTopFrac: 0.3,
   profitLevelTopFrac: 0.35,
@@ -2350,7 +2350,8 @@ function computeDailyFactorReturns(
       kindLocal: string,
       opts: {
         L?: number; L2?: number; wWh?: number; socL?: number; socL2?: number; socW?: number;
-        invLag?: number; zWin?: number; topFrac?: number; scale?: number; flip?: boolean;
+        invLag?: number; zWin?: number; topFrac?: number; topN?: number | null; scale?: number; flip?: boolean;
+        mode?: "ls" | "long_only";
       },
     ): number | null {
       const L = Math.max(1, Number(opts.L ?? 5) | 0)
@@ -2362,8 +2363,10 @@ function computeDailyFactorReturns(
       const invLag = Math.max(0, Number(opts.invLag ?? 0) | 0)
       const zWin = Math.max(5, Number(opts.zWin ?? 60) | 0)
       const topFrac = Number(opts.topFrac ?? 0.25)
+      const topN = opts.topN != null && Number(opts.topN) > 0 ? Math.floor(Number(opts.topN)) : null
       const scale = Number(opts.scale ?? 0.2)
       const flip = !!opts.flip
+      const mode = (opts.mode ?? "ls") as "ls" | "long_only"
       const idx = Math.max(0, i - invLag)
       const scores: Array<{ product: string; score: number }> = []
       for (const p of products) {
@@ -2383,32 +2386,68 @@ function computeDailyFactorReturns(
           if (cur == null || prev == null || !(prev > 0) || !Number.isFinite(cur)) return null
           return -(cur / prev - 1)
         }
-        const levelZ = (series: (number | null)[] | undefined, win: number): number | null => {
-          if (!series) return null
+        const windowVals = (series: (number | null)[] | undefined, win: number): number[] => {
+          if (!series) return []
           const xs: number[] = []
           for (let k = idx - win + 1; k <= idx; k++) {
             if (k < 0) continue
             const v = series[k]
             if (v != null && Number.isFinite(v)) xs.push(v)
           }
+          return xs
+        }
+        const levelZ = (series: (number | null)[] | undefined, win: number): number | null => {
+          const xs = windowVals(series, win)
           if (xs.length < Math.max(5, Math.floor(win * 0.5))) return null
           const mu = xs.reduce((a, b) => a + b, 0) / xs.length
           const sd = Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length)
-          const cur = series[idx]
+          const cur = series![idx]
           if (!(sd > 1e-12) || cur == null || !Number.isFinite(cur)) return null
           return -((cur - mu) / sd)
         }
+        // Ave_CR: Inv(t)/mean(t-N..t-1) - 1; low (destock) => long => negate
+        const aveCr = (series: (number | null)[] | undefined, win: number): number | null => {
+          if (!series || idx < 1) return null
+          const xs: number[] = []
+          for (let k = idx - win; k <= idx - 1; k++) {
+            if (k < 0) continue
+            const v = series[k]
+            if (v != null && Number.isFinite(v) && v > 0) xs.push(v)
+          }
+          if (xs.length < Math.max(3, Math.floor(win * 0.4))) return null
+          const mu = xs.reduce((a, b) => a + b, 0) / xs.length
+          const cur = series[idx]
+          if (!(mu > 1e-12) || cur == null || !Number.isFinite(cur) || !(cur > 0)) return null
+          return -(cur / mu - 1)
+        }
+        // Percentile rank of current vs trailing window; low pctile => long => negate (or use 1-pct)
+        const pctile = (series: (number | null)[] | undefined, win: number): number | null => {
+          const xs = windowVals(series, win)
+          if (xs.length < Math.max(5, Math.floor(win * 0.5))) return null
+          const cur = series![idx]
+          if (cur == null || !Number.isFinite(cur)) return null
+          let below = 0
+          for (const v of xs) if (v <= cur) below++
+          const pr = below / xs.length // 0..1 high = high inventory
+          return -(pr) // low inventory => high score
+        }
         let whScore: number | null = null
-        if (kindLocal === "warehouse" || kindLocal === "socialBlend" || kindLocal === "warehouseZ" || kindLocal === "warehouseMulti") {
+        const whKinds = new Set(["warehouse", "socialBlend", "warehouseZ", "warehouseMulti", "warehouseAve", "warehousePctile"])
+        if (whKinds.has(kindLocal)) {
           if (kindLocal === "warehouseZ") whScore = levelZ(hist, L)
+          else if (kindLocal === "warehouseAve") whScore = aveCr(hist, L)
+          else if (kindLocal === "warehousePctile") whScore = pctile(hist, zWin > 5 ? zWin : L)
           else if (kindLocal === "warehouseMulti") {
             const a = whPct(L), b = whPct(L2)
             whScore = a != null && b != null ? wWh * a + (1 - wWh) * b : (a ?? b)
           } else whScore = whPct(L)
         }
         let socialScore: number | null = null
-        if (kindLocal === "social" || kindLocal === "socialBlend" || kindLocal === "socialZ" || kindLocal === "socialMulti") {
+        const socKinds = new Set(["social", "socialBlend", "socialZ", "socialMulti", "socialAve", "socialPctile"])
+        if (socKinds.has(kindLocal)) {
           if (kindLocal === "socialZ") socialScore = levelZ(sh, zWin)
+          else if (kindLocal === "socialAve") socialScore = aveCr(sh, socL)
+          else if (kindLocal === "socialPctile") socialScore = pctile(sh, zWin)
           else if (kindLocal === "socialMulti") {
             const a = socPct(socL), b = socPct(socL2)
             socialScore = a != null && b != null ? socW * a + (1 - socW) * b : (a ?? b)
@@ -2416,8 +2455,8 @@ function computeDailyFactorReturns(
         }
         let score: number | null = null
         if (kindLocal === "dOi") score = dOiScore
-        else if (kindLocal === "warehouse" || kindLocal === "warehouseZ" || kindLocal === "warehouseMulti") score = whScore
-        else if (kindLocal === "social" || kindLocal === "socialZ" || kindLocal === "socialMulti") score = socialScore
+        else if (kindLocal.startsWith("warehouse")) score = whScore
+        else if (kindLocal.startsWith("social") && kindLocal !== "socialBlend") score = socialScore
         else if (kindLocal === "socialBlend") score = (socialScore != null && whScore != null) ? wWh * socialScore + (1 - wWh) * whScore : (socialScore ?? whScore ?? dOiScore)
         else score = dOiScore
         if (score != null && Number.isFinite(score)) scores.push({ product: p, score })
@@ -2428,7 +2467,21 @@ function computeDailyFactorReturns(
           if (d != null && Number.isFinite(d) && !scores.some((s) => s.product === p)) scores.push({ product: p, score: -d })
         }
       }
-      let r = crossSectionLs(scores, nextRet, true, topFrac)
+      let r: number | null = null
+      if (mode === "long_only") {
+        const usable = scores.filter((s) => Number.isFinite(s.score) && nextRet[s.product] != null)
+        if (usable.length >= 4) {
+          usable.sort((a, b) => a.score - b.score)
+          const nTake = topN != null && topN > 0
+            ? Math.max(1, Math.min(topN, usable.length))
+            : Math.max(1, Math.floor(usable.length * topFrac))
+          // longHigh=true: long highest scores (already -inv => destock)
+          const longSide = usable.slice(-nTake)
+          r = mean(longSide.map((x) => nextRet[x.product]))
+        }
+      } else {
+        r = crossSectionLs(scores, nextRet, true, topFrac, topN)
+      }
       if (r != null && flip) r = -r
       return r == null ? null : r * scale
     }
@@ -2444,7 +2497,8 @@ function computeDailyFactorReturns(
             L: leg.invWhL, L2: leg.invWhL2, wWh: leg.invWhWeight,
             socL: leg.invSocialL, socL2: leg.invSocialL2, socW: leg.invSocialWeight,
             invLag: leg.invLag, zWin: leg.invZWin,
-            topFrac: leg.invTopFrac, scale: leg.invScale, flip: leg.invFlip,
+            topFrac: leg.invTopFrac, topN: leg.invTopN ?? null, scale: leg.invScale, flip: leg.invFlip,
+            mode: (leg.invMode ?? "ls") as "ls" | "long_only",
           })
           const w = Number(leg.weight ?? 1)
           if (rr != null && Number.isFinite(rr)) { acc += w * rr; wsum += Math.abs(w); any = true }
