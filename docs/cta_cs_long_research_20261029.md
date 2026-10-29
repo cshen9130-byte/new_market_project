@@ -61,3 +61,11 @@ Keep brochure: **log(P) ~ t OLS** → CS L/S. Did not switch primary path to pur
 - `tmp_cslong_research_grid.{mts,md,json,log}`
 - `tmp_cslong_research_refine.{mts,md,json,log}`
 - `tmp_cslong_research_verify.{mts,md,json,log}`
+
+## Live promote (2026-10-29 evening) — 3m path-shape
+
+After user screenshots showed Jul crater / missing late-Sep rise vs 国君:
+- Hybrid retuned: `ols_neg_slope K60 long_only w=0.38 scale=0.6` (was K120 ls w0.3 s0.85).
+- 3m julMin −4.68→**−1.17** (Wind −0.64); end +2.62→**+5.63** (Wind +4.49); YTD end still ~**+13** (Wind +12.5).
+- Wind calib ends 2026-10-02 / last real 9/30; 国君 10/08 spike not in file.
+- Details: `docs/cta_cs_long_loop_20261029.md` Round 4.

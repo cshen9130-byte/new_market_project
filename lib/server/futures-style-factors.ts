@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Futures style-factor daily / cumulative returns from real continuous futures.
  *
  * Primary price source: raw_akshare_futures_daily (AkShare main continuous *0.EXCH).
@@ -1218,21 +1218,23 @@ let REPORT_FIT = {
   csLongV2Demean: true,
   csLongV2SectorNeutral: false,
   // Hybrid: (1-w)*legacy blend + w*V2 series.
-  // 2026-10-29 loop R3 promote: w=0.3 scaleH=0.85 ols_neg_slope K120 weeklyFri topN10.
-  // vs LIVE blend-only: YTD cr 0.723->0.765 lvl 0.895->0.949 end~12.6 (013~12.5);
-  // JF +0.8/+0.33 -> -0.4/-0.8 (Wind ~-1/-2.8); 3m cr 0.461->0.433 lvl 0.858->0.883.
-  // Plateau: 3m cr still <0.55 stretch. See docs/cta_cs_long_loop_20261029.md.
-  csLongHybridW: 0.3,
+  // 2026-10-29 3m-shape promote: w=0.38 scaleH=0.6 ols_neg_slope K60 long_only weeklyFri topN10.
+  // Priority: visual Jul-Oct path vs 国君/GTJAQH013 (not corr alone).
+  // BEFORE (hy K120 ls w0.3 s0.85): 3m julMin -4.68 end +2.62 lateSep -0.59 cr 0.43; YTD end 12.56 cr 0.76.
+  // AFTER: 3m julMin -1.17 end +5.63 lateSep -0.14 cr 0.38; YTD end 12.98 cr 0.69. Wind 3m jul -0.64 end +4.49.
+  // Honest: Wind CSV max 2026-10-02 (last real 9/30); 国君 chart to 10/08 not in calib; late-Sep hockey-stick only partially matched.
+  // See docs/cta_cs_long_loop_20261029.md.
+  csLongHybridW: 0.38,
   csLongHybridKind: 'ols_neg_slope' as 'ret' | 'risk_adj' | 'avg_mom' | 'ols_slope' | 'ols_neg_slope' | 'ols_z' | 'ols_neg_z',
-  csLongHybridK: 120,
-  csLongHybridMode: 'ls' as 'ls' | 'long_only',
+  csLongHybridK: 60,
+  csLongHybridMode: 'long_only' as 'ls' | 'long_only',
   csLongHybridRebal: 'weeklyFri' as 'daily' | 'weeklyFri' | 'monthly',
   csLongHybridTopN: 10 as number | null,
   csLongHybridUseBuffer: false,
   csLongHybridEnterFrac: 0.2,
   csLongHybridExitFrac: 0.4,
   csLongHybridSmooth: 0,
-  csLongHybridScale: 0.85,
+  csLongHybridScale: 0.6,
   // round14 CE: 8-leg multi-field shock blend (ret~0.56 lvl~0.90)
   pvKind: "dOiShockBlend" as const,
   pvCorrL: 50,

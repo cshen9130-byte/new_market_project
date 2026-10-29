@@ -1,7 +1,7 @@
 # GTJAQH Wind closes (offline calibration only)
 
 Source: user xlsx CTA因子 sheet (Wind Excel plugs with cached values).
-File: `data/gtjaqh_closes.csv` (2019-01-02 → 2026-10-02).
+File: `data/gtjaqh_closes.csv` (2019-01-02 → 2026-10-02). Last real GTJAQH move in dump is 2026-09-30 (10/01-02 holiday flat copies).
 
 **Live Futures Style charts do NOT use this file.** `USE_WIND_GTJAQH` defaults to `false`;
 REPORT_FIT price/OI reconstructions power the UI. This CSV is ground truth for refining those formulas.
