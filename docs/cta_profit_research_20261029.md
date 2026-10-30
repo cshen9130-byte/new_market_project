@@ -98,3 +98,9 @@ LIVE hard (profitRetBlend scale3) still Pareto-best:
 Pure `edb`/`edbMom`+flip still anti-correlated after denser panel. **clear_wins=0 → REPORT_FIT unchanged.** Residual gaps: NI/PB/I-J-JM/SC crack daily profit still missing structurally; soy/SN denser but carryMom LIVE path already dominated.
 
 NO PM2 restart this pass.
+
+## Harder gaps + remap (2026-10-30 Asia/Shanghai) — NO PROMOTE
+- Fixed swapped TA/AL/ZN/RB EMI product labels via `c.edbquery`; deleted mislabeled EMI02082722.
+- Choice still empty for NI/PB/I-J-JM/SC-FU-BU/MA-PP-L-EG daily profits.
+- Futures crack/steel/MTO proxies designed+grid (`profitUseFutProxy`); **CLEAR_WINS=0** vs LIVE.
+- See `docs/cta_profit_harder_gaps_20261030.md`.

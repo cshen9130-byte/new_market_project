@@ -32,35 +32,28 @@ from pathlib import Path
 # Curated EMI/EMM profit/margin series mapped to futures products we trade.
 # Extend this list as more Choice codes are confirmed.
 PROFIT_SERIES: list[dict] = [
-    {"emi_code": "EMI02082690", "product": "ZN", "name_cn": "锌冶炼利润(元/吨)", "freq_hint": "daily"},
-    {"emi_code": "EMI02082698", "product": "RB", "name_cn": "毛利:螺纹钢", "freq_hint": "daily"},
-    {"emi_code": "EMI01961310", "product": "AL", "name_cn": "毛利:电解铝", "freq_hint": "daily"},
-    {"emi_code": "EMI02082720", "product": "TA", "name_cn": "毛利:PTA", "freq_hint": "daily"},
-    {"emi_code": "EMI01775921", "product": "PF", "name_cn": "涤纶短纤聚合成本利润", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082699", "product": "CU", "name_cn": "毛利:电解铜", "freq_hint": "daily"},
+    # Corrected 2026-10-30 via EmQuant c.edbquery NAME (prior ZN/AL/RB/TA labels were swapped).
+    {"emi_code": "EMI02082690", "product": "TA", "name_cn": "毛利:PTA", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082698", "product": "AL", "name_cn": "毛利:电解铝", "freq_hint": "weekly"},
+    {"emi_code": "EMI01961310", "product": "ZN", "name_cn": "锌锭利润", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082720", "product": "RB", "name_cn": "毛利:螺纹钢", "freq_hint": "weekly"},
+    {"emi_code": "EMI01775921", "product": "PF", "name_cn": "聚酯切片周度生产毛利", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082699", "product": "CU", "name_cn": "毛利:电解铜", "freq_hint": "weekly"},
     {"emi_code": "EMM01855422", "product": "CU", "name_cn": "现货:中国铜冶炼厂:粗炼费TC", "freq_hint": "weekly"},
     {"emi_code": "EMI02082729", "product": "HC", "name_cn": "毛利:热轧", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082712", "product": "V", "name_cn": "毛利:聚氯乙烯(PVC百川)", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082691", "product": "V", "name_cn": "毛利:聚氯乙烯(PVC百川)", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082712", "product": "V", "name_cn": "毛利:聚氯乙烯", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082691", "product": "V", "name_cn": "毛利:PVC糊树脂", "freq_hint": "weekly"},
     {"emi_code": "EMI01734485", "product": "SA", "name_cn": "理论利润:氨碱法纯碱", "freq_hint": "weekly"},
     {"emi_code": "EMI01734483", "product": "SA", "name_cn": "理论利润(双吨):联碱法纯碱", "freq_hint": "weekly"},
     {"emi_code": "EMI01732831", "product": "M", "name_cn": "全国大豆压榨毛利润", "freq_hint": "daily"},
-
-    # --- NEW pass2 2026-10-27 ---
     {"emi_code": "EMI02082693", "product": "EB", "name_cn": "毛利:苯乙烯", "freq_hint": "weekly"},
     {"emi_code": "EMI02082702", "product": "BR", "name_cn": "毛利:丁二烯", "freq_hint": "weekly"},
     {"emi_code": "EMI02082703", "product": "PX", "name_cn": "毛利:二甲苯", "freq_hint": "weekly"},
-
-    # --- closeness 2026-10-27 ---
     {"emi_code": "EMI02082696", "product": "SA", "name_cn": "毛利:纯碱(百川)", "freq_hint": "weekly"},
-
-    # --- dense crush/smelting 2026-10-29 ---
     {"emi_code": "EMM01855423", "product": "CU", "name_cn": "现货:中国铜冶炼厂:精炼费(RC)", "freq_hint": "weekly"},
     {"emi_code": "EMI01793711", "product": "Y", "name_cn": "大豆压榨毛利润:全国平均(汇易)", "freq_hint": "daily"},
     {"emi_code": "EMI01793743", "product": "Y", "name_cn": "大豆压榨毛利润:进口平均(汇易)", "freq_hint": "daily"},
     {"emi_code": "EMI01793725", "product": "M", "name_cn": "大豆压榨毛利润:国产平均(汇易)", "freq_hint": "daily"},
-
-    # --- harder 2026-10-30: SN TC daily + soy regional + steel/alumina/glass weekly ---
     {"emi_code": "EMI01762767", "product": "SN", "name_cn": "平均价:40%锡精矿加工费:云南", "freq_hint": "daily"},
     {"emi_code": "EMI01762768", "product": "SN", "name_cn": "平均价:60%锡精矿加工费:江西", "freq_hint": "daily"},
     {"emi_code": "EMI01793714", "product": "M", "name_cn": "大豆:压榨利润:天津(进口)", "freq_hint": "daily"},
@@ -69,14 +62,16 @@ PROFIT_SERIES: list[dict] = [
     {"emi_code": "EMI01793718", "product": "Y", "name_cn": "大豆:压榨利润:日照(进口)", "freq_hint": "daily"},
     {"emi_code": "EMI01793720", "product": "Y", "name_cn": "大豆:压榨利润:张家港(进口)", "freq_hint": "daily"},
     {"emi_code": "EMI02082714", "product": "HC", "name_cn": "毛利:冷轧", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082722", "product": "RB", "name_cn": "毛利:线材", "freq_hint": "weekly"},
     {"emi_code": "EMI02082735", "product": "AL", "name_cn": "毛利:氧化铝", "freq_hint": "weekly"},
     {"emi_code": "EMI01808951", "product": "FG", "name_cn": "周平均利润:浮法玻璃", "freq_hint": "weekly"},
     {"emi_code": "EMI01709156", "product": "CU", "name_cn": "长江有色:铜精矿TC/RC平均价", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082734", "product": "RB", "name_cn": "毛利:线材", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082710", "product": "AU", "name_cn": "毛利:金", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082697", "product": "PF", "name_cn": "毛利:涤纶长丝", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082701", "product": "BR", "name_cn": "毛利:丁苯橡胶", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082731", "product": "BR", "name_cn": "毛利:顺丁橡胶", "freq_hint": "weekly"},
+    # Documented but not catalogued (monthly / midstream): EMI02082694 propylene; EMI01765677 MTO; EMI01968337 EG
 ]
-
-
-
 
 def _load_env_from_files() -> None:
     candidates = []

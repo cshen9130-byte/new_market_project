@@ -523,14 +523,25 @@ async function loadEdbIndustryProfit(from: string, to: string): Promise<ProfitRo
            WHEN 'EMI02082699' THEN 0
            WHEN 'EMM01855422' THEN 1
            WHEN 'EMI01961310' THEN 0
-           WHEN 'EMI02082712' THEN 1
+           WHEN 'EMI02082698' THEN 0
+           WHEN 'EMI02082735' THEN 1
+           WHEN 'EMI02082720' THEN 0
+           WHEN 'EMI02082734' THEN 1
+           WHEN 'EMI02082690' THEN 0
+           WHEN 'EMI02082712' THEN 0
+           WHEN 'EMI02082691' THEN 1
            WHEN 'EMI02082696' THEN 0
            WHEN 'EMI01762767' THEN 0
            WHEN 'EMI01762768' THEN 1
-           WHEN 'EMI02082735' THEN 0
            WHEN 'EMI01808951' THEN 0
-           WHEN 'EMI02082714' THEN 0
-           WHEN 'EMI02082722' THEN 0
+           WHEN 'EMI02082714' THEN 1
+           WHEN 'EMI02082729' THEN 0
+           WHEN 'EMI02082710' THEN 0
+           WHEN 'EMI02082697' THEN 1
+           WHEN 'EMI01775921' THEN 0
+           WHEN 'EMI02082702' THEN 0
+           WHEN 'EMI02082701' THEN 1
+           WHEN 'EMI02082731' THEN 2
            ELSE 5
          END ASC,
          emi_code ASC`,
@@ -699,6 +710,58 @@ async function loadEdbCommoditySpot(from: string, to: string): Promise<SpotRow[]
   }
 }
 
+
+/** Futures-built industry-profit proxies for products lacking Choice EMI daily margins.
+ *  Recipes: steel BF (→I), coke (→J/JM), fuel crack (→SC/FU/LU), asphalt (→BU),
+ *  MTO-ish olefin−3×MA (→PP/MA/L), soft EG−1.5×MA. Constants omitted (CS z/mom invariant).
+ *  Only used as gap-fill when EDB profit for that product is missing.
+ */
+function futuresBuiltProfitProxies(close: Record<string, number> | undefined | null): Record<string, number> {
+  const out: Record<string, number> = {}
+  if (!close) return out
+  const c = (p: string): number | null => {
+    const v = close[p]
+    return v != null && Number.isFinite(v) && v > 0 ? v : null
+  }
+  const rb = c("RB"), iOre = c("I"), j = c("J"), jm = c("JM")
+  const sc = c("SC"), fu = c("FU"), bu = c("BU"), lu = c("LU")
+  const ma = c("MA"), pp = c("PP"), l = c("L"), eg = c("EG")
+  const SC_BBL_PER_TON = 7.33
+  if (rb != null && iOre != null && j != null) {
+    out["I"] = rb - 1.6 * iOre - 0.5 * j
+  }
+  if (j != null && jm != null) {
+    const coke = j - 1.33 * jm
+    out["J"] = coke
+    out["JM"] = coke
+  }
+  if (sc != null && fu != null && lu != null) {
+    const crack = 0.5 * fu + 0.5 * lu - sc * SC_BBL_PER_TON
+    out["SC"] = crack
+    out["FU"] = crack
+    out["LU"] = crack
+  } else if (sc != null && fu != null) {
+    const crack = fu - sc * SC_BBL_PER_TON
+    out["SC"] = crack
+    out["FU"] = crack
+  }
+  if (sc != null && bu != null) {
+    out["BU"] = bu - sc * SC_BBL_PER_TON
+  }
+  if (pp != null && ma != null) {
+    const mto = pp - 3 * ma
+    out["PP"] = mto
+    out["MA"] = mto
+  }
+  if (l != null && ma != null) {
+    out["L"] = l - 3 * ma
+  }
+  if (eg != null && ma != null) {
+    out["EG"] = eg - 1.5 * ma
+  }
+  return out
+}
+
 /** Attach warehouse + forward-filled EDB profit onto existing day panels. */
 function attachFundamentals(
   dates: string[],
@@ -745,6 +808,13 @@ function attachFundamentals(
     const dayP = profitByDate.get(d)
     if (dayP) lastProfit = { ...lastProfit, ...dayP }
     panel.profit = { ...lastProfit }
+    // Optional gap-fill (REPORT_FIT.profitUseFutProxy); off by default — 2026-10-30 grid no clear win
+    if ((REPORT_FIT as { profitUseFutProxy?: boolean }).profitUseFutProxy) {
+      const futProx = futuresBuiltProfitProxies(panel.close)
+      for (const [prod, val] of Object.entries(futProx)) {
+        if (panel.profit[prod] == null && Number.isFinite(val)) panel.profit[prod] = val
+      }
+    }
     const dayS = socialByDate.get(d)
     if (dayS) {
       const next = { ...lastSocial }
@@ -1397,6 +1467,8 @@ profitKind: "profitRetBlend" as const,
   profitRebal: "daily" as "daily" | "weeklyFri" | "weeklyMon" | "weeklyWed",
   profitCsWeight: "equal" as "equal" | "abs_score",
   profitLag: 0,
+  /** Gap-fill missing EDB margins with futures crack/steel/MTO recipes (tested 2026-10-30; default off — no clear win vs LIVE). */
+  profitUseFutProxy: false,
   profitEnterFrac: null as number | null,
   profitExitFrac: null as number | null,
 }

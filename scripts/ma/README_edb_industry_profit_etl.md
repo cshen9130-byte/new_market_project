@@ -43,3 +43,9 @@ Live default still `carryMom` (EDB alone still weak vs GTJAQH009).
 ## Pass2 2026-10-27
 - +3 codes (EB/BR/PX margins) → **16** total, **13** products.
 - Live remains carryMom; edbBlend still not a clear corr_ret+score win.
+
+## Remap-fix 2026-10-30
+- Corrected Baichuan product map via EmQuant c.edbquery (TA/AL/ZN/RB were swapped).
+- Removed EMI02082722 (铝棒, was mislabeled 线材→RB).
+- Catalog **37** codes (5 new AU/线材/涤纶/丁苯/顺丁 pending EmQuant quota); DB currently **32** after remap+delete.
+- LIVE REPORT_FIT unchanged.
