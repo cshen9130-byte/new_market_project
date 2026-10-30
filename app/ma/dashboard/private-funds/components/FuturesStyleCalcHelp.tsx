@@ -647,7 +647,7 @@ export function FuturesStyleCalcHelp({ section }: { section: HelpSection }) {
           <HelpTrigger label={content.heading} />
         </span>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-y-auto">
         <HelpBody heading={content.heading} intro={content.intro} blocks={content.blocks} />
       </DialogContent>
     </Dialog>
@@ -796,7 +796,7 @@ export function FuturesStyleFactorHelp({
           <HelpTrigger label={`${title} · 计算说明`} />
         </span>
       </DialogTrigger>
-      <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-y-auto">
         <HelpBody heading={`${title} · 计算说明`} intro={summary} blocks={blocks} />
       </DialogContent>
     </Dialog>
