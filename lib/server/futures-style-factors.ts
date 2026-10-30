@@ -1314,16 +1314,19 @@ let REPORT_FIT = {
   // 长期规则: brochure WP p13 = short/long MA cross TS (GTJAQH019 slogan); Excel calib GTJAQH010
   // 2026-10-30 promote: momLowVol L=200 cap=1.0 inv-vol no-flip scale=0.5 vs LIVE L150/flip/-0.7
   // Fair verify vs 010: 3m cr 0.736→0.819 lvl 0.841→0.972 end 3.2→2.81 (W2.76); YTD cr 0.447→0.549 lvl 0.548→0.699
+  // Mar-Apr hybrid grid (649): deepened Mar23 -1.36~-2.0 (W~-3.8) but YTD end -0.25~-0.8 — NO promote
   // Brochure maCross 60/240 helped H1 cr but wrecked 3m/YTD ends — kept as longRuleKind alt, not LIVE
-  longRuleKind: "momLowVol" as const, // "momLowVol" | "maCross"
+  longRuleKind: "momLowVol" as const, // "momLowVol" | "maCross" | "hybrid"
   longRuleL: 200,
-  longRuleFast: 20,
-  longRuleSlow: 120,
+  longRuleFast: 60,
+  longRuleSlow: 240,
   longRuleEqualW: false,
   longRuleFlip: false,
   longRuleVolL: 40,
   longRuleVolCap: 1.0,
   longRuleScale: 0.5,
+  // hybrid: (1-w)*momLowVol + w*maCross on unit returns, then *scale. LIVE w=0 (Mar-Apr no clear win).
+  longRuleHybridW: 0,
   // inventory: 2026-10-29 HARDER loop vs GTJAQH007 (Excel 库存; brochure 017 slogan only)
   // Other-AI: Ave_CR Inv/MA-1 + LO TopN helped soft months; pure Ave LS / pctile LS failed path.
   // Promote R3: 4-leg topN8 LS + socialAve80 LO aw0.18, blend scale 4.75
@@ -2391,14 +2394,50 @@ function computeDailyFactorReturns(
     out.report_basis_mom[i + 1] = crossSectionLs(rollYieldMomScores, nextRet, true)
 
     // 长期规则: brochure MA short>long = long (WP p13); LIVE default momLowVol vs GTJAQH010
+    // kind=hybrid: unit-return blend (1-w)*momLowVol + w*maCross, then *longRuleScale
     {
       const kind = String((REPORT_FIT as any).longRuleKind ?? "momLowVol")
       const closeH = closeHist
       const retH = retHist
-      const weights: Array<{ product: string; w: number }> = []
-      if (kind === "maCross") {
+      const hyW = Math.max(0, Math.min(1, Number((REPORT_FIT as any).longRuleHybridW ?? 0)))
+      const useHybrid = kind === "hybrid" || hyW > 0
+      const wantMom = kind === "momLowVol" || useHybrid
+      const wantMa = kind === "maCross" || useHybrid
+
+      const markHold = (weights: Array<{ product: string; w: number }>): number | null => {
+        if (weights.length < 4) return null
+        const denom = weights.reduce((s, x) => s + Math.abs(x.w), 0)
+        if (denom < 1e-12) return null
+        return weights.reduce((s, x) => s + (x.w / denom) * nextRet[x.product], 0)
+      }
+
+      let rMom: number | null = null
+      if (wantMom) {
+        const weights: Array<{ product: string; w: number }> = []
+        for (const p of products) {
+          const R = rollingReturn(closeH[p], i, REPORT_FIT.longRuleL)
+          const v20 = rollingStdFromRets(retH[p], i, 20)
+          const v120 = rollingStdFromRets(retH[p], i, 120)
+          if (R == null || nextRet[p] == null) continue
+          if (v20 != null && v120 != null && v20 > (REPORT_FIT.longRuleVolCap ?? 1) * v120) continue
+          let sig = Math.sign(R)
+          if (sig === 0) continue
+          if (REPORT_FIT.longRuleFlip) sig = -sig
+          if (REPORT_FIT.longRuleEqualW) weights.push({ product: p, w: sig })
+          else {
+            const vol = rollingStdFromRets(retH[p], i, REPORT_FIT.longRuleVolL)
+            const sigma = vol != null && vol > 1e-8 ? vol : 0.01
+            weights.push({ product: p, w: sig / sigma })
+          }
+        }
+        rMom = markHold(weights)
+      }
+
+      let rMa: number | null = null
+      if (wantMa) {
         const fast = Math.max(2, Number((REPORT_FIT as any).longRuleFast ?? 20) | 0)
         const slow = Math.max(fast + 1, Number((REPORT_FIT as any).longRuleSlow ?? 120) | 0)
+        const weights: Array<{ product: string; w: number }> = []
         for (const p of products) {
           const closes = closeH[p]
           const rets = retH[p]
@@ -2423,29 +2462,19 @@ function computeDailyFactorReturns(
             weights.push({ product: p, w: sig / sigma })
           }
         }
-      } else {
-        // momLowVol: sign(mom L), skip high-vol regime (v20 > cap*v120)
-        for (const p of products) {
-          const R = rollingReturn(closeH[p], i, REPORT_FIT.longRuleL)
-          const v20 = rollingStdFromRets(retH[p], i, 20)
-          const v120 = rollingStdFromRets(retH[p], i, 120)
-          if (R == null || nextRet[p] == null) continue
-          if (v20 != null && v120 != null && v20 > (REPORT_FIT.longRuleVolCap ?? 1) * v120) continue
-          let sig = Math.sign(R)
-          if (sig === 0) continue
-          if (REPORT_FIT.longRuleFlip) sig = -sig
-          if (REPORT_FIT.longRuleEqualW) weights.push({ product: p, w: sig })
-          else {
-            const vol = rollingStdFromRets(retH[p], i, REPORT_FIT.longRuleVolL)
-            const sigma = vol != null && vol > 1e-8 ? vol : 0.01
-            weights.push({ product: p, w: sig / sigma })
-          }
-        }
+        rMa = markHold(weights)
       }
+
       let r: number | null = null
-      if (weights.length >= 4) {
-        const denom = weights.reduce((s, x) => s + Math.abs(x.w), 0)
-        if (denom >= 1e-12) r = weights.reduce((s, x) => s + (x.w / denom) * nextRet[x.product], 0)
+      if (useHybrid) {
+        const w = hyW
+        if (rMom != null && rMa != null) r = (1 - w) * rMom + w * rMa
+        else if (rMom != null) r = rMom
+        else r = rMa
+      } else if (kind === "maCross") {
+        r = rMa
+      } else {
+        r = rMom
       }
       out.report_long_rule[i + 1] = r == null ? null : r * REPORT_FIT.longRuleScale
     }

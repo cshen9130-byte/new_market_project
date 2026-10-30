@@ -26,11 +26,11 @@
    - https://www.htfc.com/wz_upload/png_upload/20230403/1680513388460298df4.pdf
 6. **Honest gap:** no public closed-form for GTJAQH010/019 lookbacks. Brochure construction = MA-cross; Excel calib series = 010.
 
-## Method kept
+## Method kept (LIVE)
 
 - **LIVE construction remains time-series mom + high-vol skip** (`momLowVol`), not brochure MA-cross.
-- Brochure `maCross` (esp. 60/240 peer-long) improved H1/YTD *corr_ret* but **wrecked 3m end amp and YTD end sign** vs 010 — kept as `longRuleKind: "maCross"` code path for future, **not promoted**.
-- Empirically, lengthening mom lookback 150→200 and dropping the legacy flip (scale sign cleaned to +0.5) was the Pareto win vs 010.
+- Empirically, lengthening mom lookback 150→200 and dropping the legacy flip (scale sign cleaned to +0.5) was the Pareto win vs 010 (commit `af933260`).
+- Brochure `maCross` and unit-blend `hybrid` are wired as alts; **LIVE keeps `longRuleKind=momLowVol`, `longRuleHybridW=0`**.
 
 ## Before → after vs GTJAQH010 (Wind max 2026-10-02; fair fixed Wind anchor)
 
@@ -42,25 +42,45 @@
 | YTD end % | +0.30 | −0.25 | **+0.38** |
 | H1 corr_ret / lvl | 0.255 / 0.785 | **0.388 / ~0.75** | — |
 
-## Knobs changed
+## Knobs (REPORT_FIT long-rule block)
 
-`REPORT_FIT` long-rule block:
-- `longRuleKind`: `"momLowVol"` (new explicit; `"maCross"` available)
-- `longRuleL`: 150 → **200**
-- `longRuleVolCap`: 1.2 → **1.0**
-- `longRuleFlip`: true → **false**
-- `longRuleScale`: −0.7 → **0.5**
-- added `longRuleFast`/`longRuleSlow` defaults (20/120) for maCross experiments
+- `longRuleKind`: `"momLowVol"` LIVE; `"maCross"` | `"hybrid"` available
+- `longRuleL`: **200**; `longRuleVolCap`: **1.0**; `longRuleFlip`: **false**; `longRuleScale`: **0.5**
+- `longRuleFast`/`longRuleSlow`: **60/240** (brochure/peer-long defaults for maCross/hybrid experiments; inert while kind=momLowVol and w=0)
+- `longRuleHybridW`: **0** LIVE — unit blend `(1-w)*momLowVol + w*maCross` then `*scale`; promote only on clear Mar–Apr win
+
+## Mar–Apr deepen pass (2026-10-30) — NO REPORT_FIT promote
+
+**Problem:** LIVE Mar23 ≈ **−1.36%** vs Wind **≈−3.8%** (short ≈2.44); Mar–Apr MAE ≈1.12. LIVE often too shallow / wrong amplitude in March.
+
+**Grid:** `tmp_long_rule_hybrid_grid.*` — 649 configs, L∈{180,200,220} × volCap∈{1,1.15} × MA∈{(60,240),(60,200),(40,200)} × w∈{0.15…0.4} × scale∈{0.4…0.65}. Focused band L∈{180,200,220} ma60/240 w∈{0.15…0.35} scale∈{0.45…0.6} volCap1 included. Stale PID 8896 gone; grid finished ~12:29 Asia/Shanghai.
+
+**Script hard clear-win (14 hits):** e.g. `hy_L200_c1_ma60_240_w0.25_s0.65` Mar23 **−2.0** (short 1.80), MarApr mae **0.46**, 3m cr **0.823** / end **+3.31**, YTD cr **0.603** / end **−0.82**. Focused mildest hard-ish: `w0.15_s0.6` Mar23 **−1.76**, YTD end **−0.57**.
+
+**Why not promote:**
+1. Mar23 only closes ~0.4–0.7 of the 2.44 short vs Wind (−1.36→~−1.8…−2.05; Wind −3.8) — still large residual.
+2. **YTD end blowup:** LIVE −0.25 → candidates −0.57…−0.94 (Wind +0.38). Structural cost of any useful maCross weight.
+3. Jun trough deepens (~−4.0…−4.5 @ 2026-06-25); 3m end starts overshooting Wind (+2.76).
+4. No candidate with mar short improved ≥0.3 **and** YTD end ≥ −0.45 under 3m cr ≥ LIVE−0.03.
+
+**Decision:** keep LIVE momLowVol L200/cap1/scale0.5; **hybrid stays wired with w=0**. No REPORT_FIT promote.
+
+| Metric | LIVE (kept) | Best hard hybrid (not promoted) | Wind |
+|---|---:|---:|---:|
+| Mar23 % | −1.36 | ~−2.0 | ~−3.8 |
+| Mar–Apr MAE | 1.12 | ~0.46 | — |
+| 3m cr / end % | 0.819 / +2.81 | ~0.823 / +3.31 | — / +2.76 |
+| YTD cr / end % | 0.549 / −0.25 | ~0.603 / −0.82 | — / +0.38 |
 
 ## Residual gaps / next steps
 
-- **YTD end** slightly negative (−0.25) vs Wind +0.38 — LIVE was closer on the endpoint; promote trades endpoint for much better path corr/level.
-- **Brochure MA-cross** still not matching 010 ends; if GTJAQH019 daily series becomes available, re-calib MA short/long on that series (may differ from 010).
-- Exact Guojun MA lengths still unknown; do not claim Wind formula.
+- **Mar–Apr depth** still shallow vs 010 (−1.36 vs −3.8); hybrid unit-blend cannot close it without YTD end damage.
+- **YTD end** soft (−0.25 vs Wind +0.38) unchanged by this pass.
+- If GTJAQH019 daily becomes available, re-calib MA short/long on **019** (may differ from 010).
+- Do not claim Wind closed-form; exact Guojun MA lengths still unknown.
 
 ## Artifacts
 
-- `tmp_long_rule_research_grid.{mts,md,json,log}`
-- `tmp_long_rule_research_refine.{mts,md,json,log}`
-- `tmp_long_rule_research_verify.{mts,md,json,log}`
-- `tmp_long_rule_L200_micro.{mts,json,log}`
+- `tmp_long_rule_research_grid|refine|verify.*`, `tmp_long_rule_L200_micro.*`
+- `tmp_long_rule_marapr_{grid,refine,blend,micro,diag}.*`
+- `tmp_long_rule_hybrid_grid.{mts,md,json,log}` — Mar–Apr hybrid 649-run (no promote)
