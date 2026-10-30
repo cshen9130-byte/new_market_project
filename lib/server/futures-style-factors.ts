@@ -525,6 +525,12 @@ async function loadEdbIndustryProfit(from: string, to: string): Promise<ProfitRo
            WHEN 'EMI01961310' THEN 0
            WHEN 'EMI02082712' THEN 1
            WHEN 'EMI02082696' THEN 0
+           WHEN 'EMI01762767' THEN 0
+           WHEN 'EMI01762768' THEN 1
+           WHEN 'EMI02082735' THEN 0
+           WHEN 'EMI01808951' THEN 0
+           WHEN 'EMI02082714' THEN 0
+           WHEN 'EMI02082722' THEN 0
            ELSE 5
          END ASC,
          emi_code ASC`,

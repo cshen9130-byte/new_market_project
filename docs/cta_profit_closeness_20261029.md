@@ -144,3 +144,39 @@ Wired (defaults = LIVE_hard unchanged): `profitRebal` daily|weeklyFri|Mon|Wed, `
 | best buffer daily | 0.40 | 0.65 | 0.49 | −0.42 | 8.23 — **not Pareto** |
 
 **0 clear wins.** Recommend **stop knob loop** on rebal/|z|/buffer/lag; residual needs new construction or denser EMI, not more grids on these levers.
+
+## Harder denser-EMI pass (2026-10-30 Asia/Shanghai) — NO PROMOTE
+
+### Upsert (server EmQuant → raw_edb_industry_profit_daily)
+- BEFORE: **21 codes / 9348 rows / 4753 nn**
+- AFTER: **33 codes / 22059 rows / 10884 nn**
+- Upserted window `2024-01-02..2026-10-30`; all 13 ok_codes, 0 bad.
+
+| emi_code | product | nn | notes |
+|---|---|---:|---|
+| EMI01762767 | SN | 1033 | 锡精矿加工费 云南 daily (full) |
+| EMI01762768 | SN | 1033 | 锡精矿加工费 江西 daily (full) |
+| EMI01793714/15/16 | M | 692 | 大豆压榨利润 天津/山东 |
+| EMI01793718/20 | Y | 691/579 | 日照/张家港进口 |
+| EMI02082714 | HC | 147 | 冷轧 weekly |
+| EMI02082722 | RB | 147 | 线材 weekly |
+| EMI02082735 | AL | 147 | 氧化铝 weekly |
+| EMI01808951 | FG | 139 | 浮法玻璃周利润 |
+| EMI01709156 | CU | 139 | 长江铜精矿 TC/RC |
+| EMI02082712 | V | 147 | catalog fix AL→V (PVC) |
+
+### Catalog / loader
+- `scripts/ma/fetch_edb_industry_profit_daily.py`: AL→V fix + harder block (SN/soy/steel/alumina/FG/CU).
+- `loadEdbIndustryProfit` DISTINCT ON prefs: SN EMI01762767/768, AL EMI02082735, FG EMI01808951, HC/RB cold-roll/wire.
+
+### WP retest vs GTJAQH009 (`tmp_profit_harder_edb_retest.*`, eval_to=2026-10-02, 136 configs)
+LIVE hard (profitRetBlend scale3) still Pareto-best:
+
+| | 3m cr | 3m lvl | 3m end/W | 3m MAE | Sep gap | YTD cr | YTD end/W |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **LIVE** | 0.427 | 0.671 | 2.30/2.54 | 0.51 | −0.24 | 0.144 | 8.53/8.33 |
+| best blend (edb60f w0.1) | 0.392 | 0.628 | 1.98/2.54 | 0.72 | −0.56 | 0.157 | 7.09/8.33 |
+
+Pure `edb`/`edbMom`+flip still anti-correlated after denser panel. **clear_wins=0 → REPORT_FIT unchanged.** Residual gaps: NI/PB/I-J-JM/SC crack daily profit still missing structurally; soy/SN denser but carryMom LIVE path already dominated.
+
+NO PM2 restart this pass.

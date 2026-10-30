@@ -40,7 +40,7 @@ PROFIT_SERIES: list[dict] = [
     {"emi_code": "EMI02082699", "product": "CU", "name_cn": "毛利:电解铜", "freq_hint": "daily"},
     {"emi_code": "EMM01855422", "product": "CU", "name_cn": "现货:中国铜冶炼厂:粗炼费TC", "freq_hint": "weekly"},
     {"emi_code": "EMI02082729", "product": "HC", "name_cn": "毛利:热轧", "freq_hint": "weekly"},
-    {"emi_code": "EMI02082712", "product": "AL", "name_cn": "毛利:电解铝(百川)", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082712", "product": "V", "name_cn": "毛利:聚氯乙烯(PVC百川)", "freq_hint": "weekly"},
     {"emi_code": "EMI02082691", "product": "V", "name_cn": "毛利:聚氯乙烯(PVC百川)", "freq_hint": "weekly"},
     {"emi_code": "EMI01734485", "product": "SA", "name_cn": "理论利润:氨碱法纯碱", "freq_hint": "weekly"},
     {"emi_code": "EMI01734483", "product": "SA", "name_cn": "理论利润(双吨):联碱法纯碱", "freq_hint": "weekly"},
@@ -59,7 +59,22 @@ PROFIT_SERIES: list[dict] = [
     {"emi_code": "EMI01793711", "product": "Y", "name_cn": "大豆压榨毛利润:全国平均(汇易)", "freq_hint": "daily"},
     {"emi_code": "EMI01793743", "product": "Y", "name_cn": "大豆压榨毛利润:进口平均(汇易)", "freq_hint": "daily"},
     {"emi_code": "EMI01793725", "product": "M", "name_cn": "大豆压榨毛利润:国产平均(汇易)", "freq_hint": "daily"},
+
+    # --- harder 2026-10-30: SN TC daily + soy regional + steel/alumina/glass weekly ---
+    {"emi_code": "EMI01762767", "product": "SN", "name_cn": "平均价:40%锡精矿加工费:云南", "freq_hint": "daily"},
+    {"emi_code": "EMI01762768", "product": "SN", "name_cn": "平均价:60%锡精矿加工费:江西", "freq_hint": "daily"},
+    {"emi_code": "EMI01793714", "product": "M", "name_cn": "大豆:压榨利润:天津(进口)", "freq_hint": "daily"},
+    {"emi_code": "EMI01793715", "product": "M", "name_cn": "大豆:压榨利润:天津(国内)", "freq_hint": "daily"},
+    {"emi_code": "EMI01793716", "product": "M", "name_cn": "大豆:压榨利润:山东(国内)", "freq_hint": "daily"},
+    {"emi_code": "EMI01793718", "product": "Y", "name_cn": "大豆:压榨利润:日照(进口)", "freq_hint": "daily"},
+    {"emi_code": "EMI01793720", "product": "Y", "name_cn": "大豆:压榨利润:张家港(进口)", "freq_hint": "daily"},
+    {"emi_code": "EMI02082714", "product": "HC", "name_cn": "毛利:冷轧", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082722", "product": "RB", "name_cn": "毛利:线材", "freq_hint": "weekly"},
+    {"emi_code": "EMI02082735", "product": "AL", "name_cn": "毛利:氧化铝", "freq_hint": "weekly"},
+    {"emi_code": "EMI01808951", "product": "FG", "name_cn": "周平均利润:浮法玻璃", "freq_hint": "weekly"},
+    {"emi_code": "EMI01709156", "product": "CU", "name_cn": "长江有色:铜精矿TC/RC平均价", "freq_hint": "weekly"},
 ]
+
 
 
 
