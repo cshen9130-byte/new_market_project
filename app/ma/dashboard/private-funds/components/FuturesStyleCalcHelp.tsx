@@ -1,5 +1,8 @@
 "use client"
 
+import { useMemo, useState, type ReactNode } from "react"
+import katex from "katex"
+import "katex/dist/katex.min.css"
 import {
   Dialog,
   DialogContent,
@@ -14,18 +17,52 @@ type HelpSection = "latest" | "daily" | "interval" | "cumulative"
 type HelpBlock = {
   title: string
   paragraphs?: string[]
+  /** Plain monospace fallback (legacy section help). */
   formula?: string
+  /** KaTeX math strings (display mode). */
+  latex?: string[]
   bullets?: string[]
+  /** Collapsible research diary — hidden by default. */
+  collapsible?: boolean
 }
 
 type FactorHelp = {
   key: string
   title: string
   summary: string
-  paragraphs: string[]
-  formula?: string
-  bullets?: string[]
-  note?: string
+  dataSources: { input: string; source: string }[]
+  designLogic: string[]
+  latex: string[]
+  holdingRebal: string[]
+  calibTarget: string
+  researchNote?: string
+}
+
+function LatexBlock({ math }: { math: string }) {
+  const html = useMemo(
+    () =>
+      katex.renderToString(math, {
+        throwOnError: false,
+        displayMode: true,
+        strict: "ignore",
+        trust: false,
+      }),
+    [math],
+  )
+  return (
+    <div
+      className="overflow-x-auto rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-[13px] leading-relaxed text-zinc-800 [&_.katex-display]:m-0"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
+}
+
+function FormulaPlain({ children }: { children: ReactNode }) {
+  return (
+    <pre className="overflow-x-auto rounded bg-zinc-50 px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap border border-zinc-100">
+      {children}
+    </pre>
+  )
 }
 
 /** Per-factor calc text aligned with lib/server/futures-style-factors.ts (REPORT_FIT live path). */
@@ -33,312 +70,431 @@ export const FACTOR_CALC_HELP: Record<string, FactorHelp> = {
   report_basis: {
     key: "report_basis",
     title: "期限基差（国君 CTA 周报·近远月）",
-    summary: "近远月套利差的截面收益，再乘 REPORT_FIT.basisScale。校准 GTJAQH004.WI。",
-    paragraphs: [
-      "信号：在 t 用近月/远月收盘构造 Carry_i = ln(近月价/远月价)（贴水为正、升水为负）。",
-      "全商品池内按 Carry 排序：多头 topFrac，空头底 topFrac，等权差价（crossSectionLs longHigh=true）。",
-      "组合下期收益取下一个交易日各品种连续合约 r_{i,t+1}，再乘 amp 缩放，使路径幅度靠近周报校准（非 Wind 净值盘）。",
+    summary: "近远月升贴水的截面多空，刻画期限结构斜率；本地 REPORT_FIT 重构，校准 Wind GTJAQH004。",
+    dataSources: [
+      { input: "近月期货价 P_near", source: "主力/近月连续收盘（AkShare 主力连续 + EMQuant 近远月）" },
+      { input: "远月期货价 P_far", source: "同品种次近月/远月连续收盘（EMQuant）" },
+      { input: "品种池", source: "全商品期货池，排除股指/国债；默认剔除 EC" },
     ],
-    formula: `score_i = ln(P_near / P_far)
-r_term_basis = CS_LS(score excl basisExclude, topN=basisTopN=8 else topFrac=0.2, longHigh) × basisScale(=0.1)`,
-    bullets: [
-      "当前 knobs：basisTopN=8, basisExclude=['EC'], basisTopFrac=0.2 fallback, basisScale=0.1；校准目标 Wind GTJAQH004（Excel「期限基差」）2026-10-28。",
-      "UI 原名「基差(近远月)」已更名为「期限基差」；factor id report_basis 保持稳定以兼容 prefs。",
-      "USE_WIND_GTJAQH=false；图表不会直接拉 GTJAQH*.WI。",
+    designLogic: [
+      "当近月相对远月贴水（远月升水）时，Carry 为正，通常对应库存偏松或持有成本补偿；反之近月升水往往对应短期紧缺。",
+      "期限基差因子在全市场按 Carry 排序做多高 Carry、做空低 Carry，赚取「期限结构误定价/库存溢价」的截面收益，而不是单品种方向赌涨跌。",
+      "与「现货−期货」基差互补：本因子只用期货曲线，不依赖现货数据源。",
     ],
-    note: "与「期限结构/套利价值」同源 Carry；国君周报「基差」请见 report_basis_spot。",
+    latex: [
+      "\\mathrm{Carry}_i = \\ln\\frac{P^{\\mathrm{near}}_i}{P^{\\mathrm{far}}_i}",
+      "r^{\\mathrm{term}} = \\mathrm{CS\\text{-}LS}(\\mathrm{Carry};\\ \\mathrm{topN}{=}8,\\ \\mathrm{excl.}[\\mathrm{EC}],\\ \\mathrm{longHigh}) \\times 0.1",
+    ],
+    holdingRebal: [
+      "截面多空：按 Carry 从高到低，多头取 topN=8（不足时退回 topFrac=20%），空头取对称底部，等权。",
+      "日频换仓；组合收益取下一交易日各品种主力连续收益，再乘 basisScale=0.1。",
+    ],
+    calibTarget: "Wind GTJAQH004.WI（Excel「期限基差」）；USE_WIND_GTJAQH=false，图不直连 Wind。",
   },
+
   report_basis_spot: {
     key: "report_basis_spot",
     title: "基差（国君/CTA 周报·现货−期货）",
-    summary: "现货 S vs OI 近月期货价的截面多头（贴水）；weeklyFri + buffer；校准 GTJAQH012.WI。",
-    paragraphs: [
-      "现货 S 来自 Choice EDB（raw_edb_commodity_spot_daily），按品种优先级选一系列并向前填充。",
-      "期货 F 为同品种 OI 最大近月连续。默认 score=年化基差率 ((S−F)/F)×(365/T)（华泰；T≈近月合约月中剩余天；可选 /S 或 ln）；spotLag=0 用昨现货对今期货，避免现货晚到。",
-      "截面：只做贴水端多头（ls(L/S)，不再美元中性空头腿——旧 LS 会抹掉 YTD 漂移）。equal weight + buffer enter/exit 0.18/0.38，rebal weeklyFri，排除 EC+SH（SH=片碱），ruleHygiene 丢弃 |S/F−1|>0.25。",
+    summary: "现货相对近月期货的年化升贴水截面；周五换仓 + 缓冲带；校准 Wind GTJAQH012。",
+    dataSources: [
+      { input: "现货 S", source: "Choice EDB 现货日频表 raw_edb_commodity_spot_daily（目录 data/edb_commodity_spot_catalog.json）" },
+      { input: "期货 F", source: "同品种持仓量最大的近月连续合约收盘价（OI-near）" },
+      { input: "到期天数 T", source: "距近月合约月份中点的日历天数" },
     ],
-    formula: `score_i = ((S_i - F_near,i) / F_near,i) * (365 / T_near,i)   // ann_pct; T≈days to near-contract month mid
-r_basis = CS_ls(L/S)_buffered(score excl EC+SH + ruleHygiene|S/F-1|>0.25, enter=19%, exit=39%, longHigh, rebal=Fri, mode=ls, cs=invvol, nameClip=0.18) × basisSpotScale(=0.24) × mktVolGate(75pct→×0.5)`,
-    bullets: [
-      "校准目标：Wind GTJAQH012（Excel「基差」）；图不直连 Wind。",
-      "2026-10-29 WP经典八因子: 基差=GTJAQH021「时序」做多贴水做空升水按因子值加权(日换手~6.2%); 本地calib仍用Excel GTJAQH012。abs_score权重试过不及LIVE invvol — 见 docs/cta_factors_doc_extract_20261029.md。 2026-10-29 peer research: no public GTJAQH012/021 closed-form (国君公开材料为股指基差或GTJAQH000商品指数细则；周报仅口号级「做多贴水做空升水」). 华泰 ann+require_expand / 中泰 Δ基差率 CS tested on ls+invvol — both lose 3m/YTD vs LIVE ann. Residual promote: enter0.19/exit0.39 + nameClip0.18 + scale0.24. vs prior: JA 0.284→0.326; summer 2.25→0.23 to 3.05→0.86 (012 3.34→0.93); YTD end +3.54→+5.34 (012~+5.6); H1 0.476→0.499; 3m −0.6pp. See docs/cta_basis_spot_peer_20261029.md. 2026-10-29 H1 dir pass:2026-10-29 H1 dir pass: long_only structurally cannot match GTJAQH012 Jan–Apr (ours steadily up, 012 down/flat; JA corr_ret~0.03). Promote mode=ls + csWeight=invvol + scale0.22 (keep enter18/exit38 gate75×0.5). vs prior LO: JA cr 0.027→0.284; months 0.36/1.05/1.67/1.63 → −0.41/1.09/−0.04/0.80; H1 cr 0.339→0.476 lvl 0.62→0.90; 3m 0.884→0.858; YTD 0.647→0.680 end +4.03→+3.54; summer trough 0.01→0.23 (stays ≥0). Residual: Feb spike, Apr rally softer than 012, summer absolute level still low. See docs/cta_basis_spot_h1_dir_20261029.md. 2026-10-29 May→Jul path amp:2026-10-29 May→Jul path amp: enter 0.15→0.18 / exit 0.35→0.38, scale 0.22→0.16, mktVolGate 80%×0.7→75%×0.5 (equal Fri ann_pct excl EC+SH hygiene). vs prior LIVE: summer visual 4.24pp→2.41pp (012 2.4pp; YTD 3.7→-0.54 to 2.43→0.01); pathDrop -4.09%→-2.36% (012 -2.33%); 3m 0.880→0.884, YTD 0.638→0.647 lvl 0.789→0.881, H1 0.324→0.339; roll20σ 1.34→0.885; end +5.15%→+4.03% (012~+5.6%). Milder diversify + lower scale + stronger gate. See docs/cta_basis_spot_amp_20261029.md. 2026-10-28 amp pass: mktVolGate pct=0.80 scale=0.7 + basisSpotScale 0.25→0.22 (equal Fri ann_pct buf15/35 excl EC+SH hygiene). vs LIVE prior: Jul DD -4.25%→-3.39% (012 -2.33%); roll20 ret-σ ratio 1.58→1.34; 3m cr~0.880 flat, YTD 0.626→0.638, H1 0.312→0.324; end~+5.2% (012~+5.6%). Cause: n≈4 equal chem/energy book + no risk-off. See tmp_basis_spot_amp_diag.md / amp_refine.md.",
-      "2026-10-28 research promote: kind=ann_pct_over_fut (华泰年化基差率), scale0.25, buf15/35 equal Fri excl EC+SH ruleHygiene — vs GTJAQH012 grid Pareto 3m~0.88/YTD~0.63/H1~0.31. See docs/cta_basis_factor_research_20261028.md. PRIOR unit/FX+hygiene live: excl EC+SH, scale0.30 buf15/35 equal Fri lag0 ruleHygiene → vs GTJAQH012: 3m cr~0.86/lvl~0.89; YTD cr~0.62/lvl~0.82 end~+5.6% DD~−4.8%; H1 cr~0.28. longHigh=(S−F)/F 高 = 做多贴水（现货溢价），非升水。",
-      "PRIOR harder LS Wed scale0.27：3m cr~0.771 但 YTD end~0%/lvl−0.29（美元中性对冲掉漂移）。",
-      "knobs：basisSpotMode=ls(L/S), rebal=weeklyFri, mode=ls, csWeight=invvol, enter=0.19, exit=0.39, nameClip=0.18, kind=ann_pct_over_fut, scale=+0.24, spotLag=0, csWeight=equal, ruleHygiene=true, exclude=['EC','SH']（SH=片碱产品码，非上期所）。buffer 用 enter/exit 比例定仓位数；topN 在 buffer 开启时未接入。",
-      "数据：data/edb_commodity_spot_catalog.json + fetch_edb_commodity_spot_daily.py（server EmQuant c.edb）。",
+    designLogic: [
+      "现货高于期货（贴水，S>F）时，远期价格偏低或现货偏紧，历史上「做多贴水、做空升水」具有均值回复逻辑。",
+      "因此因子在截面上偏好年化基差率更高（更贴水）的品种做多，并允许对称空头腿；不是时序单边押注某一个商品。",
+      "引入波动门控与单品种权重上限，是为了在市场急涨急跌时降低组合杠杆、避免少数高波品种主导收益。",
     ],
-    note: "与「期限基差」（近远月）并列展示，不替代。",
+    latex: [
+      "\\mathrm{score}_i = \\frac{S_i - F^{\\mathrm{near}}_i}{F^{\\mathrm{near}}_i}\\cdot\\frac{365}{T_i}",
+      "r^{\\mathrm{basis}} = \\mathrm{CS\\text{-}LS}_{\\mathrm{buf}}(\\mathrm{score};\\ \\mathrm{enter}{=}19\\%,\\ \\mathrm{exit}{=}39\\%,\\ \\mathrm{invvol},\\ \\mathrm{nameClip}{=}0.18)\\times 0.24\\times g_{\\mathrm{vol}}",
+      "g_{\\mathrm{vol}}=\\begin{cases}0.5 & \\text{若截面中位}|r|\\text{高于近 60 日 75\\% 分位}\\\\1 & \\text{否则}\\end{cases}",
+    ],
+    holdingRebal: [
+      "每周五换仓；缓冲带 enter=19% / exit=39%，避免频繁进出。",
+      "权重：腿内逆波动（invvol）；单品种 |w| 上限 nameClip=0.18。",
+      "清洗：剔除 EC、SH（片碱）；丢弃 |S/F−1|>0.25 的异常基差（ruleHygiene）。",
+      "spotLag=0：用可得的最新现货对齐当日期货，减少现货晚到带来的虚假信号。",
+    ],
+    calibTarget: "Wind GTJAQH012.WI（Excel「基差」）；图不直连 Wind，仅作离线校准。",
+    researchNote:
+      "白皮书口号码 GTJAQH021 为时序表述；本地校准仍用 Excel GTJAQH012。公开材料无闭式公式；华泰/中泰变体在 LS+invvol 上未优于当前年化基差率。详见 docs/cta_basis_spot_peer_20261029.md 等。",
   },
 
   report_cs_long: {
     key: "report_cs_long",
     title: "长期截面（国君 CTA 周报代理）",
-    summary: "csLongBlend 0.2/0.35/0.45 x0.95 + hybridW0.38 ols_neg_slope K60 long_only weeklyFri topN10 x0.6; 3m path-shape vs GTJAQH013 (jul crater fixed, end up); YTD end~13",
-    paragraphs: [
-      "对每个品种用近 L 日收盘做 price ~ time 回归（L=csLongL=120），要求 R² ≥ csLongR2(=0.15)。",
-      "打分取回归斜率 slope（csLongNegZ=false，不用 −z）。可选板块内 demean + 全截面 z-score 标准化。",
-      "按分数做多 topFrac、做空 bottom（topFrac=0.15），日收益再乘 csLongScale(=−1.0)。",
-      "代码里另有 csLongBlend 多腿（neg_z / neg_slope），但 enabled=false，线上不走 blend。",
+    summary: "中长期价格趋势的截面多空（OLS 斜率/标准化合成）；校准 Wind GTJAQH013。",
+    dataSources: [
+      { input: "品种价格序列 P", source: "商品期货主力连续收盘（AkShare）" },
+      { input: "板块分类", source: "本地品种→板块映射（用于板块内去均值）" },
     ],
-    formula: `reg: P_τ = a + b·τ + ε,  τ∈[t−L+1,t], L=120
-score = b   (若 R²≥0.15)
-score ← sectorNeutral demean + 截面 z-score
-r = CS_LS(score, topFrac=0.15) × (−1.0)`,
-    bullets: [
-      "2026-10-29 WP: 长期截面 GTJAQH022「复权价对时间回归，因子值=回归系数×强度」CS多空市值相等; calib仍用013。slope×R²/|t|试过仅边际改善 — 未promote。详情 docs/cta_factors_doc_extract_20261029.md。 对照离线校准：Wind GTJAQH013（文件标签「截面动量」）。",
-      "负 scale 等价于翻转多空方向以贴合周报路径。",
+    designLogic: [
+      "长期截面捕捉「强者恒强 / 弱者恒弱」的中期趋势差异：价格对时间回归斜率更陡的品种，往往仍有资金与基本面惯性。",
+      "LIVE 使用多腿 blend（负斜率、z、长窗负 z）再整体缩放，是为了同时覆盖趋势跟随与适度反转成分，使路径更接近周报「长期截面」。",
+      "负的总 scale 用于对齐周报路径方向（实现细节），经济含义仍是对相对强弱做截面配置。",
     ],
+    latex: [
+      "P_{i,\\tau}=a_i+b_i\\tau+\\varepsilon_{i,\\tau},\\quad \\tau\\in[t-L+1,t],\\ L=120",
+      "\\mathrm{score}_i = b_i\\ \\big(\\text{要求 }R^2_i\\ge 0.15\\big);\\ \\text{可选板块去均值 + 截面 }z",
+      "r^{\\mathrm{cs}} = \\mathrm{Blend}\\big(\\mathrm{CS\\text{-}LS}(\\mathrm{score}_k)\\big)\\times 0.95",
+    ],
+    holdingRebal: [
+      "默认日频；各腿 topFrac≈15%–20% 多空等权（或按腿设置）。",
+      "csLongBlend：neg_slope(L120,w0.2) + z(L120,w0.35) + neg_z(L250,w0.45)，总 scale=0.95。",
+      "简单 OLS 路径保留为 fallback（csLongScale=−1.0）。",
+    ],
+    calibTarget: "Wind GTJAQH013.WI（文件标签「截面动量」→ UI「长期截面」）；图不直连 Wind。",
+    researchNote: "白皮书 GTJAQH022「回归系数×强度」试过 slope×R²/|t|，仅边际改善，未 promote。",
   },
+
   report_pv_corr: {
     key: "report_pv_corr",
     title: "量价相关性（国君 CTA 周报代理）",
-    summary: "品种内成交量与价格滚动相关，截面做多相关小、做空相关大（WP 口径）。",
-    paragraphs: [
-      "国君白皮书（对客版 p21）：日频计算过去一段时间各品种成交量与价格的相关系数；按因子值从小到大，做多相关小、做空相关大，多空市值相等。",
-      "当前 LIVE：pvKind=corr，pvCorrMode=close（corr(close, volume)），L=55，topFrac=0.08，scale=0.2，longHigh=false。",
-      "离线标定 Excel GTJAQH011.WI（brochure 口号码 GTJAQH020.WI / Bloomberg GJFQVPC）；USE_WIND_GTJAQH=false，图表走 REPORT_FIT。",
-      "备选：dOiShockBlend（历史 round14 多字段 OI/成交 shock）与 absret/ret/logclose/dlog 等 corr 模式仍保留在 knobs。",
+    summary: "成交量与价格滚动相关的截面：做多相关低、做空相关高；校准 Wind GTJAQH011。",
+    dataSources: [
+      { input: "收盘价 close", source: "商品期货主力连续收盘（AkShare）" },
+      { input: "成交量 volume", source: "同合约日成交量（AkShare）" },
     ],
-    formula: `c_i = corr_L(close_i, volume_i),  L=55
-r_pv = CS_LS(c, topFrac=0.08, longHigh=false) × 0.2`,
-    bullets: [
-      "与白皮书一致：截面、做多相关小（量价背离一侧）。",
-      "无公开精确窗口；L/topFrac/scale 为相对 GTJAQH011 的经验标定（2026-10-30）。",
-      "对照离线：Wind GTJAQH011（非 020）。",
+    designLogic: [
+      "量价高度同向相关，常意味着趋势拥挤或信息已被充分交易；相关偏低甚至背离，往往对应反转或「量能未确认」的定价空间。",
+      "国君白皮书口径：按因子值从小到大，做多相关小、做空相关大，多空市值相等——本实现 longHigh=false 与此一致。",
+      "因此它更像「拥挤度/确认度」的截面择品，而不是单纯的动量或反转。",
     ],
+    latex: [
+      "c_i=\\mathrm{corr}_{L=55}(\\mathrm{close}_i,\\ \\mathrm{volume}_i)",
+      "r^{\\mathrm{pv}}=\\mathrm{CS\\text{-}LS}(c;\\ \\mathrm{topFrac}{=}8\\%,\\ \\mathrm{longHigh}{=}\\mathrm{false})\\times 0.2",
+    ],
+    holdingRebal: [
+      "日频截面多空：多头取相关最低的约 8%，空头取相关最高的约 8%，等权。",
+      "pvKind=corr，pvCorrMode=close（价格水平与成交量相关；非收益冲击模式）。",
+    ],
+    calibTarget: "Wind GTJAQH011.WI（brochure 口号码 GTJAQH020 / Bloomberg GJFQVPC 仅对照）；图走 REPORT_FIT。",
   },
+
   report_long_rule: {
     key: "report_long_rule",
     title: "长期规则（国君 CTA 周报代理）",
-    summary: "低波动过滤后的长时间序列动量，逆波动加权并 flip。",
-    paragraphs: [
-      "回看 L=longRuleL(=150) 的累计收益 R，信号 s = sign(R)；若 longRuleFlip 则取反。",
-      "波动过滤：若 20 日波动 > longRuleVolCap(=1.2)×120 日波动，该品种当日不参与。",
-      "权重：非等权时 w = s / σ（σ 为 longRuleVolL=40 日收益波动）；至少 4 个品种才开仓。",
-      "日收益 = Σ (w/Σ|w|) · r_{t+1}，再乘 longRuleScale(=−0.7)。",
+    summary: "低波动过滤后的长时间序列动量（momLowVol）；校准 Wind GTJAQH010。",
+    dataSources: [
+      { input: "价格 P", source: "商品期货主力连续收盘（AkShare）" },
+      { input: "波动 σ", source: "由日收益滚动标准差估计（实现内计算）" },
     ],
-    formula: `R = P_t/P_{t−L} − 1,  L=150
-skip if σ_20 > 1.2 · σ_120
-w = flip(sign(R)) / σ_40
-r = (Σ w r_{t+1} / Σ|w|) × (−0.7)`,
-    bullets: ["对照离线：Wind GTJAQH010（长期规则动量）。"],
+    designLogic: [
+      "长期规则动量假设：中长期趋势在波动可控时更可持续；若短期波动相对长期波动过高，信号可信度下降。",
+      "因此先用长窗收益定方向，再用「短波/长波」门控剔除过热品种，并以逆波动加权，偏向「稳中有趋势」的品种。",
+      "它偏时序（每品种独立给多空权重），与纯截面排序因子形成互补。",
+    ],
+    latex: [
+      "R_i=\\frac{P_{i,t}}{P_{i,t-L}}-1,\\quad L=200",
+      "\\text{若 }\\sigma_{i,20}>1.0\\cdot\\sigma_{i,120}\\ \\text{则跳过该品种}",
+      "w_i=\\frac{\\mathrm{sign}(R_i)}{\\sigma_{i,40}},\\quad r=\\frac{\\sum w_i r_{i,t+1}}{\\sum|w_i|}\\times 0.5",
+    ],
+    holdingRebal: [
+      "日频；至少约 4 个品种有权重才开仓。",
+      "longRuleKind=momLowVol；longRuleFlip=false；scale=0.5。",
+    ],
+    calibTarget: "Wind GTJAQH010.WI（长期规则动量）；图不直连 Wind。",
   },
+
   report_inventory: {
     key: "report_inventory",
     title: "库存（国君 CTA 周报 · 社会库存/仓单）",
-    summary: "HARDER: topN8 LS 4-leg + socialAve80 LO×0.18 ×4.75; vs GTJAQH007 YTD cr~0.57 lvl~0.94 end~8.8 (Wind~8.2); 3m cr~0.70",
-    paragraphs: [
-      "默认 invKind=invRetBlend：social L5 / warehouse L5 / social L10 lag2 / socialZ120（均 topN=8 LS）+ socialAve(Inv/MA80−1) long_only top8 w0.18，blend scale 4.75。",
-      "校准 Excel GTJAQH007（brochure CTA3 写 GTJAQH017，不切换 calib）。HARDER loop：Ave_CR/分位/Z/LO/TopN；纯 Ave LS 与分位 LS 路径差；Ave60/80 LO 抬 3m/YTD corr 与 soft Apr–Aug。",
-      "vs prior 479b21f4：3m cr 0.645→0.697，YTD cr 0.487→0.569，lvl 0.87→0.94，end 7.4→8.8（Wind~8.2）。详见 docs/cta_inventory_harder_20261029.md。",
+    summary: "去库做多、累库做空的多腿库存变化合成；校准 Wind GTJAQH007。",
+    dataSources: [
+      { input: "社会库存", source: "Choice EDB 表 raw_edb_commodity_inventory_daily" },
+      { input: "仓单/库存仓单", source: "Choice 仓单日频 warehouse_receipts_daily（FTREGORDERVOL）" },
     ],
-    formula: `score_Δ = -Δ% inv; score_ave = -(Inv/MA(N)-1); score_z = -z(Inv)
-LS topN8 on Δ/z legs; LO top8 on Ave leg; r = 4.75 * Σ w_k CS(score_k)`,
-    bullets: [
-      "2026-10-29 WP: 库存 GTJAQH017 截面「库存变化率」做多去库做空累库，周度换仓; calib仍用007。live已是Δ%多腿; 周度换仓已接线 invRebal（默认 daily；Fri/Mon/Wed 可测，未 promote）。详情 docs/cta_factors_doc_extract_20261029.md。 数据：EDB social inventory + warehouse receipts；Wind GTJAQH007 仅离线校准。",
-      "残差：Apr/May/Aug 仍偏软；3m end 略高（~5.4 vs Wind~4.0）；weekly 已接线但未 promote（Fri 伤 path；Mon corr↑ 但 YTD lvl/soft 崩）；无公开国君闭式。详见 docs/cta_inventory_weekly_20261029.md。",
+    designLogic: [
+      "库存下降（去库）通常对应供需趋紧、价格易涨；库存上升（累库）则相反——这是商品基本面最直接的定价线索之一。",
+      "因子对库存变化率、相对均线偏离、标准化水位等多视角打分，并在截面做多「更去库」、做空「更累库」。",
+      "加入 long-only 的 Ave 腿，是为了在软行情里保留「低库存水位」多头暴露，改善与周报路径的贴合。",
     ],
+    latex: [
+      "\\mathrm{score}^{\\Delta}=-\\Delta\\%\\,\\mathrm{Inv},\\quad \\mathrm{score}^{\\mathrm{ave}}=-\\big(\\mathrm{Inv}/\\mathrm{MA}(N)-1\\big),\\quad \\mathrm{score}^{z}=-z(\\mathrm{Inv})",
+      "r^{\\mathrm{inv}}=4.75\\sum_k w_k\\,\\mathrm{CS}(\\mathrm{score}_k)",
+    ],
+    holdingRebal: [
+      "默认日频换仓（invRebal=daily；周度可选未 promote）。",
+      "合成腿：social Δ L5、warehouse Δ L5、social Δ L10(lag2)、socialZ(120)、socialAve(MA80, long-only)；多数腿 topN=8 LS。",
+      "总 scale=4.75。",
+    ],
+    calibTarget: "Wind GTJAQH007.WI（Excel「库存」；brochure CTA3 写 GTJAQH017 仅口号，不切换 calib）。",
+    researchNote: "HARDER/weekly 实验见 docs/cta_inventory_harder_20261029.md、docs/cta_inventory_weekly_20261029.md。",
   },
 
-    report_profit: {
+  report_profit: {
     key: "report_profit",
     title: "利润（国君 CTA 经典 / Carry 代理）",
-    summary: "默认 profitRetBlend（carryMom 多 horizon 合成）×scale3；校准 GTJAQH009；WP=产业利润历史偏低/偏高时序择时",
-    paragraphs: [
-      "国君经典-8 白皮书：时序；基于产业利润估值回归；做多当前利润相对历史偏低、做空偏高；Wind GTJAQH009.WI / Bloomberg GTJAFPRF。",
-      "默认 profitKind=profitRetBlend（push2 3-leg）：carryMom L30 top0.4 scale0.05 w0.4 + carryMom L20 top0.35 scale0.03 w0.1 + carryMomBlend L20 (wMom0.4) scale0.08 w0.5；全腿齐才出信号。",
-      "2026-10-29 amp：profitRetBlend.scale 1→3（corr_ret 不变；YTD end ~8.05 vs Wind 8.33；3m MAE 1.06→0.49）。纯 EDB level-z+flip 在当前利润广度下未胜 LIVE。",
-      "2026-10-29 dense EMI：soy crush daily(M/Y)+Cu TC/RC+AL百川；WP edb+flip 仍不敌 LIVE，未改 knobs",
-      "2026-10-29 hard refine：L0 momL25/top0.5 + L2 top0.15/wMom0.7；3m lvl~0.39→0.67 end~2.3/2.54；corr_ret~0.49→0.43 tradeoff；YTD end~8.5",
-      "2026-10-29 r2：corr claw-back grid 未 Pareto（MAE/Sep 回退）→ knobs 维持 hard refine",
-      "2026-10-29 r3 plateau：profitRebal/abs_score/lag/buffer 已接线默认 daily+equal；grid 无 Pareto → knobs 维持 hard refine",
-      "可选：carryMom / carry / carryMomBlend / edb / edbMom / edbBlend / edbMomBlend（EDB 产业利润仍偏稀，~13 品种）。",
+    summary: "产业利润/Carry 多 horizon 动量合成；校准 Wind GTJAQH009。",
+    dataSources: [
+      { input: "近远月 Carry", source: "期货近远月收盘（EMQuant / 连续合约）构造的期限 Carry" },
+      { input: "产业利润（可选腿）", source: "Choice EDB 表 raw_edb_industry_profit_daily（覆盖仍偏窄，作补充）" },
     ],
-    formula: `score = Carry_t - Carry_{t-L}   (L in {30,20})
-r = blend(legs) * scale3`,
-    bullets: [
-      "校准：Wind GTJAQH009（USE_WIND_GTJAQH=false live）；缺口：更多加工/冶炼/压榨利润 EMI → Choice wishlist。",
+    designLogic: [
+      "产业链利润偏高时，供给往往随后扩张、价格承压；利润偏低则供给收缩、价格易修复——白皮书强调「利润相对历史偏低做多、偏高做空」。",
+      "在现货利润序列覆盖不足时，LIVE 用多 horizon 的 Carry 动量作为可交易代理：Carry 改善常与利润/拥挤定价同向变化。",
+      "多腿合成降低单一窗口噪声，使路径更接近周报「利润」因子。",
     ],
+    latex: [
+      "\\mathrm{score}^{(L)}=\\mathrm{Carry}_t-\\mathrm{Carry}_{t-L}",
+      "r^{\\mathrm{profit}}=\\mathrm{Blend}\\big(\\mathrm{CS}(\\mathrm{score}^{(25)}),\\ \\mathrm{CS}(\\mathrm{score}^{(20)}),\\ \\mathrm{CS}(\\mathrm{carryMomBlend})\\big)\\times 3",
+    ],
+    holdingRebal: [
+      "日频；profitKind=profitRetBlend，总 scale=3。",
+      "腿：carryMom L25 top50% w0.4；carryMom L20 top35% w0.1；carryMomBlend L20 w0.5。",
+    ],
+    calibTarget: "Wind GTJAQH009.WI / Bloomberg GTJAFPRF；USE_WIND_GTJAQH=false。",
+    researchNote: "纯 EDB level-z 在当前利润广度下未胜过 LIVE Carry 代理；更多冶炼/压榨利润 EMI 仍在 Choice wishlist。",
   },
 
-report_basis_mom: {
+  report_basis_mom: {
     key: "report_basis_mom",
     title: "基差动量（CTA/REPORT_FIT）",
-    summary: "Carry 相对 20 日前变化的截面动量。",
-    paragraphs: [
-      "score_i = Carry_{i,t} − Carry_{i,t−20}。",
-      "做多变化大、做空变化小（longHigh=true）；无额外 scale（与旧「基差动量」同源思想）。",
+    summary: "期限 Carry 相对 20 日前变化的截面动量。",
+    dataSources: [
+      { input: "Carry", source: "近远月期货收盘构造（同期限基差数据源）" },
     ],
-    formula: `score = Carry_t − Carry_{t−20}
-r = CS_LS(score, longHigh=true)`,
-    bullets: ["无独立 Wind 列时完全本地重构；期限基差另见 GTJAQH004（校准-only）。"],
+    designLogic: [
+      "基差动量关注升贴水本身的变化速度：Carry 快速走强，往往对应库存预期或曲线结构正在重新定价。",
+      "做多 Carry 改善最大的品种、做空恶化最大的品种，捕捉曲线调整的惯性，而非静态水平。",
+    ],
+    latex: [
+      "\\mathrm{score}_i=\\mathrm{Carry}_{i,t}-\\mathrm{Carry}_{i,t-20}",
+      "r=\\mathrm{CS\\text{-}LS}(\\mathrm{score},\\ \\mathrm{longHigh}{=}\\mathrm{true})",
+    ],
+    holdingRebal: ["日频截面多空等权。"],
+    calibTarget: "无独立 Wind 列时完全本地重构；期限基差水平见 GTJAQH004（校准-only）。",
   },
+
   report_mid_mom: {
     key: "report_mid_mom",
     title: "中期动量（CTA/REPORT_FIT）",
     summary: "MA20 与 MA60 交叉的时间序列动量（波动缩放）。",
-    paragraphs: [
-      "对每个品种比较 MA20 与 MA60：金叉偏多、死叉偏空，再按波动缩放权重合成组合日收益（maCrossTsReturn）。",
+    dataSources: [
+      { input: "价格 P", source: "商品期货主力连续收盘（AkShare）" },
     ],
-    formula: `signal ≈ sign(MA20 − MA60)，权重按波动缩放
-r = 组合下一期收益`,
-    bullets: ["对照离线：Wind GTJAQH008。"],
+    designLogic: [
+      "中期均线金叉/死叉是经典趋势规则：短均线穿越长均线，反映中期资金方向切换。",
+      "按波动缩放权重，使高波品种不会过度主导组合，更接近「风险平价式」的时序动量。",
+    ],
+    latex: [
+      "s_i=\\mathrm{sign}(\\mathrm{MA}_{20}-\\mathrm{MA}_{60})",
+      "r=\\sum_i \\tilde{w}_i\\,r_{i,t+1}\\quad(\\tilde{w}\\ \\text{按波动缩放后归一})",
+    ],
+    holdingRebal: ["日频时序；波动缩放合成下一期收益。"],
+    calibTarget: "Wind GTJAQH008.WI；图不直连 Wind。",
   },
+
   ts_mom_short: {
     key: "ts_mom_short",
     title: "时间序列动量(短)",
     summary: "L=20 的符号动量，逆波动加权。",
-    paragraphs: [
-      "s_i = sign(R_i(20))，σ_i 为约 60 日波动，w_i = s_i/σ_i，日收益 = Σ w r / Σ|w|。",
+    dataSources: [{ input: "收益 R(20)", source: "主力连续收盘（AkShare）" }],
+    designLogic: [
+      "短期时序动量假设近期涨的品种短期内仍偏强；用波动倒数加权，降低高噪声品种权重。",
     ],
-    formula: `w_i = sign(R_i(20)) / σ_i
-r = Σ w_i r_{i,t+1} / Σ|w_i|`,
+    latex: ["w_i=\\mathrm{sign}(R_i(20))/\\sigma_i,\\quad r=\\sum w_i r_{i,t+1}/\\sum|w_i|"],
+    holdingRebal: ["日频时序，全商品池（除股指/国债）。"],
+    calibTarget: "本地风格因子，无单独 Wind 校准码。",
   },
   ts_mom_mid: {
     key: "ts_mom_mid",
     title: "时间序列动量(中)",
     summary: "L=60 的符号动量，逆波动加权。",
-    paragraphs: ["同短期 TS 动量，回看窗口改为 60 日。"],
-    formula: `w_i = sign(R_i(60)) / σ_i`,
+    dataSources: [{ input: "收益 R(60)", source: "主力连续收盘（AkShare）" }],
+    designLogic: ["与短窗 TS 动量相同逻辑，回看窗口改为 60 日，更平滑、换手更低。"],
+    latex: ["w_i=\\mathrm{sign}(R_i(60))/\\sigma_i"],
+    holdingRebal: ["日频时序。"],
+    calibTarget: "本地风格因子，无单独 Wind 校准码。",
   },
   ts_mom_long: {
     key: "ts_mom_long",
     title: "时间序列动量(长)",
     summary: "L=120 的符号动量，逆波动加权。",
-    paragraphs: ["同短期 TS 动量，回看窗口改为 120 日。"],
-    formula: `w_i = sign(R_i(120)) / σ_i`,
+    dataSources: [{ input: "收益 R(120)", source: "主力连续收盘（AkShare）" }],
+    designLogic: ["长窗时序动量捕捉季度级趋势，对噪音更不敏感，但对拐点反应更慢。"],
+    latex: ["w_i=\\mathrm{sign}(R_i(120))/\\sigma_i"],
+    holdingRebal: ["日频时序。"],
+    calibTarget: "本地风格因子，无单独 Wind 校准码。",
   },
   cs_mom_short: {
     key: "cs_mom_short",
     title: "截面动量(短)",
     summary: "按 20 日收益排序的截面多空。",
-    paragraphs: ["按过去 20 日收益排序，做多最高约 20%、做空最低约 20%，多空等权。"],
-    formula: `r = CS_LS(R(20), longHigh=true)`,
+    dataSources: [{ input: "R(20)", source: "主力连续收盘（AkShare）" }],
+    designLogic: ["截面动量做多相对强势、做空相对弱势，赚取品种间强弱发散，而非绝对涨跌。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(R(20),\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频；多头最高约 20%，空头最低约 20%，等权。"],
+    calibTarget: "本地风格因子。",
   },
   cs_mom: {
     key: "cs_mom",
     title: "截面动量",
     summary: "按 60 日收益排序的截面多空。",
-    paragraphs: ["按过去 60 日收益排序，做多最高约 20%、做空最低约 20%。"],
-    formula: `r = CS_LS(R(60), longHigh=true)`,
+    dataSources: [{ input: "R(60)", source: "主力连续收盘（AkShare）" }],
+    designLogic: ["中期截面动量，逻辑同短窗，窗口更长、持仓更稳。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(R(60),\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频；多空各约 20% 等权。"],
+    calibTarget: "本地风格因子。",
   },
   term_structure: {
     key: "term_structure",
     title: "期限结构因子",
     summary: "近远月 Carry 截面多空。",
-    paragraphs: ["Carry_i = 近月/次近月相关度量，做多高 Carry、做空低 Carry。"],
-    formula: `r = CS_LS(Carry, longHigh=true)`,
+    dataSources: [{ input: "Carry", source: "近/次近月连续（EMQuant）" }],
+    designLogic: ["与期限基差同源：做多高 Carry（偏贴水）、做空低 Carry，收获曲线形态溢价。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{Carry},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "与 report_basis 同源思想；校准参见 GTJAQH004。",
   },
   basis: {
     key: "basis",
     title: "基差因子",
     summary: "与期限结构相同的 Carry 截面（展示名不同）。",
-    paragraphs: ["实现上与 term_structure / carry_value 共用 Carry 截面多空。"],
-    formula: `r = CS_LS(Carry, longHigh=true)`,
+    dataSources: [{ input: "Carry", source: "近远月连续（EMQuant）" }],
+    designLogic: ["实现上与 term_structure / carry_value 共用 Carry 截面多空。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{Carry},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   carry_value: {
     key: "carry_value",
     title: "价值收益因子",
     summary: "Carry 截面，与基差因子同源。",
-    paragraphs: ["代码中直接复用 basis 当日收益。"],
+    dataSources: [{ input: "Carry", source: "近远月连续（EMQuant）" }],
+    designLogic: ["把期限升贴水视为「价值」信号：高 Carry 类似便宜的持有收益。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{Carry},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频；代码中复用 basis 当日收益。"],
+    calibTarget: "本地风格因子。",
   },
   basis_mom: {
     key: "basis_mom",
     title: "基差动量(旧)",
     summary: "Carry 20 日变化截面（旧版命名）。",
-    paragraphs: ["score = Carry_t − Carry_{t−20}，做多高变化。与 report_basis_mom 思路相近。"],
-    formula: `r = CS_LS(Δ_20 Carry, longHigh=true)`,
+    dataSources: [{ input: "ΔCarry(20)", source: "近远月连续（EMQuant）" }],
+    designLogic: ["与 report_basis_mom 同思路：做多 Carry 改善、做空恶化。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\Delta_{20}\\mathrm{Carry},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   basis_mom_short: {
     key: "basis_mom_short",
     title: "期限基差动量",
-    summary: "同基差动量，UI 主要出现在累计/区间面。",
-    paragraphs: ["与 basis_mom 同一套 ΔCarry 截面。"],
+    summary: "同基差动量，主要出现在累计/区间图。",
+    dataSources: [{ input: "ΔCarry", source: "近远月连续（EMQuant）" }],
+    designLogic: ["与 basis_mom 同一套 ΔCarry 截面。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\Delta\\mathrm{Carry},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   vol_short: {
     key: "vol_short",
     title: "波动因子(短)",
     summary: "20 日波动截面：做多低波、做空高波。",
-    paragraphs: ["σ 为 20 日收益波动，CS_LS(longHigh=false)。"],
-    formula: `r = CS_LS(σ_20, longHigh=false)`,
+    dataSources: [{ input: "σ_20", source: "由主力连续日收益估计" }],
+    designLogic: ["低波异象：波动偏低的品种往往有更稳定的风险调整收益；做空高波以对冲尾部风险溢价。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\sigma_{20},\\ \\mathrm{longHigh}{=}\\mathrm{false})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   vol: {
     key: "vol",
     title: "波动因子",
     summary: "60 日波动截面：做多低波、做空高波。",
-    paragraphs: ["σ 为 60 日收益波动，CS_LS(longHigh=false)。"],
-    formula: `r = CS_LS(σ_60, longHigh=false)`,
+    dataSources: [{ input: "σ_60", source: "由主力连续日收益估计" }],
+    designLogic: ["中期低波偏好，逻辑同短窗波动因子。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\sigma_{60},\\ \\mathrm{longHigh}{=}\\mathrm{false})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   liquidity: {
     key: "liquidity",
     title: "流动性因子",
-    summary: "Amihud 非流动性：|r|/均量，做多低、做空高。",
-    paragraphs: ["Amihud ≈ |r|/20 日均成交量，longHigh=false。"],
-    formula: `r = CS_LS(|r|/avgVol, longHigh=false)`,
+    summary: "Amihud 非流动性：做多低、做空高。",
+    dataSources: [
+      { input: "|r| / 成交量", source: "主力连续收益与成交量（AkShare）" },
+    ],
+    designLogic: ["流动性越好（Amihud 越低）的品种冲击成本更低，长期可承载更大资金；做空非流动品种收取流动性溢价。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(|r|/\\overline{\\mathrm{Vol}},\\ \\mathrm{longHigh}{=}\\mathrm{false})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   price_dev: {
     key: "price_dev",
     title: "价格偏离因子",
     summary: "相对 MA20 偏离的反转截面。",
-    paragraphs: ["Dev = P/MA20 − 1，做多低 Dev、做空高 Dev。"],
-    formula: `r = CS_LS(P/MA20−1, longHigh=false)`,
+    dataSources: [{ input: "P / MA20", source: "主力连续收盘（AkShare）" }],
+    designLogic: ["短期大幅偏离均线后常有均值回复；做多跌深（低 Dev）、做空涨伸（高 Dev）。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(P/\\mathrm{MA}_{20}-1,\\ \\mathrm{longHigh}{=}\\mathrm{false})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   skew: {
     key: "skew",
     title: "偏度因子",
     summary: "20 日收益偏度截面，做多低偏度。",
-    paragraphs: ["对近 20 日收益算偏度，CS_LS(longHigh=false)。"],
+    dataSources: [{ input: "偏度", source: "近 20 日收益分布（由连续合约收益计算）" }],
+    designLogic: ["高正偏度常伴随彩票型需求与拥挤；低偏度品种风险回报结构更「平常」，截面上偏好后者。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{skew}_{20},\\ \\mathrm{longHigh}{=}\\mathrm{false})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   kurtosis: {
     key: "kurtosis",
     title: "峰度因子",
     summary: "20 日超额峰度截面，做多低峰度。",
-    paragraphs: ["对近 20 日收益算超额峰度，CS_LS(longHigh=false)。"],
+    dataSources: [{ input: "峰度", source: "近 20 日收益分布" }],
+    designLogic: ["高峰度意味着厚尾与跳价风险；做多分布更「正常」的品种，做空尾部风险更高的品种。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{kurt}_{20},\\ \\mathrm{longHigh}{=}\\mathrm{false})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   spec_willingness: {
     key: "spec_willingness",
     title: "投机意愿因子",
     summary: "成交量/持仓量截面，做多意愿高。",
-    paragraphs: ["score = volume/OI，CS_LS(longHigh=true)。"],
+    dataSources: [
+      { input: "volume / OI", source: "主力连续成交量与持仓量（AkShare）" },
+    ],
+    designLogic: ["量仓比升高通常反映投机活跃与信息交易增强；截面做多投机意愿更高的品种。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{volume}/\\mathrm{OI},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
   position_chg: {
     key: "position_chg",
     title: "持仓变化因子",
     summary: "sign(r)·ΔOI 截面，做多高分。",
-    paragraphs: ["score = sign(日收益)·ΔOI，CS_LS(longHigh=true)。"],
+    dataSources: [
+      { input: "ΔOI 与日收益", source: "主力连续持仓量与收盘（AkShare）" },
+    ],
+    designLogic: ["价格上涨且增仓，或下跌且减仓，往往确认趋势方向；用 sign(r)·ΔOI 度量「有持仓确认的价格变动」。"],
+    latex: ["r=\\mathrm{CS\\text{-}LS}(\\mathrm{sign}(r)\\cdot\\Delta\\mathrm{OI},\\ \\mathrm{longHigh}{=}\\mathrm{true})"],
+    holdingRebal: ["日频截面等权。"],
+    calibTarget: "本地风格因子。",
   },
 }
 
 const FACTOR_DEFINITIONS: HelpBlock = {
   title: "各因子的研究定义（已落地为真实多空组合）",
   paragraphs: [
-    "信号一律用 t−1 及更早的价格/持仓数据构造，收益取各品种下一交易日主力连续合约收益 r_{i,t} = P_{i,t}/P_{i,t−1} − 1。组合在商品期货池内做多空（剔除股指/国债）。",
-    "价格主源：AkShare 主力连续 + EMQuant 近远月。报告名因子为本机 REPORT_FIT 价格/持仓重构（非 Wind NAV）。data/gtjaqh_closes.csv 仅作离线校准真值，默认不接入实时图表（USE_WIND_GTJAQH=false）。",
-    "点开各分因子图标题旁的「?」可查看该因子的详细计算说明。",
-  ],
-  bullets: [
-    "时间序列动量(短/中/长)：回看 L = 20 / 60 / 120，信号 s_i = sign(R_i(L))，σ_i 为 60 日波动，权重 w_i = s_i/σ_i，日收益 = Σ w_i r_{i,t} / Σ |w_i|。",
-    "截面动量(短) / 截面动量：按 L = 20 / 60 过去收益排序，做多最高 20%、做空最低 20%，多空等权。",
-    "期限结构 / 基差 / 价值收益：Carry 截面，做多 Carry 高、做空 Carry 低。",
-    "基差动量：Carry 相对 20 日前的变化，做多变化高、做空变化低。",
-    "波动因子(短)/波动：σ 为 20/60 日收益波动，做多低波动、做空高波动。",
-    "流动性因子：Amihud ≈ |r|/成交量，做多 Amihud 低、做空高。",
-    "价格偏离：Dev = P/MA20 − 1，反转：做多 Dev 低、做空 Dev 高。",
-    "偏度 / 峰度：20 日收益偏度或超额峰度，做多低、做空高。",
-    "投机意愿：成交量/持仓量；持仓变化：sign(r)·ΔOI。",
-    "期限基差（周报/近远月）：CS ln(近/远)×basisScale；基差（现货−期货）：CS ann_pct=((S−F)/F)×(365/T)×basisSpotScale；长期截面：OLS slope 截面×负 scale；量价：corr(close,vol) L55/tf0.08/s0.2；长期规则：momLowVol+flip；库存：−Δ%仓单L5；利润：ΔCarry(L20)；基差动量/中期动量：ΔCarry 与 MA20/60。",
+    "信号一律用 t 及更早的价格/持仓数据构造，收益取各品种下一交易日主力连续合约收益。组合在商品期货池内做多空（剔除股指/国债）。",
+    "价格主源：AkShare 主力连续 + EMQuant 近远月。报告名因子为本机 REPORT_FIT 价格/持仓重构（非 Wind NAV）。data/gtjaqh_closes.csv 仅作离线校准真值，默认不接入实时图（USE_WIND_GTJAQH=false）。",
+    "点开各分因子图标题旁的「?」可查看该因子的数据来源、设计逻辑与公式。",
   ],
 }
 
 const DATA_SOURCE: HelpBlock = {
   title: "数据与板块",
   paragraphs: [
-    "接口：GET /ma/api/style-factors/returns?from=&to=&sector=。报告名因子为 REPORT_FIT 本地重构；Wind CSV 仅离线校准，不作为实时图源。",
+    "接口：GET /ma/api/style-factors/returns?from=&to=&sector=。报告名因子为 REPORT_FIT 本地重构；Wind CSV 仅离线校准，不作为实盘图源。",
   ],
   bullets: [
     "全部 / 商品：全商品池。",
-    "黑色 / 有色 / 能化 / 农产：仅该板块品种；基差动量标在黑色，短期基差动量与基差因子标在能化。",
-    "刷新：页面改日期后点「查询」，或切换板块会自动重新请求；底层表由夜间 ETL/AkShare·EMQuant 拉取更新。",
+    "黑色 / 有色 / 能化 / 农产：仅该板块品种。",
+    "刷新：页面改日期后点「查询」，或切换板块会自动重新请求；底层表由夜间 ETL / AkShare·EMQuant 拉取更新。",
   ],
 }
 
@@ -350,14 +506,9 @@ const HELP: Record<HelpSection, { heading: string; intro: string; blocks: HelpBl
       DATA_SOURCE,
       {
         title: "卡片取值",
-        paragraphs: [
-          "取区间最后一个有行情的交易日 T 的因子组合日收益，乘 100 后保留两位小数。",
-        ],
-        formula: `卡片(f) = round( 100 × r_f(T) , 2 )`,
-        bullets: [
-          "正收益红色，负收益绿色，零为灰色。",
-          "不再使用哈希伪随机或板块常数漂移。",
-        ],
+        paragraphs: ["取区间最后一个有行情的交易日 T 的因子组合日收益，乘 100 后保留两位小数。"],
+        latex: ["\\text{卡片}(f)=\\mathrm{round}(100\\cdot r_f(T),\\ 2)"],
+        bullets: ["正收益红色，负收益绿色，零为灰色。"],
       },
       FACTOR_DEFINITIONS,
     ],
@@ -370,9 +521,9 @@ const HELP: Record<HelpSection, { heading: string; intro: string; blocks: HelpBl
       {
         title: "柱高",
         paragraphs: [
-          "日收益乘 100 后画图；为避免极端值撑破坐标，展示层截断到 [−3.8, 3.8]，截断只影响画图高度，不回写底层序列。",
+          "日收益乘 100 后绘图；为避免极端值撑破纵轴，展示层截断到 [−3.8, 3.8]，截断只影响画图高度，不回写底层序列。",
         ],
-        formula: `y(f, t) = clip( round( 100 × r_f(t) , 2 ) , −3.8, 3.8 )`,
+        latex: ["y(f,t)=\\mathrm{clip}(\\mathrm{round}(100\\cdot r_f(t),\\ 2),\\ -3.8,\\ 3.8)"],
       },
       FACTOR_DEFINITIONS,
     ],
@@ -384,13 +535,8 @@ const HELP: Record<HelpSection, { heading: string; intro: string; blocks: HelpBl
       DATA_SOURCE,
       {
         title: "区间收益",
-        paragraphs: [
-          "对因子日收益做复利：R = Π(1 + r_t) − 1，窗口截止于查询区间最后一个交易日。",
-        ],
-        formula: `区间(f, k) = round( 100 × ( Π_{t∈k} (1 + r_f(t)) − 1 ) , 2 )`,
-        bullets: [
-          "不再使用静态假表或板块平移。",
-        ],
+        paragraphs: ["对因子日收益做复利：R = ∏(1 + r_t) − 1，窗口截止于查询区间最后一个交易日。"],
+        latex: ["\\text{区间}(f,k)=\\mathrm{round}\\Big(100\\cdot\\big(\\prod_{t\\in W_k}(1+r_f(t))-1\\big),\\ 2\\Big)"],
       },
       FACTOR_DEFINITIONS,
     ],
@@ -403,14 +549,13 @@ const HELP: Record<HelpSection, { heading: string; intro: string; blocks: HelpBl
       {
         title: "累计路径",
         paragraphs: [
-          "报告名因子用未四舍入日收益复利：(Π(1+r)−1)×100。其他风格因子可为日收益百分点算术累计。",
+          "报告名因子用未年化日收益复利：(∏(1+r)−1)×100。其他风格因子可为日收益百分点算术累计。",
         ],
-        formula: `报告名: C_t = ( Π (1+r_f) − 1 ) × 100
-其他: C_0 = 0; C_t = round( C_{t−1} + 100 × r_f(t) , 2 )`,
-        bullets: [
-          "若真实收益接近平坦，曲线也可能较直；那是市场结果，不是常数漂移 mock。",
-          "各分因子小图标题旁的「?」可查看该因子具体公式。",
+        latex: [
+          "C_t^{\\text{报告}}=100\\cdot\\Big(\\prod(1+r_f)-1\\Big)",
+          "C_0=0;\\quad C_t=\\mathrm{round}(C_{t-1}+100\\cdot r_f(t),\\ 2)",
         ],
+        bullets: ["各分因子小图标题旁的「?」可查看该因子具体公式与设计逻辑。"],
       },
       FACTOR_DEFINITIONS,
     ],
@@ -430,6 +575,23 @@ function HelpTrigger({ label }: { label: string }) {
   )
 }
 
+function CollapsibleNote({ title, body }: { title: string; body: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <section className="space-y-1.5">
+      <button
+        type="button"
+        className="text-xs font-semibold text-zinc-500 hover:text-zinc-800 underline-offset-2 hover:underline"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "▾ " : "▸ "}
+        {title}
+      </button>
+      {open ? <p className="text-xs leading-relaxed text-zinc-500 whitespace-pre-wrap">{body}</p> : null}
+    </section>
+  )
+}
+
 function HelpBody({
   heading,
   intro,
@@ -446,28 +608,31 @@ function HelpBody({
         <DialogDescription className="text-xs leading-relaxed">{intro}</DialogDescription>
       </DialogHeader>
       <div className="space-y-4 text-sm text-zinc-700">
-        {blocks.map((block) => (
-          <section key={block.title} className="space-y-2">
-            <h4 className="text-sm font-semibold text-zinc-900">{block.title}</h4>
-            {block.paragraphs?.map((paragraph) => (
-              <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
-                {paragraph}
-              </p>
-            ))}
-            {block.formula ? (
-              <pre className="overflow-x-auto rounded bg-zinc-50 px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap">
-                {block.formula}
-              </pre>
-            ) : null}
-            {block.bullets ? (
-              <ul className="list-disc pl-5 space-y-1 text-xs leading-relaxed text-zinc-600">
-                {block.bullets.map((b) => (
-                  <li key={b}>{b}</li>
-                ))}
-              </ul>
-            ) : null}
-          </section>
-        ))}
+        {blocks.map((block) =>
+          block.collapsible && block.paragraphs?.[0] ? (
+            <CollapsibleNote key={block.title} title={block.title} body={block.paragraphs.join("\n")} />
+          ) : (
+            <section key={block.title} className="space-y-2">
+              <h4 className="text-sm font-semibold text-zinc-900">{block.title}</h4>
+              {block.paragraphs?.map((paragraph) => (
+                <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
+                  {paragraph}
+                </p>
+              ))}
+              {block.latex?.map((m) => (
+                <LatexBlock key={m} math={m} />
+              ))}
+              {block.formula ? <FormulaPlain>{block.formula}</FormulaPlain> : null}
+              {block.bullets ? (
+                <ul className="list-disc pl-5 space-y-1 text-xs leading-relaxed text-zinc-600">
+                  {block.bullets.map((b) => (
+                    <li key={b}>{b}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </section>
+          ),
+        )}
       </div>
     </>
   )
@@ -475,7 +640,6 @@ function HelpBody({
 
 export function FuturesStyleCalcHelp({ section }: { section: HelpSection }) {
   const content = HELP[section]
-
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -505,23 +669,48 @@ export function getFactorHelpBlocks(
         {
           title: "暂无专项说明",
           paragraphs: [
-            `因子「${displayName ?? factorKey}」暂未单独整理公式。实现见 lib/server/futures-style-factors.ts。`,
+            `因子「${displayName ?? factorKey}」暂无单独整理公式。实现见 lib/server/futures-style-factors.ts。`,
           ],
         },
       ],
     }
   }
+
+  const dataBullets = help.dataSources.map((d) => `${d.input}：${d.source}`)
+
   return {
     title,
     summary: help.summary,
     blocks: [
       {
-        title: "计算逻辑（与代码一致）",
-        paragraphs: help.paragraphs,
-        formula: help.formula,
-        bullets: help.bullets,
+        title: "数据来源",
+        bullets: dataBullets,
       },
-      ...(help.note ? [{ title: "备注", paragraphs: [help.note] } satisfies HelpBlock] : []),
+      {
+        title: "设计逻辑",
+        paragraphs: help.designLogic,
+      },
+      {
+        title: "计算公式",
+        latex: help.latex,
+      },
+      {
+        title: "持仓 / 换仓",
+        bullets: help.holdingRebal,
+      },
+      {
+        title: "校准目标",
+        paragraphs: [help.calibTarget],
+      },
+      ...(help.researchNote
+        ? [
+            {
+              title: "研发备注",
+              paragraphs: [help.researchNote],
+              collapsible: true,
+            } satisfies HelpBlock,
+          ]
+        : []),
       {
         title: "通用约定",
         paragraphs: [
@@ -557,28 +746,35 @@ export function FuturesStyleFactorHelpPanel({
         <h3 className="text-sm font-semibold text-zinc-900">{title}</h3>
         <p className="text-xs leading-relaxed text-zinc-500 mt-1">{summary}</p>
       </div>
-      {blocks.map((block) => (
-        <section key={block.title} className="space-y-1.5">
-          <h4 className="text-xs font-semibold text-zinc-800">{block.title}</h4>
-          {block.paragraphs?.map((paragraph) => (
-            <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
-              {paragraph}
-            </p>
-          ))}
-          {block.formula ? (
-            <pre className="overflow-x-auto rounded bg-zinc-50 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap border border-zinc-100">
-              {block.formula}
-            </pre>
-          ) : null}
-          {block.bullets ? (
-            <ul className="list-disc pl-4 space-y-1 text-xs leading-relaxed text-zinc-600">
-              {block.bullets.map((b) => (
-                <li key={b}>{b}</li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
-      ))}
+      {blocks.map((block) =>
+        block.collapsible && block.paragraphs?.[0] ? (
+          <CollapsibleNote key={block.title} title={block.title} body={block.paragraphs.join("\n")} />
+        ) : (
+          <section key={block.title} className="space-y-1.5">
+            <h4 className="text-xs font-semibold text-zinc-800">{block.title}</h4>
+            {block.paragraphs?.map((paragraph) => (
+              <p key={paragraph} className="text-xs leading-relaxed text-zinc-600">
+                {paragraph}
+              </p>
+            ))}
+            {block.latex?.map((m) => (
+              <LatexBlock key={m} math={m} />
+            ))}
+            {block.formula ? (
+              <pre className="overflow-x-auto rounded bg-zinc-50 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-800 whitespace-pre-wrap border border-zinc-100">
+                {block.formula}
+              </pre>
+            ) : null}
+            {block.bullets ? (
+              <ul className="list-disc pl-4 space-y-1 text-xs leading-relaxed text-zinc-600">
+                {block.bullets.map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+            ) : null}
+          </section>
+        ),
+      )}
     </div>
   )
 }
