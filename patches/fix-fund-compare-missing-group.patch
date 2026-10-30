@@ -1,0 +1,416 @@
+diff --git a/app/ma/dashboard/private-funds/components/InvestmentFundCompareView.tsx b/app/ma/dashboard/private-funds/components/InvestmentFundCompareView.tsx
+index 6c573bb..85555db 100644
+--- a/app/ma/dashboard/private-funds/components/InvestmentFundCompareView.tsx
++++ b/app/ma/dashboard/private-funds/components/InvestmentFundCompareView.tsx
+@@ -24,6 +24,7 @@ import {
+ import {
+   createFundCompareFromPicker,
+   deleteFundCompare,
++  fundCompareHref,
+   loadLocalFundCompareRows,
+   saveFundCompare,
+ } from "@/lib/ma-fund-compare-storage"
+@@ -462,11 +463,7 @@ export function InvestmentFundCompareView() {
+           const compare = createFundCompareFromPicker(items, scopeTab)
+           saveFundCompare(compare)
+           setShowFundPicker(false)
+-          window.open(
+-            `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`,
+-            "_blank",
+-            "noopener,noreferrer",
+-          )
++          window.open(fundCompareHref(compare), "_blank", "noopener,noreferrer")
+         }}
+       />
+     </div>
+diff --git a/app/ma/dashboard/private-funds/fund-compare/[id]/page.tsx b/app/ma/dashboard/private-funds/fund-compare/[id]/page.tsx
+index 1b3ad29..b5d8f5d 100644
+--- a/app/ma/dashboard/private-funds/fund-compare/[id]/page.tsx
++++ b/app/ma/dashboard/private-funds/fund-compare/[id]/page.tsx
+@@ -4,18 +4,39 @@ import { useEffect, useState } from "react"
+ import { useParams } from "next/navigation"
+ import { FundCompareDetailView } from "@/components/ma/fund-compare-detail-view"
+ import { FundCompareSectionShell } from "@/components/ma/fund-compare-section-shell"
+-import { loadFundCompare } from "@/lib/ma-fund-compare-storage"
++import {
++  adoptOpenedFundCompare,
++  type SavedFundCompare,
++} from "@/lib/ma-fund-compare-storage"
+ 
+ export default function FundCompareDetailPage() {
+   const params = useParams()
+-  const id = typeof params.id === "string" ? params.id : ""
+-  const [compare, setCompare] = useState(() => (id ? loadFundCompare(id) : null))
++  const paramId = params.id
++  const paramKey = Array.isArray(paramId) ? paramId.join("/") : typeof paramId === "string" ? paramId : ""
++  const [compare, setCompare] = useState<SavedFundCompare | null>(null)
+   const [ready, setReady] = useState(false)
+ 
+   useEffect(() => {
+-    setCompare(loadFundCompare(id))
+-    setReady(true)
+-  }, [id])
++    function sync() {
++      const opened = adoptOpenedFundCompare({
++        paramId: paramKey || undefined,
++        pathname: window.location.pathname,
++        hash: window.location.hash,
++      })
++      if (opened.persisted && window.location.hash.includes("fc=")) {
++        window.history.replaceState(
++          window.history.state,
++          "",
++          `${window.location.pathname}${window.location.search}`,
++        )
++      }
++      setCompare(opened.compare)
++      setReady(true)
++    }
++    sync()
++    window.addEventListener("storage", sync)
++    return () => window.removeEventListener("storage", sync)
++  }, [paramKey])
+ 
+   if (!ready) {
+     return (
+diff --git a/lib/ma-fund-compare-storage.test.ts b/lib/ma-fund-compare-storage.test.ts
+new file mode 100644
+index 0000000..f317c34
+--- /dev/null
++++ b/lib/ma-fund-compare-storage.test.ts
+@@ -0,0 +1,164 @@
++import assert from "node:assert/strict"
++import { afterEach, describe, it } from "node:test"
++import {
++  adoptOpenedFundCompare,
++  compareIdFromPathname,
++  fundCompareHref,
++  readCompareDraft,
++  resolveOpenedFundCompare,
++  saveFundCompare,
++  type SavedFundCompare,
++} from "./ma-fund-compare-storage.ts"
++
++function sampleCompare(id = "cmp-1793347836397"): SavedFundCompare {
++  return {
++    id,
++    name: "荣熙恒盈1号A类等19只",
++    scope: "team",
++    funds: [
++      {
++        beian_hao: "SCU622",
++        product_name: "荣熙恒盈1号A类",
++        manager: null,
++        fund_type: "私募",
++        nav_start_date: null,
++        latest_nav_date: "2026-10-28",
++        inception_date: null,
++        ret_ann_since_inception: null,
++      },
++      {
++        beian_hao: "SBRM35",
++        product_name: "稳和稳健债基A类",
++        manager: null,
++        fund_type: "私募",
++        nav_start_date: null,
++        latest_nav_date: "2026-10-28",
++        inception_date: null,
++        ret_ann_since_inception: null,
++      },
++    ],
++    createdAt: "2026-10-30T08:10:36.397Z",
++    updatedAt: "2026-10-30T08:10:36.397Z",
++  }
++}
++
++function installStorage(options?: { quota?: boolean }) {
++  const store = new Map<string, string>()
++  let blocked = options?.quota === true
++  const localStorage = {
++    get length() {
++      return store.size
++    },
++    key(index: number) {
++      return [...store.keys()][index] ?? null
++    },
++    getItem(key: string) {
++      return store.has(key) ? store.get(key)! : null
++    },
++    setItem(key: string, value: string) {
++      if (blocked && key === "ma_fund_compares" && value.length > 20) {
++        const error = new Error("quota")
++        error.name = "QuotaExceededError"
++        throw error
++      }
++      store.set(key, value)
++    },
++    removeItem(key: string) {
++      store.delete(key)
++    },
++  }
++  Object.defineProperty(globalThis, "window", {
++    configurable: true,
++    value: { dispatchEvent() {} },
++  })
++  Object.defineProperty(globalThis, "localStorage", {
++    configurable: true,
++    value: localStorage,
++  })
++  return store
++}
++
++afterEach(() => {
++  delete (globalThis as { window?: unknown }).window
++  delete (globalThis as { localStorage?: unknown }).localStorage
++})
++
++describe("fund compare open handoff", { concurrency: false }, () => {
++  it("reads the cmp id from the detail pathname", () => {
++    assert.equal(
++      compareIdFromPathname("/ma/dashboard/private-funds/fund-compare/cmp-1793347836397"),
++      "cmp-1793347836397",
++    )
++  })
++
++  it("round-trips a drawer group through the URL hash", () => {
++    const compare = sampleCompare()
++    const href = fundCompareHref(compare)
++    const hash = href.slice(href.indexOf("#"))
++    assert.deepEqual(readCompareDraft(hash), compare)
++  })
++
++  it("opens the group from the hash when localStorage never received the write", () => {
++    installStorage({ quota: true })
++    const compare = sampleCompare()
++    assert.equal(saveFundCompare(compare), false)
++    const href = fundCompareHref(compare)
++    const opened = adoptOpenedFundCompare({
++      paramId: "",
++      pathname: "/ma/dashboard/private-funds/fund-compare/cmp-1793347836397",
++      hash: href.slice(href.indexOf("#")),
++    })
++    assert.equal(opened.id, compare.id)
++    assert.equal(opened.compare?.funds.length, 2)
++    assert.equal(opened.compare?.funds[0].product_name, "荣熙恒盈1号A类")
++    assert.equal(opened.persisted, false)
++  })
++
++  it("uses the pathname when useParams has not produced a string id", () => {
++    installStorage()
++    const compare = sampleCompare()
++    assert.equal(saveFundCompare(compare), true)
++    const opened = resolveOpenedFundCompare({
++      paramId: undefined,
++      pathname: "/ma/dashboard/private-funds/fund-compare/cmp-1793347836397",
++      hash: "",
++    })
++    assert.equal(opened.compare?.id, compare.id)
++  })
++
++  it("ignores a hash draft for a different group id", () => {
++    installStorage()
++    const href = fundCompareHref(sampleCompare("cmp-other"))
++    const opened = resolveOpenedFundCompare({
++      paramId: "cmp-1793347836397",
++      pathname: "/ma/dashboard/private-funds/fund-compare/cmp-1793347836397",
++      hash: href.slice(href.indexOf("#")),
++    })
++    assert.equal(opened.compare, null)
++  })
++
++  it("drops older groups when the stored list no longer fits", () => {
++    const store = installStorage()
++    const big = sampleCompare("cmp-old")
++    big.funds = Array.from({ length: 30 }, (_, index) => ({
++      ...big.funds[0],
++      beian_hao: `S${index}`,
++      product_name: "旧对比".repeat(80),
++    }))
++    store.set("ma_fund_compares", JSON.stringify([big]))
++    const created = sampleCompare("cmp-new")
++    const originalSet = localStorage.setItem.bind(localStorage)
++    localStorage.setItem = (key: string, value: string) => {
++      if (key === "ma_fund_compares" && value.includes("cmp-old")) {
++        const error = new Error("quota")
++        error.name = "QuotaExceededError"
++        throw error
++      }
++      originalSet(key, value)
++    }
++    assert.equal(saveFundCompare(created), true)
++    const raw = localStorage.getItem("ma_fund_compares") ?? ""
++    assert.equal(raw.includes("cmp-new"), true)
++    assert.equal(raw.includes("cmp-old"), false)
++  })
++})
+diff --git a/lib/ma-fund-compare-storage.ts b/lib/ma-fund-compare-storage.ts
+index fea5517..764a210 100644
+--- a/lib/ma-fund-compare-storage.ts
++++ b/lib/ma-fund-compare-storage.ts
+@@ -33,6 +33,9 @@ export interface FundCompareListRow {
+ }
+ 
+ const STORAGE_KEY = "ma_fund_compares"
++/** Keep the local list from growing until setItem throws and the new group is dropped. */
++const MAX_STORED_COMPARES = 40
++const DRAFT_PARAM = "fc"
+ 
+ function currentUserName(): string {
+   if (typeof window === "undefined") return ""
+@@ -83,18 +86,37 @@ export function loadFundCompare(id: string): SavedFundCompare | null {
+   return loadAllFundCompares().find((c) => c.id === id) ?? null
+ }
+ 
+-export function saveFundCompare(compare: SavedFundCompare) {
+-  if (typeof window === "undefined") return
++function writeCompares(compares: SavedFundCompare[]): boolean {
+   try {
+-    const existing = loadAllFundCompares()
+-    const next = [compare, ...existing.filter((c) => c.id !== compare.id)]
+-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+-    window.dispatchEvent(new Event("ma-fund-compares-updated"))
++    localStorage.setItem(STORAGE_KEY, JSON.stringify(compares))
++    return true
+   } catch {
+-    // localStorage may be unavailable (private mode, quota exceeded, security restrictions)
++    return false
+   }
+ }
+ 
++/**
++ * Persist a compare group. Returns false when storage is unavailable or the
++ * origin quota is already full — callers must not treat that as success.
++ * Older groups are dropped before the newest one so one full key does not
++ * block the group the user just created.
++ */
++export function saveFundCompare(compare: SavedFundCompare): boolean {
++  if (typeof window === "undefined") return false
++  const existing = loadAllFundCompares().filter((item) => item.id !== compare.id)
++  const attempts = [
++    [compare, ...existing].slice(0, MAX_STORED_COMPARES),
++    [compare, ...existing].slice(0, 8),
++    [compare],
++  ]
++  for (const batch of attempts) {
++    if (!writeCompares(batch)) continue
++    window.dispatchEvent(new Event("ma-fund-compares-updated"))
++    return true
++  }
++  return false
++}
++
+ export function deleteFundCompare(id: string) {
+   if (typeof window === "undefined") return
+   try {
+@@ -154,3 +176,91 @@ export function createFundCompareFromPicker(
+     updatedAt: now,
+   }
+ }
++
++function safeDecode(value: string): string {
++  try {
++    return decodeURIComponent(value)
++  } catch {
++    return value
++  }
++}
++
++function isSavedFundCompare(value: unknown): value is SavedFundCompare {
++  if (!value || typeof value !== "object") return false
++  const row = value as SavedFundCompare
++  if (typeof row.id !== "string" || !row.id) return false
++  if (row.scope !== "team" && row.scope !== "mine") return false
++  if (typeof row.name !== "string") return false
++  if (!Array.isArray(row.funds)) return false
++  return row.funds.every((fund) => (
++    !!fund
++    && typeof fund.beian_hao === "string"
++    && fund.beian_hao.length > 0
++    && typeof fund.product_name === "string"
++  ))
++}
++
++/** Id from `/fund-compare/cmp-…`, used when `useParams()` has not supplied one. */
++export function compareIdFromPathname(pathname: string): string {
++  const match = pathname.match(/\/fund-compare\/([^/?#]+)\/?$/)
++  return match ? safeDecode(match[1]) : ""
++}
++
++export function readCompareDraft(hash: string): SavedFundCompare | null {
++  const raw = hash.startsWith("#") ? hash.slice(1) : hash
++  if (!raw) return null
++  let encoded: string | null = null
++  try {
++    encoded = new URLSearchParams(raw).get(DRAFT_PARAM)
++  } catch {
++    return null
++  }
++  if (!encoded) return null
++  try {
++    const parsed: unknown = JSON.parse(encoded)
++    return isSavedFundCompare(parsed) ? parsed : null
++  } catch {
++    return null
++  }
++}
++
++/**
++ * Detail links are opened with `window.open(..., "noopener")`. That tab does
++ * not share sessionStorage, and `saveFundCompare` can fail when localStorage
++ * is over quota. The hash carries the group so the page can still open it.
++ */
++export function fundCompareHref(compare: SavedFundCompare): string {
++  const path = `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`
++  return `${path}#${DRAFT_PARAM}=${encodeURIComponent(JSON.stringify(compare))}`
++}
++
++export function resolveOpenedFundCompare(input: {
++  paramId?: string | string[]
++  pathname?: string
++  hash?: string
++}): { id: string; compare: SavedFundCompare | null } {
++  const fromParam = Array.isArray(input.paramId) ? input.paramId[0] ?? "" : input.paramId ?? ""
++  const id = (fromParam ? safeDecode(fromParam) : "") || (input.pathname ? compareIdFromPathname(input.pathname) : "")
++  const stored = id ? loadFundCompare(id) : null
++  if (stored) return { id, compare: stored }
++  const draft = input.hash ? readCompareDraft(input.hash) : null
++  if (draft && (!id || draft.id === id)) return { id: draft.id, compare: draft }
++  return { id, compare: null }
++}
++
++export function adoptOpenedFundCompare(input: {
++  paramId?: string | string[]
++  pathname: string
++  hash: string
++}): { id: string; compare: SavedFundCompare | null; persisted: boolean } {
++  const opened = resolveOpenedFundCompare(input)
++  if (!opened.compare) return { id: opened.id, compare: null, persisted: false }
++  if (loadFundCompare(opened.compare.id)) {
++    return { id: opened.compare.id, compare: opened.compare, persisted: true }
++  }
++  return {
++    id: opened.compare.id,
++    compare: opened.compare,
++    persisted: saveFundCompare(opened.compare),
++  }
++}
+diff --git a/lib/ma-product-selection-actions.ts b/lib/ma-product-selection-actions.ts
+index bbc752b..45098a5 100644
+--- a/lib/ma-product-selection-actions.ts
++++ b/lib/ma-product-selection-actions.ts
+@@ -1,5 +1,5 @@
+ import type { PortfolioFundPickerItem } from "@/components/ma/portfolio-fund-picker-dialog"
+-import { createFundCompareFromPicker, saveFundCompare } from "@/lib/ma-fund-compare-storage"
++import { createFundCompareFromPicker, fundCompareHref, saveFundCompare } from "@/lib/ma-fund-compare-storage"
+ 
+ const PORTFOLIO_PREFILL_KEY = "ma_portfolio_create_prefill"
+ 
+@@ -32,7 +32,7 @@ export function createFundCompareHref(
+   if (items.length === 0) return null
+   const compare = createFundCompareFromPicker(items, scope)
+   saveFundCompare(compare)
+-  return `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`
++  return fundCompareHref(compare)
+ }
+ 
+ export function openFundCompareWithProducts(

@@ -13,21 +13,24 @@ export function useRealtimeOverlayFeed() {
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+    let reqId = 0
 
     async function poll() {
       if (cancelled) return
+      const myId = ++reqId
       try {
         const res = await fetch("/ma/api/realtime-quotes/overlay", { cache: "no-store" })
         const json = (await res.json()) as LiveOverlayResponse
         if (!res.ok || json.ok === false) {
           throw new Error(json.error || `请求失败 ${res.status}`)
         }
-        if (!cancelled) {
+        // Ignore stale responses if a newer poll finished first.
+        if (!cancelled && myId === reqId) {
           setData((prev) => stabilizeOverlay(prev, json))
           setError(null)
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && myId === reqId) {
           setError(err instanceof Error ? err.message : "现货/IV 行情获取失败")
         }
       }

@@ -33,6 +33,9 @@ export interface FundCompareListRow {
 }
 
 const STORAGE_KEY = "ma_fund_compares"
+/** Keep the local list from growing until setItem throws and the new group is dropped. */
+const MAX_STORED_COMPARES = 40
+const DRAFT_PARAM = "fc"
 
 function currentUserName(): string {
   if (typeof window === "undefined") return ""
@@ -83,16 +86,35 @@ export function loadFundCompare(id: string): SavedFundCompare | null {
   return loadAllFundCompares().find((c) => c.id === id) ?? null
 }
 
-export function saveFundCompare(compare: SavedFundCompare) {
-  if (typeof window === "undefined") return
+function writeCompares(compares: SavedFundCompare[]): boolean {
   try {
-    const existing = loadAllFundCompares()
-    const next = [compare, ...existing.filter((c) => c.id !== compare.id)]
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-    window.dispatchEvent(new Event("ma-fund-compares-updated"))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(compares))
+    return true
   } catch {
-    // localStorage may be unavailable (private mode, quota exceeded, security restrictions)
+    return false
   }
+}
+
+/**
+ * Persist a compare group. Returns false when storage is unavailable or the
+ * origin quota is already full — callers must not treat that as success.
+ * Older groups are dropped before the newest one so one full key does not
+ * block the group the user just created.
+ */
+export function saveFundCompare(compare: SavedFundCompare): boolean {
+  if (typeof window === "undefined") return false
+  const existing = loadAllFundCompares().filter((item) => item.id !== compare.id)
+  const attempts = [
+    [compare, ...existing].slice(0, MAX_STORED_COMPARES),
+    [compare, ...existing].slice(0, 8),
+    [compare],
+  ]
+  for (const batch of attempts) {
+    if (!writeCompares(batch)) continue
+    window.dispatchEvent(new Event("ma-fund-compares-updated"))
+    return true
+  }
+  return false
 }
 
 export function deleteFundCompare(id: string) {
@@ -152,5 +174,93 @@ export function createFundCompareFromPicker(
     funds: items.map(pickerItemToCompareFund),
     createdAt: now,
     updatedAt: now,
+  }
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function isSavedFundCompare(value: unknown): value is SavedFundCompare {
+  if (!value || typeof value !== "object") return false
+  const row = value as SavedFundCompare
+  if (typeof row.id !== "string" || !row.id) return false
+  if (row.scope !== "team" && row.scope !== "mine") return false
+  if (typeof row.name !== "string") return false
+  if (!Array.isArray(row.funds)) return false
+  return row.funds.every((fund) => (
+    !!fund
+    && typeof fund.beian_hao === "string"
+    && fund.beian_hao.length > 0
+    && typeof fund.product_name === "string"
+  ))
+}
+
+/** Id from `/fund-compare/cmp-…`, used when `useParams()` has not supplied one. */
+export function compareIdFromPathname(pathname: string): string {
+  const match = pathname.match(/\/fund-compare\/([^/?#]+)\/?$/)
+  return match ? safeDecode(match[1]) : ""
+}
+
+export function readCompareDraft(hash: string): SavedFundCompare | null {
+  const raw = hash.startsWith("#") ? hash.slice(1) : hash
+  if (!raw) return null
+  let encoded: string | null = null
+  try {
+    encoded = new URLSearchParams(raw).get(DRAFT_PARAM)
+  } catch {
+    return null
+  }
+  if (!encoded) return null
+  try {
+    const parsed: unknown = JSON.parse(encoded)
+    return isSavedFundCompare(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Detail links are opened with `window.open(..., "noopener")`. That tab does
+ * not share sessionStorage, and `saveFundCompare` can fail when localStorage
+ * is over quota. The hash carries the group so the page can still open it.
+ */
+export function fundCompareHref(compare: SavedFundCompare): string {
+  const path = `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`
+  return `${path}#${DRAFT_PARAM}=${encodeURIComponent(JSON.stringify(compare))}`
+}
+
+export function resolveOpenedFundCompare(input: {
+  paramId?: string | string[]
+  pathname?: string
+  hash?: string
+}): { id: string; compare: SavedFundCompare | null } {
+  const fromParam = Array.isArray(input.paramId) ? input.paramId[0] ?? "" : input.paramId ?? ""
+  const id = (fromParam ? safeDecode(fromParam) : "") || (input.pathname ? compareIdFromPathname(input.pathname) : "")
+  const stored = id ? loadFundCompare(id) : null
+  if (stored) return { id, compare: stored }
+  const draft = input.hash ? readCompareDraft(input.hash) : null
+  if (draft && (!id || draft.id === id)) return { id: draft.id, compare: draft }
+  return { id, compare: null }
+}
+
+export function adoptOpenedFundCompare(input: {
+  paramId?: string | string[]
+  pathname: string
+  hash: string
+}): { id: string; compare: SavedFundCompare | null; persisted: boolean } {
+  const opened = resolveOpenedFundCompare(input)
+  if (!opened.compare) return { id: opened.id, compare: null, persisted: false }
+  if (loadFundCompare(opened.compare.id)) {
+    return { id: opened.compare.id, compare: opened.compare, persisted: true }
+  }
+  return {
+    id: opened.compare.id,
+    compare: opened.compare,
+    persisted: saveFundCompare(opened.compare),
   }
 }

@@ -261,11 +261,86 @@ async function fetchOptbbsPre(code: string): Promise<number | null> {
   return null
 }
 
-async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
+function sourceFamily(source: string | null | undefined) {
+  if (!source) return "none"
+  if (source.startsWith("optbbs:")) return "optbbs"
+  if (source === "sina") return "sina"
+  if (source.startsWith("qvix-sina:") || source.startsWith("sina-atm:")) return "sina-atm"
+  if (source.startsWith("qvix-cffex:") || source.startsWith("em-atm:")) return "cffex-atm"
+  if (source.startsWith("optbbs-k:")) return "optbbs-k"
+  if (source.startsWith("db:")) return "db"
+  if (source.startsWith("optbbs-pre:")) return "optbbs-pre"
+  if (source.startsWith("optbbs-daily:")) return "optbbs-daily"
+  return source.split(":")[0] || source
+}
+
+async function loadIvFromFamily(
+  product: IndexProduct,
+  family: string,
+): Promise<{ bars: OverlayPoint[]; source: string | null } | null> {
+  const meta = INDEX_IV[product]
+  const codes = [...new Set([meta.key, meta.fallback])]
+  const explicit = labelAtmExplicitly()
+  if (family === "optbbs") {
+    for (const code of codes) {
+      try {
+        const bars = await fetchOptbbsMin(code)
+        if (bars.length >= 8) return { bars, source: `optbbs:${code}` }
+      } catch {
+        // try next
+      }
+    }
+    return null
+  }
+  if (family === "sina") {
+    try {
+      const bars = await fetchSinaQvixMin(SINA_QVIX_SYMBOL[meta.key] || "50ETF")
+      if (bars.length >= 8) return { bars, source: "sina" }
+    } catch {
+      return null
+    }
+    return null
+  }
+  if (family === "sina-atm") {
+    if (!allowAtmFallback()) return null
+    for (const code of codes) {
+      const live = await fetchEtfAtmIvMinutes(code)
+      if (live && live.length >= 8) {
+        return { bars: live, source: explicit ? `sina-atm:${code}` : `qvix-sina:${code}` }
+      }
+    }
+    return null
+  }
+  if (family === "cffex-atm") {
+    if (!allowAtmFallback()) return null
+    for (const code of codes) {
+      const live = await fetchCffexAtmIvMinutes(code)
+      if (live && live.length >= 8) {
+        return { bars: live, source: explicit ? `em-atm:${code}` : `qvix-cffex:${code}` }
+      }
+    }
+    return null
+  }
+  return null
+}
+
+async function loadIv(product: IndexProduct, preferFamily?: string | null): Promise<IvSnapshot> {
   const meta = INDEX_IV[product]
   const codes = [...new Set([meta.key, meta.fallback])]
   let bars: OverlayPoint[] = []
   let source: string | null = null
+
+  // Stick to the previously established minute source so flaky optbbs vs ATM
+  // rebuild do not alternate chart shapes every poll.
+  if (preferFamily && preferFamily !== "none") {
+    const sticky = await loadIvFromFamily(product, preferFamily)
+    if (sticky && sticky.bars.length >= 8) {
+      bars = sticky.bars
+      source = sticky.source
+    }
+  }
+
+  if (bars.length < 8) {
   for (const code of codes) {
     try {
       bars = await fetchOptbbsMin(code)
@@ -278,7 +353,8 @@ async function loadIv(product: IndexProduct): Promise<IvSnapshot> {
       // try next
     }
   }
-  if (!bars.length) {
+  }
+  if (bars.length < 8) {
     try {
       bars = await fetchSinaQvixMin(SINA_QVIX_SYMBOL[meta.key] || "50ETF")
       if (bars.length) source = "sina"
@@ -410,10 +486,29 @@ export async function getQvixRealtime() {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.data
   if (inflight) return inflight
   inflight = (async () => {
-    const rows = await Promise.all(INDEX_FUTURES.map((item) => loadIv(item.product)))
     const now = Date.now()
+    const rows = await Promise.all(
+      INDEX_FUTURES.map((item) => {
+        const kept = lastGoodMinute.get(item.product)
+        const prefer =
+          kept && now - kept.at < KEEP_MINUTE_MS && isMinuteIv(kept.snap)
+            ? sourceFamily(kept.snap.source)
+            : null
+        return loadIv(item.product, prefer)
+      }),
+    )
     const sticky = rows.map((row) => {
       if (isMinuteIv(row)) {
+        const kept = lastGoodMinute.get(row.product)
+        // Refuse mid-session source flip-flops that rewrite the whole shape.
+        if (
+          kept &&
+          now - kept.at < KEEP_MINUTE_MS &&
+          isMinuteIv(kept.snap) &&
+          sourceFamily(kept.snap.source) !== sourceFamily(row.source)
+        ) {
+          return kept.snap
+        }
         lastGoodMinute.set(row.product, { at: now, snap: row })
         return row
       }
@@ -421,11 +516,16 @@ export async function getQvixRealtime() {
       if (kept && now - kept.at < KEEP_MINUTE_MS) return kept.snap
       return row
     })
-    return Object.fromEntries(sticky.map((row) => [row.product, row])) as Record<IndexProduct, IvSnapshot>
-  })().finally(() => {
+    const data = Object.fromEntries(sticky.map((row) => [row.product, row])) as Record<
+      IndexProduct,
+      IvSnapshot
+    >
+    cached = { at: Date.now(), data }
+    return data
+  })()
+  try {
+    return await inflight
+  } finally {
     inflight = null
-  })
-  const data = await inflight
-  cached = { at: Date.now(), data }
-  return data
+  }
 }

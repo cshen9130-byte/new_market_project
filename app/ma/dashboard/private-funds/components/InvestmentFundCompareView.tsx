@@ -24,6 +24,7 @@ import {
 import {
   createFundCompareFromPicker,
   deleteFundCompare,
+  fundCompareHref,
   loadLocalFundCompareRows,
   saveFundCompare,
 } from "@/lib/ma-fund-compare-storage"
@@ -462,11 +463,7 @@ export function InvestmentFundCompareView() {
           const compare = createFundCompareFromPicker(items, scopeTab)
           saveFundCompare(compare)
           setShowFundPicker(false)
-          window.open(
-            `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`,
-            "_blank",
-            "noopener,noreferrer",
-          )
+          window.open(fundCompareHref(compare), "_blank", "noopener,noreferrer")
         }}
       />
     </div>

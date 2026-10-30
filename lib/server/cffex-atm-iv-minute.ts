@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Intraday near-month ATM implied vol for CFFEX index options (HO / IO / MO).
  * Official optbbs QVIX minute CSVs for index underlyings are often blank (#NAME?),
  * so this rebuilds a 1-minute line from Eastmoney CFFEX option trends + index spot.
@@ -14,6 +14,8 @@ const EM_UT = "f057cbcbce2a86e2866ab8877db1d059"
 const RATE = 0.018
 const CACHE_MS = 15_000
 const EM_MARKET = 221
+/** Keep using the same ATM strike until spot drifts this far (index points). */
+const STRIKE_STICKY_BPS = 0.35
 
 type IndexKey = "50index" | "300index" | "1000index"
 
@@ -27,10 +29,12 @@ const INDEX: Record<
 }
 
 type Side = "call" | "put"
-type MinutePx = { hhmm: string; price: number; volume: number }
+type MinutePx = { day: string; hhmm: string; price: number; volume: number }
 type EmOption = { dm: string; sc: number; strike: number; side: Side; last: number; dte: number }
 
-const cache = new Map<string, { at: number; bars: OverlayPoint[] }>()
+type AtmChoice = { month: string; strike: number; callDm: string; putDm: string; callSc: number; putSc: number; dte: number }
+
+const cache = new Map<string, { at: number; bars: OverlayPoint[]; atm: AtmChoice | null }>()
 
 function num(value: unknown) {
   const n = Number(value)
@@ -201,8 +205,48 @@ function pickAtm(rows: EmOption[], spot: number) {
   return best
 }
 
-async function optionTrends(dm: string, sc: number): Promise<{ date: string | null; points: MinutePx[] }> {
+/** Prefer previous ATM strike/contracts until spot drifts far enough to retarget. */
+function resolveAtm(
+  monthRows: EmOption[],
+  spot: number,
+  month: string,
+  prev: AtmChoice | null,
+  step: number,
+): AtmChoice | null {
+  if (prev && prev.month === month) {
+    const call = monthRows.find((r) => r.dm === prev.callDm && r.side === "call")
+    const put = monthRows.find((r) => r.dm === prev.putDm && r.side === "put")
+    if (call && put && call.strike === prev.strike && put.strike === prev.strike) {
+      const stickyLimit = Math.max(step * STRIKE_STICKY_BPS, step * 0.35)
+      if (Math.abs(spot - prev.strike) <= stickyLimit + step * 0.5) {
+        return {
+          month,
+          strike: prev.strike,
+          callDm: call.dm,
+          putDm: put.dm,
+          callSc: call.sc,
+          putSc: put.sc,
+          dte: call.dte,
+        }
+      }
+    }
+  }
+  const fresh = pickAtm(monthRows, spot)
+  if (!fresh) return null
+  return {
+    month,
+    strike: fresh.strike,
+    callDm: fresh.call.dm,
+    putDm: fresh.put.dm,
+    callSc: fresh.call.sc,
+    putSc: fresh.put.sc,
+    dte: fresh.dte,
+  }
+}
+
+async function optionTrends(dm: string, sc: number, ndays = 1): Promise<{ date: string | null; points: MinutePx[] }> {
   const secid = `${sc || EM_MARKET}.${dm}`
+  const days = Math.min(Math.max(Math.round(ndays) || 1, 1), 10)
   const url =
     `${EM_TREND_URL}?` +
     new URLSearchParams({
@@ -210,7 +254,7 @@ async function optionTrends(dm: string, sc: number): Promise<{ date: string | nu
       fields1: "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f17",
       fields2: "f51,f53,f54,f55,f56,f57,f58",
       iscr: "0",
-      ndays: "1",
+      ndays: String(days),
       ut: EM_UT,
     }).toString()
   const json = JSON.parse(await emGet(url)) as {
@@ -220,16 +264,15 @@ async function optionTrends(dm: string, sc: number): Promise<{ date: string | nu
   let date: string | null = null
   const points: MinutePx[] = []
   for (const item of trends) {
-    const parts = item.split(",")
+    const parts = item.split(',')
     const stamp = parts[0] || ""
     const price = num(parts[1])
-    // Eastmoney trends2: time, close, high, low, volume, amount, avg
     const volume = num(parts[4]) ?? 0
     const day = stamp.slice(0, 10)
     const hhmm = hhmmOf(stamp)
     if (/^\d{4}-\d{2}-\d{2}$/.test(day)) date = day
-    if (!hhmm || price == null || !(price > 0)) continue
-    points.push({ hhmm, price, volume })
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !hhmm || price == null || !(price > 0)) continue
+    points.push({ day, hhmm, price, volume })
   }
   return { date, points }
 }
@@ -256,20 +299,24 @@ async function underlyingSpot(symbol: string) {
   return last != null && last > 0 ? last : null
 }
 
-async function underlyingMinutes(symbol: string) {
+async function underlyingMinutes(symbol: string, ndays = 1) {
   try {
+    const days = Math.min(Math.max(Math.round(ndays) || 1, 1), 10)
+    const datalen = Math.min(240 * days, 2400)
     const text = await sinaGet(
-      `https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&ma=no&datalen=240`,
+      `https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&ma=no&datalen=${datalen}`,
       "https://finance.sina.com.cn/",
     )
     if (!text || text === "null") return new Map<string, number>()
     const rows = JSON.parse(text) as Array<{ day?: string; close?: string }>
     const map = new Map<string, number>()
     for (const row of rows) {
-      const hhmm = hhmmOf(String(row.day || ""))
+      const stamp = String(row.day || "")
+      const day = stamp.slice(0, 10)
+      const hhmm = hhmmOf(stamp)
       const close = num(row.close)
-      if (!hhmm || close == null || !(close > 0)) continue
-      map.set(hhmm, close)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !hhmm || close == null || !(close > 0)) continue
+      map.set(`${day} ${hhmm}`, close)
     }
     return map
   } catch {
@@ -325,22 +372,20 @@ function buildBars(
   fallbackSpot: number,
   strike: number,
   expireDay: string,
-  date: string,
 ) {
-  const callPx = new Map(call.map((row) => [row.hhmm, row]))
-  const putPx = new Map(put.map((row) => [row.hhmm, row]))
-  // Require both C and P prints for the minute (no single-sided IV).
-  const stamps = [...callPx.keys()].filter((hhmm) => putPx.has(hhmm)).sort()
+  const stampKey = (row: MinutePx) => `${row.day} ${row.hhmm}`
+  const callPx = new Map(call.map((row) => [stampKey(row), row]))
+  const putPx = new Map(put.map((row) => [stampKey(row), row]))
+  const stamps = [...callPx.keys()].filter((key) => putPx.has(key)).sort()
   let spot = fallbackSpot
   const bars: OverlayPoint[] = []
-  for (const hhmm of stamps) {
-    const callBar = callPx.get(hhmm)!
-    const putBar = putPx.get(hhmm)!
-    // Drop illiquid first/auction bars: zero volume on either side is not a real trade.
+  for (const key of stamps) {
+    const callBar = callPx.get(key)!
+    const putBar = putPx.get(key)!
     if (callBar.volume <= 0 || putBar.volume <= 0) continue
-    const quotedSpot = spotByMinute.get(hhmm)
+    const quotedSpot = spotByMinute.get(key)
     if (quotedSpot != null) spot = quotedSpot
-    const time = chinaWallToUnix(`${date} ${hhmm}:00`)
+    const time = chinaWallToUnix(`${callBar.day} ${callBar.hhmm}:00`)
     if (time == null || !(spot > 0)) continue
     const t = yearFraction(time, expireDay)
     const callIv = impliedVolPercent(callBar.price, spot, strike, t, "call")
@@ -352,15 +397,45 @@ function buildBars(
   return filterNeighborOutliers(bars)
 }
 
-export async function fetchCffexAtmIvMinutes(key: string, monthCode?: string | null): Promise<OverlayPoint[] | null> {
+/**
+ * Freeze settled minutes from the previous series; only let the newest 1–2
+ * minutes (and brand-new timestamps) take values from a fresh rebuild.
+ * Stops full-series flip-flops when Eastmoney revises prints / volume flags.
+ */
+function mergeSettledBars(prev: OverlayPoint[] | undefined, next: OverlayPoint[]): OverlayPoint[] {
+  if (!prev?.length) return next
+  if (!next.length) return prev
+  const prevByTime = new Map(prev.map((b) => [b.time, b]))
+  const nextTimes = next.map((b) => b.time).sort((a, b) => a - b)
+  const tipCutoff = nextTimes[Math.max(0, nextTimes.length - 1)]!
+  const map = new Map<number, OverlayPoint>()
+  for (const bar of prev) map.set(bar.time, bar)
+  for (const bar of next) {
+    const old = prevByTime.get(bar.time)
+    if (!old || bar.time >= tipCutoff) {
+      map.set(bar.time, bar)
+    }
+    // else keep settled prev close
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+export async function fetchCffexAtmIvMinutes(
+  key: string,
+  monthCode?: string | null,
+  ndays = 1,
+): Promise<OverlayPoint[] | null> {
   if (!(key in INDEX)) return null
   const today = todayShanghai()
-  const cacheKey = monthCode ? `${key}:${String(monthCode).trim().toUpperCase()}` : key
+  const days = Math.min(Math.max(Math.round(ndays) || 1, 1), 10)
+  const monthPart = monthCode ? String(monthCode).trim().toUpperCase() : ""
+  const cacheKey = monthPart ? key + ":" + monthPart + ":d" + days : key + ":d" + days
   const hit = cache.get(cacheKey)
   if (hit && Date.now() - hit.at < CACHE_MS && hit.bars.length) {
     const last = hit.bars[hit.bars.length - 1]
-    const start = chinaWallToUnix(`${today} 00:00:00`)
-    if (start != null && last.time >= start) return hit.bars
+    const startOfToday = chinaWallToUnix(`${today} 00:00:00`)
+    if (days === 1 && startOfToday != null && last.time >= startOfToday) return hit.bars
+    if (days > 1) return hit.bars
   }
   try {
     const cfg = INDEX[key as IndexKey]
@@ -369,19 +444,20 @@ export async function fetchCffexAtmIvMinutes(key: string, monthCode?: string | n
     if (!month) return hit?.bars ?? null
     const spot0 = spotQuote
     if (spot0 == null) return hit?.bars ?? null
-    const atm = pickAtm(month.list, spot0)
+    const atm = resolveAtm(month.list, spot0, month.month, hit?.atm ?? null, cfg.step)
     if (!atm) return hit?.bars ?? null
     const expireDay = addDaysShanghai(today, Math.max(Math.round(atm.dte), 1))
     const [callMin, putMin, spotMin] = await Promise.all([
-      optionTrends(atm.call.dm, atm.call.sc),
-      optionTrends(atm.put.dm, atm.put.sc),
-      underlyingMinutes(cfg.underlying),
+      optionTrends(atm.callDm, atm.callSc, days),
+      optionTrends(atm.putDm, atm.putSc, days),
+      underlyingMinutes(cfg.underlying, days),
     ])
     const date = callMin.date || putMin.date
-    if (date !== today) return hit?.bars?.length ? hit.bars : null
-    const bars = buildBars(callMin.points, putMin.points, spotMin, spot0, atm.strike, expireDay, date)
+    if (days === 1 && date !== today) return hit?.bars?.length ? hit.bars : null
+    const rebuilt = buildBars(callMin.points, putMin.points, spotMin, spot0, atm.strike, expireDay)
+    const bars = days === 1 ? mergeSettledBars(hit?.bars, rebuilt) : rebuilt
     if (bars.length < 8) return hit?.bars ?? null
-    cache.set(cacheKey, { at: Date.now(), bars })
+    cache.set(cacheKey, { at: Date.now(), bars, atm })
     return bars
   } catch {
     return hit?.bars ?? null

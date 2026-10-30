@@ -65,7 +65,19 @@ function barSpan(bars: OverlayPoint[]) {
 }
 
 export function isDailyOverlayBars(bars: OverlayPoint[], source?: string | null) {
-  return !!source?.startsWith("db:") || !!source?.startsWith("optbbs-k:") || !!source?.startsWith("optbbs-pre:") || barSpan(bars) > 36 * 3600
+  if (!!source?.startsWith("db:") || !!source?.startsWith("optbbs-k:") || !!source?.startsWith("optbbs-pre:")) return true
+  // Explicit minute families stay intraday even when the lookback spans multiple sessions.
+  if (
+    !!source?.startsWith("optbbs:") ||
+    source === "sina" ||
+    !!source?.startsWith("qvix-sina:") ||
+    !!source?.startsWith("qvix-cffex:") ||
+    !!source?.startsWith("sina-atm:") ||
+    !!source?.startsWith("em-atm:")
+  ) {
+    return false
+  }
+  return barSpan(bars) > 36 * 3600
 }
 
 function unionOverlayBars(prev: OverlayPoint[], incoming: OverlayPoint[]) {
@@ -73,6 +85,46 @@ function unionOverlayBars(prev: OverlayPoint[], incoming: OverlayPoint[]) {
   for (const bar of prev) map.set(bar.time, bar)
   for (const bar of incoming) map.set(bar.time, bar)
   return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+function ivSourceFamily(source: string | null | undefined) {
+  if (!source) return "none"
+  if (source.startsWith("optbbs:")) return "optbbs"
+  if (source === "sina") return "sina"
+  if (source.startsWith("qvix-sina:") || source.startsWith("sina-atm:")) return "sina-atm"
+  if (source.startsWith("qvix-cffex:") || source.startsWith("em-atm:")) return "cffex-atm"
+  return source.split(":")[0] || source
+}
+
+/** Freeze settled IV minutes; allow tip + new stamps to update. */
+function mergeIntradayIvBars(prev: OverlayPoint[], next: OverlayPoint[]): OverlayPoint[] {
+  if (!prev.length) return next
+  if (!next.length) return prev
+  const prevByTime = new Map(prev.map((b) => [b.time, b]))
+  const nextTimes = next.map((b) => b.time).sort((a, b) => a - b)
+  const tipCutoff = nextTimes[Math.max(0, nextTimes.length - 1)]!
+  const map = new Map<number, OverlayPoint>()
+  for (const bar of prev) map.set(bar.time, bar)
+  for (const bar of next) {
+    const old = prevByTime.get(bar.time)
+    if (!old || bar.time >= tipCutoff) map.set(bar.time, bar)
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+function withIvBars(snap: IvSnapshot, bars: OverlayPoint[], source?: string | null): IvSnapshot {
+  const last = bars.at(-1)?.close ?? snap.value
+  const prevClose = bars.length >= 2 ? bars[0].close : null
+  const change = last != null && prevClose != null ? last - prevClose : snap.change
+  const pct = change != null && prevClose ? (change / prevClose) * 100 : snap.pct
+  return {
+    ...snap,
+    bars,
+    source: source ?? snap.source,
+    value: last,
+    change,
+    pct,
+  }
 }
 
 /** Keep last good minute series when a poll returns empty, short, or daily fallback. */
@@ -98,10 +150,20 @@ export function stabilizeOverlay(
     if (prevIv?.bars?.length && nextIv) {
       const prevIntraday = !isDailyOverlayBars(prevIv.bars, prevIv.source)
       const nextDaily = isDailyOverlayBars(nextIv.bars, nextIv.source)
+      const nextIntraday = !nextDaily && (nextIv.bars?.length || 0) >= 8
       if (prevIntraday && nextDaily) {
         iv[product] = { ...prevIv, value: prevIv.value, change: prevIv.change, pct: prevIv.pct }
       } else if (prevIntraday && (nextIv.bars?.length || 0) < 8) {
         iv[product] = { ...nextIv, bars: prevIv.bars, source: prevIv.source }
+      } else if (prevIntraday && nextIntraday) {
+        // Same-family: freeze settled minutes so rebuild jitter cannot flip the chart.
+        // Cross-family: keep previous series (server should also sticky; this is the client guard).
+        if (ivSourceFamily(prevIv.source) !== ivSourceFamily(nextIv.source)) {
+          iv[product] = prevIv
+        } else {
+          const merged = mergeIntradayIvBars(prevIv.bars, nextIv.bars)
+          iv[product] = withIvBars({ ...nextIv }, merged, nextIv.source || prevIv.source)
+        }
       } else if (prevIntraday && prevIv.bars.length > (nextIv.bars?.length || 0) * 1.4) {
         iv[product] = { ...nextIv, bars: unionOverlayBars(prevIv.bars, nextIv.bars), source: nextIv.source || prevIv.source }
       }

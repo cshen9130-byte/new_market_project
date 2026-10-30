@@ -438,7 +438,7 @@ export default function RealtimeQuotesPage() {
       <div>
         <h2 className="text-lg font-semibold tracking-tight">隐含波动率</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          HO / IO / 500ETF / MO 对应 QVIX（近月 ATM 隐含波动率指数）。日内周期由当日分钟线合成，日线及以上用历史日线。
+          HO / IO / 500ETF / MO 对应 QVIX（近月 ATM 隐含波动率指数）。日内周期默认当日分钟线，可用横轴天数切换 2/5/10 日回看；日线及以上用历史日线。
         </p>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">

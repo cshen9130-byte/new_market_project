@@ -4,7 +4,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
-import { qvixBarsForTimeframe } from "./qvix-series"
+import { qvixBarsForTimeframe, sliceOverlayByLookbackDays } from "./qvix-series"
 
 function unix(y: number, m: number, d: number, h = 0, min = 0) {
   return Math.floor(Date.UTC(y, m - 1, d, h, min) / 1000)
@@ -69,5 +69,33 @@ describe("qvix bars for timeframe", () => {
     assert.ok(out.bars.length >= 1)
     assert.ok(out.bars.length < daily.length)
     assert.equal(out.bars.at(-1)?.close, 23)
+  })
+})
+
+describe("sliceOverlayByLookbackDays", () => {
+  it("keeps only the last N distinct Shanghai days", () => {
+    const bars = [
+      { time: unix(2026, 10, 27, 10, 0), close: 1 },
+      { time: unix(2026, 10, 28, 10, 0), close: 2 },
+      { time: unix(2026, 10, 28, 11, 0), close: 3 },
+      { time: unix(2026, 10, 29, 10, 0), close: 4 },
+      { time: unix(2026, 10, 30, 9, 30), close: 5 },
+      { time: unix(2026, 10, 30, 10, 0), close: 6 },
+    ]
+    const out = sliceOverlayByLookbackDays(bars, 2)
+    assert.equal(out.length, 3)
+    assert.equal(out[0].close, 4)
+    assert.equal(out.at(-1)?.close, 6)
+  })
+
+  it("limits to the latest session when days is 1", () => {
+    const bars = [
+      { time: unix(2026, 10, 29, 15, 0), close: 4 },
+      { time: unix(2026, 10, 30, 9, 30), close: 5 },
+      { time: unix(2026, 10, 30, 10, 0), close: 6 },
+    ]
+    const out = sliceOverlayByLookbackDays(bars, 1)
+    assert.equal(out.length, 2)
+    assert.equal(out[0].close, 5)
   })
 })

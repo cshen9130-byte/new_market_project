@@ -4,18 +4,39 @@ import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 import { FundCompareDetailView } from "@/components/ma/fund-compare-detail-view"
 import { FundCompareSectionShell } from "@/components/ma/fund-compare-section-shell"
-import { loadFundCompare } from "@/lib/ma-fund-compare-storage"
+import {
+  adoptOpenedFundCompare,
+  type SavedFundCompare,
+} from "@/lib/ma-fund-compare-storage"
 
 export default function FundCompareDetailPage() {
   const params = useParams()
-  const id = typeof params.id === "string" ? params.id : ""
-  const [compare, setCompare] = useState(() => (id ? loadFundCompare(id) : null))
+  const paramId = params.id
+  const paramKey = Array.isArray(paramId) ? paramId.join("/") : typeof paramId === "string" ? paramId : ""
+  const [compare, setCompare] = useState<SavedFundCompare | null>(null)
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    setCompare(loadFundCompare(id))
-    setReady(true)
-  }, [id])
+    function sync() {
+      const opened = adoptOpenedFundCompare({
+        paramId: paramKey || undefined,
+        pathname: window.location.pathname,
+        hash: window.location.hash,
+      })
+      if (opened.persisted && window.location.hash.includes("fc=")) {
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}`,
+        )
+      }
+      setCompare(opened.compare)
+      setReady(true)
+    }
+    sync()
+    window.addEventListener("storage", sync)
+    return () => window.removeEventListener("storage", sync)
+  }, [paramKey])
 
   if (!ready) {
     return (

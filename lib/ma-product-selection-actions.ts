@@ -1,5 +1,5 @@
 import type { PortfolioFundPickerItem } from "@/components/ma/portfolio-fund-picker-dialog"
-import { createFundCompareFromPicker, saveFundCompare } from "@/lib/ma-fund-compare-storage"
+import { createFundCompareFromPicker, fundCompareHref, saveFundCompare } from "@/lib/ma-fund-compare-storage"
 
 const PORTFOLIO_PREFILL_KEY = "ma_portfolio_create_prefill"
 
@@ -32,7 +32,7 @@ export function createFundCompareHref(
   if (items.length === 0) return null
   const compare = createFundCompareFromPicker(items, scope)
   saveFundCompare(compare)
-  return `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`
+  return fundCompareHref(compare)
 }
 
 export function openFundCompareWithProducts(
