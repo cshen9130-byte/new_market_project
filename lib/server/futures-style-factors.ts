@@ -15,6 +15,15 @@ import path from "path"
 import { fmtIso, n, query } from "@/lib/db"
 import { getPrefix } from "@/lib/server/prod-utils"
 
+import {
+  getFuturesStyleBoundsCache,
+  setFuturesStyleBoundsCache,
+  getFuturesStyleMaterialsCache,
+  setFuturesStyleMaterialsCache,
+  getFuturesStyleDailyFracCache,
+  setFuturesStyleDailyFracCache,
+} from "@/lib/server/futures-style-response-cache"
+
 export type FuturesStyleSector =
   | "all"
   | "commodity"
@@ -3248,16 +3257,20 @@ export type FuturesStyleDataBounds = {
 
 /** Latest / earliest trade dates available for style-factor construction. */
 export async function getFuturesStyleDataBounds(): Promise<FuturesStyleDataBounds> {
+  const cached = getFuturesStyleBoundsCache()
+  if (cached) return cached
   const rows = await query<{ min_d: Date | string | null; max_d: Date | string | null }>(
     `SELECT MIN(trade_date) AS min_d, MAX(trade_date) AS max_d
      FROM raw_akshare_futures_daily
      WHERE close IS NOT NULL AND CAST(close AS float8) > 0`,
   )
   const row = rows[0]
-  return {
+  const body = {
     minDate: row?.min_d != null ? fmtIso(row.min_d) : null,
     maxDate: row?.max_d != null ? fmtIso(row.max_d) : null,
   }
+  setFuturesStyleBoundsCache(body)
+  return body
 }
 
 /** Default window ≈ prior Mar–Jun UX (~94 calendar days / ~3 months) ending at latest data. */
@@ -3298,19 +3311,50 @@ export async function buildFuturesStyleReturns(
   sector: FuturesStyleSector,
   opts?: { auto?: boolean; minDate?: string | null; maxDate?: string | null },
 ): Promise<FuturesStyleReturnsPayload> {
-  const lookbackFrom = shiftDate(from, -320) // need ≥195 trading days warm-up for report CS/rules
-  const [prices, contracts, warehouse, profit, socialInv, commoditySpot] = await Promise.all([
-    loadAksharePrices(lookbackFrom, to),
-    loadContractLegs(lookbackFrom, to),
-    loadWarehouseReceipts(lookbackFrom, to),
-    loadEdbIndustryProfit(lookbackFrom, to),
-    loadEdbCommodityInventory(lookbackFrom, to),
-    loadEdbCommoditySpot(lookbackFrom, to),
-  ])
+  const lookbackFrom = shiftDate(from, -320) // need ≥95 trading days warm-up for report CS/rules
 
-  const { dates: allDates, panels } = buildPanels(prices, contracts, sector)
-  attachFundamentals(allDates, panels, warehouse, profit, socialInv, commoditySpot)
-  const dailyFrac = computeDailyFactorReturns(allDates, panels)
+  // Materials (DB loads) are sector-agnostic — share across sector tabs.
+  type Materials = {
+    prices: Awaited<ReturnType<typeof loadAksharePrices>>
+    contracts: Awaited<ReturnType<typeof loadContractLegs>>
+    warehouse: Awaited<ReturnType<typeof loadWarehouseReceipts>>
+    profit: Awaited<ReturnType<typeof loadEdbIndustryProfit>>
+    socialInv: Awaited<ReturnType<typeof loadEdbCommodityInventory>>
+    commoditySpot: Awaited<ReturnType<typeof loadEdbCommoditySpot>>
+  }
+  const materialsKey = `mat:v1:${lookbackFrom}|${to}`
+  let materials = getFuturesStyleMaterialsCache<Materials>(materialsKey)
+  if (!materials) {
+    const [prices, contracts, warehouse, profit, socialInv, commoditySpot] = await Promise.all([
+      loadAksharePrices(lookbackFrom, to),
+      loadContractLegs(lookbackFrom, to),
+      loadWarehouseReceipts(lookbackFrom, to),
+      loadEdbIndustryProfit(lookbackFrom, to),
+      loadEdbCommodityInventory(lookbackFrom, to),
+      loadEdbCommoditySpot(lookbackFrom, to),
+    ])
+    materials = { prices, contracts, warehouse, profit, socialInv, commoditySpot }
+    setFuturesStyleMaterialsCache(materialsKey, materials)
+  }
+  const { prices, contracts, warehouse, profit, socialInv, commoditySpot } = materials
+
+  // Factor daily series are expensive; reuse per sector+window.
+  type DailyPack = {
+    allDates: string[]
+    dailyFrac: ReturnType<typeof computeDailyFactorReturns>
+  }
+  const dailyKey = `daily:v1:${lookbackFrom}|${to}|${sector}`
+  let dailyPack = getFuturesStyleDailyFracCache<DailyPack>(dailyKey)
+  if (!dailyPack) {
+    const built = buildPanels(prices, contracts, sector)
+    attachFundamentals(built.dates, built.panels, warehouse, profit, socialInv, commoditySpot)
+    dailyPack = {
+      allDates: built.dates,
+      dailyFrac: computeDailyFactorReturns(built.dates, built.panels),
+    }
+    setFuturesStyleDailyFracCache(dailyKey, dailyPack)
+  }
+  const { allDates, dailyFrac } = dailyPack
 
   // Optional offline overlay (USE_WIND_GTJAQH=true only). Default path is REPORT_FIT above.
   const windTable = USE_WIND_GTJAQH ? loadGtjaqhCloses() : null

@@ -1,6 +1,11 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  fetchFuturesStyleReturns,
+  futuresStyleReturnsQueryKey,
+  getFuturesStyleReturnsCached,
+} from "@/lib/client/futures-style-returns-cache"
 import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
 import { FuturesStyleCalcHelp, FuturesStyleFactorHelp, FuturesStyleFactorHelpPanel } from "./FuturesStyleCalcHelp"
@@ -327,45 +332,64 @@ export function FuturesStyleView() {
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
+    const auto = rangeAuto || !appliedFrom || !appliedTo
+    const cacheKey = futuresStyleReturnsQueryKey({
+      sector: activeSector,
+      auto,
+      from: appliedFrom,
+      to: appliedTo,
+    })
 
     async function load() {
-      setLoading(true)
-      setError(null)
+      const cached = getFuturesStyleReturnsCached(cacheKey)
+      if (cached && !cancelled) {
+        // Paint instantly from memory/session; revalidate below.
+        setPayload(cached as ApiPayload)
+        if (cached.maxDate) setDataMaxDate(cached.maxDate)
+        setDraftFrom(cached.from)
+        setDraftTo(cached.to)
+        if (!(cached.auto || rangeAuto)) {
+          setAppliedFrom(cached.from)
+          setAppliedTo(cached.to)
+        }
+        setError(null)
+        setLoading(false)
+      } else {
+        setLoading(true)
+        setError(null)
+      }
+
       try {
         const qs = new URLSearchParams({ sector: activeSector })
-        if (rangeAuto || !appliedFrom || !appliedTo) {
+        if (auto) {
           qs.set("auto", "1")
         } else {
           qs.set("from", appliedFrom)
           qs.set("to", appliedTo)
         }
-        const res = await fetch(`/ma/api/style-factors/returns?${qs}`, {
-          signal: controller.signal,
-          cache: "no-store",
-        })
-        const json = (await res.json()) as ApiPayload | ApiError
+        const data = (await fetchFuturesStyleReturns(
+          cacheKey,
+          `/ma/api/style-factors/returns?${qs}`,
+          controller.signal,
+        )) as ApiPayload
         if (cancelled) return
-        if (!res.ok || !json || (json as ApiError).ok === false) {
-          setPayload(null)
-          setError((json as ApiError)?.error || `加载失败 (${res.status})`)
-          return
-        }
-        const data = json as ApiPayload
         setPayload(data)
         if (data.maxDate) setDataMaxDate(data.maxDate)
-        // Sync date inputs with resolved range. Keep applied* empty while auto
-        // so the effect does not re-fire with concrete dates.
         setDraftFrom(data.from)
         setDraftTo(data.to)
         if (!(data.auto || rangeAuto)) {
           setAppliedFrom(data.from)
           setAppliedTo(data.to)
         }
+        setError(null)
       } catch (e) {
         if (cancelled) return
         if ((e as Error)?.name === "AbortError") return
-        setPayload(null)
-        setError(e instanceof Error ? e.message : String(e))
+        // Keep stale payload if we already painted from cache.
+        if (!getFuturesStyleReturnsCached(cacheKey)) {
+          setPayload(null)
+          setError(e instanceof Error ? e.message : String(e))
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -404,28 +428,37 @@ export function FuturesStyleView() {
     const controller = new AbortController()
 
     async function loadGrid() {
-      setGridLoading(true)
+      const cacheKey = futuresStyleReturnsQueryKey({
+        sector: activeSector,
+        auto: false,
+        from: wanted.from,
+        to: wanted.to,
+      })
+      const cached = getFuturesStyleReturnsCached(cacheKey)
+      if (cached) {
+        setGridPayload(cached as ApiPayload)
+        setGridLoading(false)
+        // Background revalidate
+      } else {
+        setGridLoading(true)
+      }
       try {
         const qs = new URLSearchParams({
           sector: activeSector,
           from: wanted.from,
           to: wanted.to,
         })
-        const res = await fetch(`/ma/api/style-factors/returns?${qs}`, {
-          signal: controller.signal,
-          cache: "no-store",
-        })
-        const json = (await res.json()) as ApiPayload | ApiError
+        const data = (await fetchFuturesStyleReturns(
+          cacheKey,
+          `/ma/api/style-factors/returns?${qs}`,
+          controller.signal,
+        )) as ApiPayload
         if (cancelled) return
-        if (!res.ok || !json || (json as ApiError).ok === false) {
-          setGridPayload(null)
-          return
-        }
-        setGridPayload(json as ApiPayload)
+        setGridPayload(data)
       } catch (e) {
         if (cancelled) return
         if ((e as Error)?.name === "AbortError") return
-        setGridPayload(null)
+        if (!getFuturesStyleReturnsCached(cacheKey)) setGridPayload(null)
       } finally {
         if (!cancelled) setGridLoading(false)
       }

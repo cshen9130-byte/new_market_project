@@ -25058,6 +25058,21 @@ function PrivateFundsPageContent() {
     setKeptInvestmentSides((prev) => (prev.includes(activeSideItem) ? prev : [...prev, activeSideItem]))
   }, [activeTab, activeSideItem, KEEP_ALIVE_INVESTMENT])
 
+  // Futures Style: prefetch JS chunk + default returns while user is on 市场 tab,
+  // and keep the view mounted after first open so sidebar return is instant.
+  const [keptFuturesStyle, setKeptFuturesStyle] = useState(
+    () => activeTab === "market" && activeSideItem === "futures-style",
+  )
+  useEffect(() => {
+    if (activeTab !== "market") return
+    // Warm API + chunk as soon as 市场 is open (or deep-linked to futures-style).
+    void import("./components/FuturesStyleView")
+    void import("@/lib/client/futures-style-returns-cache").then((m) => {
+      m.prefetchFuturesStyleReturns("all")
+    })
+    if (activeSideItem === "futures-style") setKeptFuturesStyle(true)
+  }, [activeTab, activeSideItem])
+
   useEffect(() => {
     if (!currentUser) return
     if (activeTab === "operations" && !showOperationsTab) {
@@ -25444,7 +25459,11 @@ function PrivateFundsPageContent() {
           {activeTab === "market" && activeSideItem === "strategy-observation" && <StrategyObservationView />}
           {activeTab === "market" && activeSideItem === "pe-index" && <PeIndexView />}
           {activeTab === "market" && activeSideItem === "pe-industry" && <PeIndustryView />}
-          {activeTab === "market" && activeSideItem === "futures-style" && <FuturesStyleView />}
+          {((activeTab === "market" && activeSideItem === "futures-style") || keptFuturesStyle) && (
+            <div className={activeTab === "market" && activeSideItem === "futures-style" ? "contents" : "hidden"}>
+              <FuturesStyleView />
+            </div>
+          )}
           {activeTab === "market" && activeSideItem === "equity-style" && <EquityStyleView />}
           {activeTab === "market" && activeSideItem === "stock-market" && <StockMarketView />}
           {activeTab === "market" && activeSideItem !== "strategy-observation" && activeSideItem !== "pe-index" && activeSideItem !== "pe-industry" && activeSideItem !== "futures-style" && activeSideItem !== "equity-style" && activeSideItem !== "stock-market" && (
