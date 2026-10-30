@@ -128,6 +128,33 @@ function formatIntervalReturnPct(value: number): string {
   return `${sign}${value.toFixed(2)}%`
 }
 
+/** Per-factor cumulative grid window (independent of the page date bar when not "follow"). */
+type FactorGridRangeMode = "follow" | "3m" | "1y"
+
+const FACTOR_GRID_RANGE_OPTIONS: Array<{ id: FactorGridRangeMode; label: string }> = [
+  { id: "follow", label: "跟随上方" },
+  { id: "3m", label: "3个月" },
+  { id: "1y", label: "1年" },
+]
+
+/** Match server defaultFuturesStyleRange (-94d) / interval near-1y (-372d). */
+function shiftIsoDate(iso: string, days: number): string {
+  const d = new Date(`${iso}T12:00:00`)
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+function factorGridWindow(mode: "3m" | "1y", endIso: string): { from: string; to: string } {
+  const days = mode === "3m" ? -94 : -372
+  return { from: shiftIsoDate(endIso, days), to: endIso }
+}
+
+function factorGridRangeSubtitle(mode: FactorGridRangeMode): string {
+  if (mode === "follow") return "每个因子单独展示累计路径（与上方同一区间）"
+  if (mode === "3m") return "每个因子单独展示累计路径（近3个月）"
+  return "每个因子单独展示累计路径（近1年）"
+}
+
 function SortableHeader({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center justify-center gap-0.5">
@@ -257,6 +284,11 @@ export function FuturesStyleView() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  /** Independent window for the 分因子累计收益 mini-charts (default: follow page range). */
+  const [factorGridRange, setFactorGridRange] = useState<FactorGridRangeMode>("follow")
+  const [gridPayload, setGridPayload] = useState<ApiPayload | null>(null)
+  const [gridLoading, setGridLoading] = useState(false)
+
   const handleQuery = useCallback(() => {
     if (draftFrom && draftTo) {
       setAppliedFrom(draftFrom)
@@ -338,6 +370,73 @@ export function FuturesStyleView() {
       controller.abort()
     }
   }, [activeSector, rangeAuto, appliedFrom, appliedTo])
+
+  // Per-factor cumulative grid: optional own window (3m / 1y), else reuse page payload.
+  useEffect(() => {
+    if (factorGridRange === "follow") {
+      setGridPayload(null)
+      setGridLoading(false)
+      return
+    }
+
+    const endIso = dataMaxDate || payload?.to || appliedTo || draftTo
+    if (!endIso || !/^\d{4}-\d{2}-\d{2}$/.test(endIso)) {
+      setGridPayload(null)
+      return
+    }
+
+    const wanted = factorGridWindow(factorGridRange, endIso)
+    // Reuse page payload when it already matches the requested window.
+    if (payload && payload.from === wanted.from && payload.to === wanted.to) {
+      setGridPayload(null)
+      setGridLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const controller = new AbortController()
+
+    async function loadGrid() {
+      setGridLoading(true)
+      try {
+        const qs = new URLSearchParams({
+          sector: activeSector,
+          from: wanted.from,
+          to: wanted.to,
+        })
+        const res = await fetch(`/ma/api/style-factors/returns?${qs}`, {
+          signal: controller.signal,
+          cache: "no-store",
+        })
+        const json = (await res.json()) as ApiPayload | ApiError
+        if (cancelled) return
+        if (!res.ok || !json || (json as ApiError).ok === false) {
+          setGridPayload(null)
+          return
+        }
+        setGridPayload(json as ApiPayload)
+      } catch (e) {
+        if (cancelled) return
+        if ((e as Error)?.name === "AbortError") return
+        setGridPayload(null)
+      } finally {
+        if (!cancelled) setGridLoading(false)
+      }
+    }
+
+    void loadGrid()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [
+    factorGridRange,
+    activeSector,
+    dataMaxDate,
+    payload,
+    appliedTo,
+    draftTo,
+  ])
 
   // Hydrate visibility prefs once on mount (avoid SSR / hydration mismatch)
   useEffect(() => {
@@ -530,6 +629,36 @@ export function FuturesStyleView() {
           data: s.data,
         })),
     [payload, isFactorVisible],
+  )
+
+  /** Source for 分因子累计收益: own 3m/1y payload when toggled, else page cumulative. */
+  const factorGridSource = useMemo(() => {
+    if (factorGridRange === "follow") return payload
+    if (gridPayload) return gridPayload
+    // While loading (or when page already matches), fall back to page if windows align.
+    if (payload && factorGridRange !== "follow") {
+      const endIso = dataMaxDate || payload.to
+      if (endIso) {
+        const wanted = factorGridWindow(factorGridRange, endIso)
+        if (payload.from === wanted.from && payload.to === wanted.to) return payload
+      }
+    }
+    return gridPayload ?? payload
+  }, [factorGridRange, gridPayload, payload, dataMaxDate])
+
+  const factorGridDates = factorGridSource?.dates ?? []
+
+  const factorGridSeries = useMemo(
+    () =>
+      (factorGridSource?.cumulative ?? [])
+        .filter((s) => isFactorVisible(s.key))
+        .map((s) => ({
+          key: s.key,
+          name: s.name,
+          color: s.color,
+          data: s.data,
+        })),
+    [factorGridSource, isFactorVisible],
   )
 
   const cumulativeChartOption = useMemo(() => {
@@ -993,15 +1122,40 @@ export function FuturesStyleView() {
             />
 
             <div className="mt-4 border-t border-zinc-100 pt-4">
-              <div className="flex items-center gap-2 mb-3 text-sm font-semibold text-zinc-800">
-                <span className="inline-block w-1 h-4 rounded-sm bg-red-500" />
-                分因子累计收益
+              <div className="flex flex-wrap items-center gap-2 mb-3 text-sm font-semibold text-zinc-800">
+                <span className="inline-block w-1 h-4 rounded-sm bg-red-500 shrink-0" />
+                <span className="shrink-0">分因子累计收益</span>
+                <div
+                  className="inline-flex items-center rounded-sm border border-zinc-200 bg-zinc-50 p-0.5 gap-0.5"
+                  role="group"
+                  aria-label="分因子累计区间"
+                >
+                  {FACTOR_GRID_RANGE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setFactorGridRange(opt.id)}
+                      className={[
+                        "h-6 px-2 rounded-sm text-[11px] font-medium transition-colors",
+                        factorGridRange === opt.id
+                          ? "bg-red-500 text-white shadow-sm"
+                          : "bg-transparent text-zinc-600 hover:bg-white hover:text-zinc-900",
+                      ].join(" ")}
+                      aria-pressed={factorGridRange === opt.id}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {gridLoading && (
+                  <span className="text-[11px] font-normal text-zinc-400">切换区间加载中…</span>
+                )}
                 <span className="text-xs font-normal text-zinc-400">
-                  每个因子单独展示累计路径（与上方同一区间）
+                  {factorGridRangeSubtitle(factorGridRange)}
                 </span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {cumulativeSeries.map((series) => (
+                {factorGridSeries.map((series) => (
                   <div
                     key={series.key || series.name}
                     className="rounded-lg border border-zinc-100 bg-zinc-50/40 px-3 pt-3 pb-1"
@@ -1032,7 +1186,7 @@ export function FuturesStyleView() {
                       option={buildSingleFactorCumulativeOption(
                         series.name,
                         series.color,
-                        chartDates,
+                        factorGridDates,
                         series.data,
                       )}
                       style={{ height: 200, width: "100%" }}
