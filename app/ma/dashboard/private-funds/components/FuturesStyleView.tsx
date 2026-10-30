@@ -108,19 +108,22 @@ function formatReturnPct(value: number): string {
   return `${sign}${value.toFixed(2)}%`
 }
 
-function formatCumulativeAxisLabel(value: string, index: number, allDates: string[]): string {
-  // 国君 CTA report style: concise M/D labels (e.g. 8/3, 9/1), no Chinese 月
+/** Concise M/D label (国君 CTA report style), no Chinese 月. */
+function formatMdAxisLabel(value: string): string {
   const d = new Date(`${value}T12:00:00`)
   if (Number.isNaN(d.getTime())) return ""
-  const day = d.getDate()
-  const month = d.getMonth() + 1
-  const label = `${month}/${day}`
-  const prev = index > 0 ? new Date(`${allDates[index - 1]}T12:00:00`) : null
-  if (!prev || prev.getMonth() !== d.getMonth()) {
-    if (day <= 3) return label
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+/** Evenly spaced category indices so charts keep start + mid + end ticks. */
+function evenAxisLabelIndices(length: number, targetCount: number): Set<number> {
+  if (length <= 0) return new Set()
+  const count = Math.max(2, Math.min(targetCount, length))
+  const out = new Set<number>()
+  for (let i = 0; i < count; i++) {
+    out.add(Math.round((i * (length - 1)) / (count - 1)))
   }
-  if ([8, 15, 22, 29].includes(day)) return label
-  return ""
+  return out
 }
 
 function formatIntervalReturnPct(value: number): string {
@@ -196,6 +199,9 @@ function buildSingleFactorCumulativeOption(
   data: number[],
 ) {
   const y = yAxisRange([{ data }], -5, 5)
+  // ~3-5 M/D ticks across card width; always include first/last so left half is not blank.
+  const tickTarget = dates.length >= 180 ? 5 : dates.length >= 60 ? 4 : 3
+  const labelAt = evenAxisLabelIndices(dates.length, tickTarget)
   return {
     backgroundColor: "transparent",
     animation: false,
@@ -216,8 +222,9 @@ function buildSingleFactorCumulativeOption(
       axisLabel: {
         fontSize: 10,
         color: "#999999",
-        formatter: (value: string, index: number) =>
-          formatCumulativeAxisLabel(value, index, dates),
+        hideOverlap: false,
+        interval: (index: number) => labelAt.has(index),
+        formatter: (value: string) => formatMdAxisLabel(value),
       },
       axisLine: { lineStyle: { color: "#e4e4e7" } },
       axisTick: { show: false },
@@ -668,6 +675,8 @@ export function FuturesStyleView() {
       -20,
       15,
     )
+    const tickTarget = chartDates.length >= 180 ? 7 : 5
+    const labelAt = evenAxisLabelIndices(chartDates.length, tickTarget)
     return {
       backgroundColor: "transparent",
       animation: false,
@@ -707,8 +716,9 @@ export function FuturesStyleView() {
         axisLabel: {
           fontSize: 11,
           color: "#999999",
-          formatter: (value: string, index: number) =>
-            formatCumulativeAxisLabel(value, index, chartDates),
+          hideOverlap: false,
+          interval: (index: number) => labelAt.has(index),
+          formatter: (value: string) => formatMdAxisLabel(value),
         },
         axisLine: { lineStyle: { color: "#e4e4e7" } },
         axisTick: { show: false },
