@@ -1311,13 +1311,19 @@ let REPORT_FIT = {
       { key: "dOi" as const, L: 20, hp: 0, topFrac: 0.1, weight: -0.03369502007943511 },
     ],
   },
-  // close-enough winner round7: momLowVol L=98 cap=0.6 inv-vol weights flip
-  longRuleL: 150,
+  // 长期规则: brochure WP p13 = short/long MA cross TS (GTJAQH019 slogan); Excel calib GTJAQH010
+  // 2026-10-30 promote: momLowVol L=200 cap=1.0 inv-vol no-flip scale=0.5 vs LIVE L150/flip/-0.7
+  // Fair verify vs 010: 3m cr 0.736→0.819 lvl 0.841→0.972 end 3.2→2.81 (W2.76); YTD cr 0.447→0.549 lvl 0.548→0.699
+  // Brochure maCross 60/240 helped H1 cr but wrecked 3m/YTD ends — kept as longRuleKind alt, not LIVE
+  longRuleKind: "momLowVol" as const, // "momLowVol" | "maCross"
+  longRuleL: 200,
+  longRuleFast: 20,
+  longRuleSlow: 120,
   longRuleEqualW: false,
-  longRuleFlip: true,
+  longRuleFlip: false,
   longRuleVolL: 40,
-  longRuleVolCap: 1.2,
-  longRuleScale: -0.7,
+  longRuleVolCap: 1.0,
+  longRuleScale: 0.5,
   // inventory: 2026-10-29 HARDER loop vs GTJAQH007 (Excel 库存; brochure 017 slogan only)
   // Other-AI: Ave_CR Inv/MA-1 + LO TopN helped soft months; pure Ave LS / pctile LS failed path.
   // Promote R3: 4-leg topN8 LS + socialAve80 LO aw0.18, blend scale 4.75
@@ -2384,28 +2390,57 @@ function computeDailyFactorReturns(
     }
     out.report_basis_mom[i + 1] = crossSectionLs(rollYieldMomScores, nextRet, true)
 
-    // 长期规则: equal-weight mom L, skip high-vol regime (v20 > cap*v120), optional flip
+    // 长期规则: brochure MA short>long = long (WP p13); LIVE default momLowVol vs GTJAQH010
     {
-      const signalProducts: string[] = []
+      const kind = String((REPORT_FIT as any).longRuleKind ?? "momLowVol")
       const closeH = closeHist
       const retH = retHist
       const weights: Array<{ product: string; w: number }> = []
-      for (const p of products) {
-        const R = rollingReturn(closeH[p], i, REPORT_FIT.longRuleL)
-        const v20 = rollingStdFromRets(retH[p], i, 20)
-        const v120 = rollingStdFromRets(retH[p], i, 120)
-        if (R == null || nextRet[p] == null) continue
-        if (v20 != null && v120 != null && v20 > (REPORT_FIT.longRuleVolCap ?? 1) * v120) continue
-        let sig = Math.sign(R)
-        if (sig === 0) continue
-        if (REPORT_FIT.longRuleFlip) sig = -sig
-        if (REPORT_FIT.longRuleEqualW) weights.push({ product: p, w: sig })
-        else {
-          const vol = rollingStdFromRets(retH[p], i, REPORT_FIT.longRuleVolL)
-          const sigma = vol != null && vol > 1e-8 ? vol : 0.01
-          weights.push({ product: p, w: sig / sigma })
+      if (kind === "maCross") {
+        const fast = Math.max(2, Number((REPORT_FIT as any).longRuleFast ?? 20) | 0)
+        const slow = Math.max(fast + 1, Number((REPORT_FIT as any).longRuleSlow ?? 120) | 0)
+        for (const p of products) {
+          const closes = closeH[p]
+          const rets = retH[p]
+          if (!closes || !rets || i + 1 < slow) continue
+          if (nextRet[p] == null) continue
+          let sumF = 0, sumS = 0, nF = 0, nS = 0
+          for (let j = i - slow + 1; j <= i; j++) {
+            if (j < 0) continue
+            const px = closes[j]
+            if (!(px > 0)) continue
+            sumS += px; nS += 1
+            if (j > i - fast) { sumF += px; nF += 1 }
+          }
+          if (nF < fast * 0.6 || nS < slow * 0.6) continue
+          let sig = Math.sign(sumF / nF - sumS / nS)
+          if (sig === 0) continue
+          if (REPORT_FIT.longRuleFlip) sig = -sig
+          if (REPORT_FIT.longRuleEqualW) weights.push({ product: p, w: sig })
+          else {
+            const vol = rollingStdFromRets(rets, i, REPORT_FIT.longRuleVolL ?? 40)
+            const sigma = vol != null && vol > 1e-8 ? vol : 0.01
+            weights.push({ product: p, w: sig / sigma })
+          }
         }
-        signalProducts.push(p)
+      } else {
+        // momLowVol: sign(mom L), skip high-vol regime (v20 > cap*v120)
+        for (const p of products) {
+          const R = rollingReturn(closeH[p], i, REPORT_FIT.longRuleL)
+          const v20 = rollingStdFromRets(retH[p], i, 20)
+          const v120 = rollingStdFromRets(retH[p], i, 120)
+          if (R == null || nextRet[p] == null) continue
+          if (v20 != null && v120 != null && v20 > (REPORT_FIT.longRuleVolCap ?? 1) * v120) continue
+          let sig = Math.sign(R)
+          if (sig === 0) continue
+          if (REPORT_FIT.longRuleFlip) sig = -sig
+          if (REPORT_FIT.longRuleEqualW) weights.push({ product: p, w: sig })
+          else {
+            const vol = rollingStdFromRets(retH[p], i, REPORT_FIT.longRuleVolL)
+            const sigma = vol != null && vol > 1e-8 ? vol : 0.01
+            weights.push({ product: p, w: sig / sigma })
+          }
+        }
       }
       let r: number | null = null
       if (weights.length >= 4) {
