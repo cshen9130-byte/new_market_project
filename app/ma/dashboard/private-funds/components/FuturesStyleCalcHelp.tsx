@@ -92,19 +92,19 @@ r = CS_LS(score, topFrac=0.15) × (−1.0)`,
   report_pv_corr: {
     key: "report_pv_corr",
     title: "量价相关性（国君 CTA 周报代理）",
-    summary: "多字段持仓/成交 shock 的加权 blend（dOiShockBlend），做空高冲击。",
+    summary: "品种内成交量与价格滚动相关，截面做多相关小、做空相关大（WP 口径）。",
     paragraphs: [
-      "当前 pvKind = dOiShockBlend：对每条 leg 在窗口 L 内把字段序列做成截面 z-score（(x−μ)/σ）。",
-      "字段包括 ΔOI、OI 百分比变化、成交额/持仓、sign(r)·ΔOI、成交额等；部分 leg 再做 EWMA 高通（hp）。",
-      "每条 leg 做截面多空（longHigh=false，即做多低冲击/做空高冲击），日收益按 weight 加权后乘 pvBlend.scale。",
+      "国君白皮书（对客版 p21）：日频计算过去一段时间各品种成交量与价格的相关系数；按因子值从小到大，做多相关小、做空相关大，多空市值相等。",
+      "当前 LIVE：pvKind=corr，pvCorrMode=close（corr(close, volume)），L=55，topFrac=0.08，scale=0.2，longHigh=false。",
+      "离线标定 Excel GTJAQH011.WI（brochure 口号码 GTJAQH020.WI / Bloomberg GJFQVPC）；USE_WIND_GTJAQH=false，图表走 REPORT_FIT。",
+      "备选：dOiShockBlend（历史 round14 多字段 OI/成交 shock）与 absret/ret/logclose/dlog 等 corr 模式仍保留在 knobs。",
     ],
-    formula: `z_i = (x_{i,t} − μ_L) / σ_L
-r_leg = CS_LS(z, topFrac≈0.1, longHigh=false)  [再可选 HP]
-r_pv = (Σ w_leg · HP(r_leg)) × pvBlend.scale(≈ −0.183)`,
+    formula: `c_i = corr_L(close_i, volume_i),  L=55
+r_pv = CS_LS(c, topFrac=0.08, longHigh=false) × 0.2`,
     bullets: [
-      "当前约 8 条 legs（dOi / oiPct / turnover / amount / signRetDoi 等不同 L、hp）。",
-      "名称沿用周报「量价相关性」，实现已是多字段 shock blend，而非单纯 |r|–volume 相关。",
-      "对照离线：Wind GTJAQH011。",
+      "与白皮书一致：截面、做多相关小（量价背离一侧）。",
+      "无公开精确窗口；L/topFrac/scale 为相对 GTJAQH011 的经验标定（2026-10-30）。",
+      "对照离线：Wind GTJAQH011（非 020）。",
     ],
   },
   report_long_rule: {
@@ -326,7 +326,7 @@ const FACTOR_DEFINITIONS: HelpBlock = {
     "价格偏离：Dev = P/MA20 − 1，反转：做多 Dev 低、做空 Dev 高。",
     "偏度 / 峰度：20 日收益偏度或超额峰度，做多低、做空高。",
     "投机意愿：成交量/持仓量；持仓变化：sign(r)·ΔOI。",
-    "期限基差（周报/近远月）：CS ln(近/远)×basisScale；基差（现货−期货）：CS ann_pct=((S−F)/F)×(365/T)×basisSpotScale；长期截面：OLS slope 截面×负 scale；量价：dOiShockBlend；长期规则：momLowVol+flip；库存：−Δ%仓单L5；利润：ΔCarry(L20)；基差动量/中期动量：ΔCarry 与 MA20/60。",
+    "期限基差（周报/近远月）：CS ln(近/远)×basisScale；基差（现货−期货）：CS ann_pct=((S−F)/F)×(365/T)×basisSpotScale；长期截面：OLS slope 截面×负 scale；量价：corr(close,vol) L55/tf0.08/s0.2；长期规则：momLowVol+flip；库存：−Δ%仓单L5；利润：ΔCarry(L20)；基差动量/中期动量：ΔCarry 与 MA20/60。",
   ],
 }
 

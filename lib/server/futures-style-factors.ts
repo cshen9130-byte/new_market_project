@@ -213,7 +213,7 @@ function round2(v: number): number {
 
 function rollingCorr(
   xs: (number | null)[],
-  ys: number[],
+  ys: (number | null)[],
   endIdx: number,
   window: number,
 ): number | null {
@@ -1290,13 +1290,17 @@ let REPORT_FIT = {
   csLongHybridExitFrac: 0.4,
   csLongHybridSmooth: 0,
   csLongHybridScale: 0.6,
-  // round14 CE: 8-leg multi-field shock blend (ret~0.56 lvl~0.90)
-  pvKind: "dOiShockBlend" as const,
-  pvCorrL: 50,
-  pvCorrMode: "absret" as const,
+  // 量价相关性: brochure WP p21 = CS corr(vol,price) long LOW (GTJAQH020 slogan); Excel calib GTJAQH011
+  // 2026-10-30 promote: pvKind=corr mode=close L=55 topFrac=0.08 scale=0.2 longLow vs prior dOiShockBlend
+  // Fair vs 011: 3m cr 0.09→0.51 lvl 0.62→0.86 end -0.4→+2.3 (W+1.5); YTD cr -0.12→+0.25 end -0.5→+4.9 (W+4.2)
+  // dOiShockBlend kept as alt; no public closed-form lookback — L55/tf0.08 empirical vs 011
+  pvKind: "corr" as "dOiShockBlend" | "dOiShock" | "corr",
+  pvCorrL: 55,
+  pvCorrMode: "close" as "absret" | "ret" | "close" | "logclose" | "dlog",
+  pvCorrUseAmount: false,
   pvCorrLongHigh: false,
-  pvTopFrac: 0.1,
-  pvCorrScale: 1.0,
+  pvTopFrac: 0.08,
+  pvCorrScale: 0.2,
   pvHighPass: 0,
   pvBlend: {
     scale: -0.18297100853639145,
@@ -2002,19 +2006,48 @@ function computeDailyFactorReturns(
           }
         }
       } else {
+        // Brochure WP p21 量价相关性: per-product corr(volume, price) then CS long LOW / short HIGH.
+        // Modes: close|logclose|ret|absret|dlog (peer Huatai/GTJA191-style variants).
         const closes = closeHist[p]
         const vols = volHist[p]
-        if (closes && vols) {
+        const amts = amtHist[p]
+        if (closes && (vols || amts)) {
+          const mode = String((REPORT_FIT as any).pvCorrMode ?? 'absret')
+          const useAmt = !!(REPORT_FIT as any).pvCorrUseAmount
           const rets = retHist[p] ?? []
-          const absRet: (number | null)[] = []
-          const volSeries: (number | null)[] = []
+          const xs: (number | null)[] = []
+          const ys: (number | null)[] = []
           for (let k = 0; k < closes.length; k++) {
+            const c0 = closes[k]
             const rv = rets[k]
-            absRet.push(rv == null ? null : Math.abs(rv))
-            const vv = vols[k]
-            volSeries.push(vv != null && Number.isFinite(vv) ? vv : null)
+            const vvRaw = useAmt ? amts?.[k] : vols?.[k]
+            const vv = vvRaw != null && Number.isFinite(vvRaw) && (vvRaw as number) > 0 ? (vvRaw as number) : null
+            let x: number | null = null
+            let y: number | null = null
+            if (mode === 'close') {
+              x = c0 != null && Number.isFinite(c0) ? c0 : null
+              y = vv
+            } else if (mode === 'logclose') {
+              x = c0 != null && c0 > 0 ? Math.log(c0) : null
+              y = vv != null ? Math.log(vv) : null
+            } else if (mode === 'ret') {
+              x = rv == null ? null : rv
+              y = vv
+            } else if (mode === 'dlog') {
+              const cPrev = k > 0 ? closes[k - 1] : null
+              const vPrevRaw = useAmt ? amts?.[k - 1] : vols?.[k - 1]
+              const vPrev = vPrevRaw != null && Number.isFinite(vPrevRaw) && (vPrevRaw as number) > 0 ? (vPrevRaw as number) : null
+              x = c0 != null && cPrev != null && c0 > 0 && cPrev > 0 ? Math.log(c0 / cPrev) : null
+              y = vv != null && vPrev != null ? Math.log(vv / vPrev) : null
+            } else {
+              // absret default (legacy)
+              x = rv == null ? null : Math.abs(rv)
+              y = vv
+            }
+            xs.push(x)
+            ys.push(y)
           }
-          const c = rollingCorr(absRet, volSeries, i, REPORT_FIT.pvCorrL)
+          const c = rollingCorr(xs, ys, i, REPORT_FIT.pvCorrL)
           if (c != null) pvScores.push({ product: p, score: c })
         }
       }

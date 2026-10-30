@@ -24,3 +24,5 @@ The 001–013 Excel dump has neither 021 nor 022; UI calib uses closest labels *
 Do not treat brochure numbers as Excel codes without verifying.
 
 See also: `docs/cta_cs_long_research_20261029.md`, box `/workspace/cta-digitize/out/wind_calibrate_refine.*`
+
+See also: docs/cta_vpcorr_research_20261030.md (量价相关性 / GTJAQH011).
