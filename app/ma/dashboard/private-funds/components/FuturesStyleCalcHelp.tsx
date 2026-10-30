@@ -699,7 +699,7 @@ const FACTOR_DEFINITIONS: HelpBlock = {
   paragraphs: [
     "信号一律用 t 及更早的价格/持仓数据构造，收益取各品种下一交易日主力连续合约收益。组合在商品期货池内做多空（剔除股指/国债）。",
     "价格主源：AkShare 主力连续 + EMQuant 近远月。报告名因子为本机 REPORT_FIT 价格/持仓重构（非 Wind NAV）。data/gtjaqh_closes.csv 仅作离线校准真值，默认不接入实时图（USE_WIND_GTJAQH=false）。",
-    "点开各分因子图标题旁的「?」可查看该因子的数据来源、设计逻辑、公式，以及「符号说明」（每个字母/缩写的白话解释）。",
+    "点开各分因子图标题旁的「?」可查看该因子的数据来源、设计逻辑、公式与符号说明。",
   ],
   bullets: [
     "CS-LS = Cross-Sectional Long-Short（截面多空）：按分数在品种间排序，做多头部、做空尾部。",
@@ -931,9 +931,6 @@ export function getFactorHelpBlocks(
       },
       {
         title: "符号说明",
-        paragraphs: [
-          "下面用白话解释公式里出现的每一个符号与缩写（不默认你会金融术语）。",
-        ],
         bullets: help.symbols,
       },
       {
