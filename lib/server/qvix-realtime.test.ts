@@ -5,7 +5,8 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import { clipBarsAfterSession } from "./cffex-atm-iv-minute"
-import { indexOptionSessionOpen, pickClosedSessionSnap, undatedMinuteTapeIsStale } from "./qvix-realtime"
+import { cffexTapeMissesClose } from "./option-minute-archive"
+import { barsReachCashClose, indexOptionSessionOpen, pickClosedSessionSnap, undatedMinuteTapeIsStale } from "./qvix-realtime"
 
 function wall(h: number, min: number) {
   return Math.floor(Date.UTC(2026, 10, 2, h, min) / 1000)
@@ -35,6 +36,16 @@ describe("undated minute tape", () => {
     assert.equal(indexOptionSessionOpen(new Date("2026-11-02T07:00:00Z")), true)
     assert.equal(indexOptionSessionOpen(new Date("2026-11-02T07:01:00Z")), false)
     assert.equal(indexOptionSessionOpen(new Date("2026-11-02T04:00:00Z")), false)
+  })
+
+  it("treats a 14:47 index tape as the delayed file, and a 14:57 tape as the close", () => {
+    assert.equal(cffexTapeMissesClose(14 * 60 + 47, 22 * 60 + 33, "Mon"), true)
+    assert.equal(cffexTapeMissesClose(15 * 60, 22 * 60 + 33, "Mon"), false)
+    assert.equal(cffexTapeMissesClose(14 * 60 + 57, 16 * 60, "Mon"), false)
+    assert.equal(cffexTapeMissesClose(14 * 60 + 47, 15 * 60 + 5, "Mon"), false)
+    assert.equal(cffexTapeMissesClose(14 * 60 + 47, 22 * 60, "Sat"), false)
+    assert.equal(barsReachCashClose([{ time: wall(14, 47), close: 38 }]), false)
+    assert.equal(barsReachCashClose([{ time: wall(15, 0), close: 38 }]), true)
   })
 
   it("keeps the 15:00 close after the session has ended", () => {
@@ -68,6 +79,10 @@ describe("closed session stays on the live close", () => {
     assert.equal(restored.snap?.bars.at(-1)?.close, 15.49)
     const again = pickClosedSessionSnap(restored.snap, index, "50etf")
     assert.equal(again.snap?.bars.at(-1)?.close, 15.49)
+    const shortIndex = { source: "archive:1000index", bars: [{ time: wall(14, 47), close: 38.48 }] }
+    const closedIndex = { source: "archive:1000index", bars: [{ time: wall(15, 0), close: 38.2 }] }
+    assert.equal(pickClosedSessionSnap(shortIndex, closedIndex, "1000index").snap?.bars.at(-1)?.time, wall(15, 0))
+    assert.equal(pickClosedSessionSnap(closedIndex, shortIndex, "1000index").snap?.bars.at(-1)?.time, wall(15, 0))
     const forum = { source: "optbbs:50etf", bars: [{ time: wall(15, 0), close: 16.03 }] }
     const stored = { source: "archive:50etf", bars: [{ time: wall(15, 0), close: 15.49 }] }
     assert.equal(pickClosedSessionSnap(forum, stored, "50etf").snap?.bars.at(-1)?.close, 15.49)

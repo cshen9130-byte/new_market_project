@@ -107,7 +107,6 @@ export function ProTradingWorkspace({
   const klineRef = useRef<KlineChartHandle>(null)
   const [viewportMode, setViewportMode] = useState<ChartViewportMode>(() => readStoredViewportMode())
   const [scrollWindow, setScrollWindow] = useState<ChartVisibleWindow | null>(null)
-  const [userAdjusted, setUserAdjusted] = useState(false)
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
   const awSymbols = paper.state.products
@@ -219,9 +218,8 @@ export function ProTradingWorkspace({
   )
   useEffect(() => {
     setScrollWindow(null)
-    setUserAdjusted(false)
   }, [symbol, interval, viewportMode])
-  const visibleWindow = userAdjusted && scrollWindow?.interval === interval ? scrollWindow : derivedWindow
+  const visibleWindow = scrollWindow?.interval === interval ? scrollWindow : derivedWindow
   const quote = klineQuote || quotes[symbol]
   const meta = isNhciSymbol(symbol)
     ? { product: NHCI_SYMBOL, name: NHCI_NAME }
@@ -555,7 +553,7 @@ export function ProTradingWorkspace({
           <ResizablePanelGroup direction="horizontal">
             <ResizablePanel defaultSize={74} minSize={48}>
               {symbol ? (
-                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} viewportMode={viewportMode} onViewportModeChange={setViewportMode} onVisibleWindow={setScrollWindow} onUserAdjust={() => setUserAdjusted(true)} onCursorTime={setCursorTime} />
+                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} viewportMode={viewportMode} onViewportModeChange={setViewportMode} onVisibleWindow={setScrollWindow} onCursorTime={setCursorTime} />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
               )}

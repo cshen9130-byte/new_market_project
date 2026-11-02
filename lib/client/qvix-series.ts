@@ -242,14 +242,15 @@ export function chartWindowForSeries(
   mode?: "auto-scale" | "fixed-window" | null,
 ): ChartVisibleWindow | null {
   if (!bars.length) return null
-  const last = bars.length - 1
   const fixed = mode === "fixed-window" && !isIntradayTimeframe(interval)
   const fromIdx = fixed ? Math.max(0, bars.length - DAILY_FIXED_BARS) : 0
+  const slice = bars.slice(fromIdx)
   return {
-    from: bars[fromIdx]!.time,
-    to: bars[last]!.time,
+    from: slice[0]!.time,
+    to: slice[slice.length - 1]!.time,
     coversAll: fromIdx === 0,
     interval,
+    times: slice.map((bar) => bar.time),
   }
 }
 
@@ -259,6 +260,8 @@ export type ChartVisibleWindow = {
   /** Every loaded main-chart bar is on screen. */
   coversAll: boolean
   interval: TimeframeId
+  /** Main-chart bars on screen. Side charts use this grid so one date stays at one x. */
+  times?: number[]
 }
 
 /**
@@ -285,6 +288,35 @@ export function sliceSeriesToWindow<T extends { time: number }>(
     })
   }
   return points.filter((point) => point.time >= from && point.time <= to)
+}
+
+/**
+ * Draw `points` on the main chart's visible bars.
+ * A shorter series keeps the same dates at the same x instead of stretching to fill the panel.
+ * The fixed intraday tail (through the close) stays on its own clock when it runs past the last bar.
+ */
+export function plotOnVisibleWindow<T extends { time: number; close: number | null }>(
+  points: T[],
+  window: ChartVisibleWindow | null | undefined,
+  interval: TimeframeId,
+  extendTo?: number,
+): T[] {
+  const sliced = sliceSeriesToWindow(points, window, interval, extendTo)
+  const times = window?.times
+  if (!times?.length || !window || window.interval !== interval) return sliced
+  if (extendTo != null && extendTo > Math.max(window.from, window.to)) return sliced
+  const byTime = new Map<number, T>()
+  for (const point of sliced) {
+    if (point.close == null || !Number.isFinite(point.close)) continue
+    byTime.set(bucketTime(point.time, interval), point)
+  }
+  const plotted = times.map((time) => {
+    const hit = byTime.get(bucketTime(time, interval))
+    if (hit) return { ...hit, time }
+    return { time, close: null } as T
+  })
+  if (plotted.every((point) => point.close == null) && sliced.some((point) => point.close != null)) return sliced
+  return plotted
 }
 
 /** Plot insets shared by the stacked basis and implied-volatility charts. */

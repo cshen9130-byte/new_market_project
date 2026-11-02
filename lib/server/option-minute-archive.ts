@@ -72,7 +72,21 @@ function inCaptureWindow(now = new Date()) {
   const parts = shanghaiParts(now)
   if (parts.weekday === "Sat" || parts.weekday === "Sun") return false
   const n = parts.minutes
-  return (n >= 9 * 60 + 25 && n <= 11 * 60 + 35) || (n >= 12 * 60 + 55 && n <= 15 * 60 + 8)
+  // East Money's CFFEX minute file prints about 15 minutes late, so a sweep
+  // that stops at 15:08 never stores 14:53–15:00. Keep collecting until 15:25.
+  return (n >= 9 * 60 + 25 && n <= 11 * 60 + 35) || (n >= 12 * 60 + 55 && n <= 15 * 60 + 25)
+}
+
+/**
+ * A stored CFFEX index tape that stops before 14:55 is the delayed minute file,
+ * not the cash close. Check only after 15:12, once that file has had time to
+ * publish 15:00. ETF tapes that end at 14:57 are already complete.
+ */
+export function cffexTapeMissesClose(lastMinute: number | null, nowMinute: number, weekday: string) {
+  if (weekday === "Sat" || weekday === "Sun") return false
+  if (nowMinute < 15 * 60 + 12) return false
+  if (lastMinute == null) return true
+  return lastMinute < 14 * 60 + 55
 }
 
 function minuteDate(day: string, hhmm: string) {
@@ -485,7 +499,22 @@ export async function readArchivedIv(args: {
     const month = monthArg || pickFrontMonth(contracts, today)
     if (!month) return cache(cacheId, null)
     const tipKey = `${args.key}|${month}|${strikeArg ?? ""}`
-    if (inCaptureWindow() && Date.now() - (tipAt.get(tipKey) || 0) > 60_000) {
+    const tipDue = Date.now() - (tipAt.get(tipKey) || 0) > 60_000
+    let refresh = inCaptureWindow() && tipDue
+    if (!refresh && tipDue && args.key.endsWith("index")) {
+      const now = shanghaiParts()
+      const lag = await publicQuery(
+        `SELECT MAX(bar_time) AS last
+         FROM raw_option_minute
+         WHERE underlying_key = $1 AND contract_id <> 'SPOT'
+           AND (bar_time AT TIME ZONE 'Asia/Shanghai')::date = $2::date`,
+        [args.key, today],
+      )
+      const lastAt = (lag.rows[0] as { last?: Date | string | null } | undefined)?.last
+      const lastMinute = lastAt ? shanghaiParts(new Date(lastAt)).minutes : null
+      refresh = cffexTapeMissesClose(lastMinute, now.minutes, now.weekday)
+    }
+    if (refresh) {
       tipAt.set(tipKey, Date.now())
       await refreshTip(args.key, month, strikeArg).catch(() => undefined)
     }

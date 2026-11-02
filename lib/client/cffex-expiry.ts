@@ -282,6 +282,20 @@ export function daysToCffexExpiry(symbol: string, now = new Date()): number | nu
   return Math.max(1, days)
 }
 
+/**
+ * Days used to annualize a historical basis bar.
+ * Stored daily history prepends the main continuous series before this contract
+ * lists. Those older prices expire with the front month of that day, not with
+ * the contract selected on the chart.
+ */
+export function daysForBasisBar(symbol: string, now = new Date()): number | null {
+  const own = calendarDaysToCffexExpiry(symbol, now)
+  if (own != null && own > 240) {
+    return Math.max(1, daysUntil(dominantCffexExpiry(now), now))
+  }
+  return daysToCffexExpiry(symbol, now)
+}
+
 export function isNearCffexExpiry(symbol: string, now = new Date()) {
   const parsed = parseIndexFuturesMonth(symbol)
   if (!parsed) return false

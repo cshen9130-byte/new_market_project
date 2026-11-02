@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import { barsOnLastTradeDay } from "./timeframes"
-import { chartWindowForSeries, intradayAxisEnd, ivReturnScale, omitIsolatedNulls, padIntradayLookback, padIntradaySeries, previousSessionClose, quoteAxisEnd, qvixBarsForTimeframe, sliceOverlayByLookbackDays, sliceSeriesToWindow } from "./qvix-series"
+import { chartWindowForSeries, intradayAxisEnd, ivReturnScale, omitIsolatedNulls, padIntradayLookback, padIntradaySeries, plotOnVisibleWindow, previousSessionClose, quoteAxisEnd, qvixBarsForTimeframe, sliceOverlayByLookbackDays, sliceSeriesToWindow } from "./qvix-series"
 
 function unix(y: number, m: number, d: number, h = 0, min = 0) {
   return Math.floor(Date.UTC(y, m - 1, d, h, min) / 1000)
@@ -266,6 +266,64 @@ describe("chartWindowForSeries", () => {
     const window = chartWindowForSeries(bars, "1d", "auto-scale")
     assert.equal(window?.from, bars[0]?.time)
     assert.equal(window?.coversAll, true)
+    assert.deepEqual(window?.times, [bars[0]?.time, bars[1]?.time])
+  })
+})
+
+describe("plotOnVisibleWindow", () => {
+  it("keeps a short series on the main chart's dates instead of stretching it", () => {
+    const times = [unix(2023, 1, 3), unix(2026, 6, 1), unix(2026, 11, 2)]
+    const out = plotOnVisibleWindow(
+      [
+        { time: unix(2026, 6, 1, 15, 0), close: 2 },
+        { time: unix(2026, 11, 2, 15, 0), close: 4 },
+      ],
+      { from: times[0]!, to: times[2]!, coversAll: true, interval: "1d", times },
+      "1d",
+    )
+    assert.deepEqual(out.map((point) => point.time), times)
+    assert.deepEqual(out.map((point) => point.close), [null, 2, 4])
+  })
+
+  it("leaves a missing intraday bar as an empty slot", () => {
+    const times = [unix(2026, 11, 2, 10, 0), unix(2026, 11, 2, 10, 1)]
+    const out = plotOnVisibleWindow(
+      [{ time: times[0]!, close: 1 }],
+      { from: times[0]!, to: times[1]!, coversAll: false, interval: "1m", times },
+      "1m",
+    )
+    assert.deepEqual(out.map((point) => point.close), [1, null])
+  })
+
+  it("lands a minute stamped a second late on that minute", () => {
+    const times = [unix(2026, 11, 2, 10, 0), unix(2026, 11, 2, 10, 1)]
+    const out = plotOnVisibleWindow(
+      [{ time: times[0]! + 1, close: 7 }],
+      { from: times[0]!, to: times[1]!, coversAll: false, interval: "1m", times },
+      "1m",
+    )
+    assert.deepEqual(out.map((point) => point.close), [7, null])
+  })
+
+  it("keeps the fixed session tail when it runs past the last printed bar", () => {
+    const points = [
+      { time: unix(2026, 11, 2, 14, 0), close: 3 },
+      { time: unix(2026, 11, 2, 15, 0), close: null },
+    ]
+    const out = plotOnVisibleWindow(
+      points,
+      {
+        from: unix(2026, 11, 2, 9, 30),
+        to: unix(2026, 11, 2, 14, 0),
+        coversAll: true,
+        interval: "1m",
+        times: [unix(2026, 11, 2, 14, 0)],
+      },
+      "1m",
+      unix(2026, 11, 2, 15, 0),
+    )
+    assert.equal(out.length, 2)
+    assert.equal(out.at(-1)?.time, unix(2026, 11, 2, 15, 0))
   })
 })
 

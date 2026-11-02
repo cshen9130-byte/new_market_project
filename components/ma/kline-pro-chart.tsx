@@ -398,10 +398,8 @@ type Props = {
   onTool?: (id: string) => void
   viewportMode?: ChartViewportMode
   onViewportModeChange?: (mode: ChartViewportMode) => void
-  /** Visible time range after the user scrolls or zooms. Programmatic viewport changes are not reported. */
+  /** Visible bars on the main chart. The basis and volatility charts follow this range. */
   onVisibleWindow?: (window: ChartVisibleWindow) => void
-  /** The user panned or zoomed the main chart, so its visible range should drive the side charts. */
-  onUserAdjust?: () => void
   /** Unix seconds of the hovered bar while the 联动 tool is on. Null when the pointer leaves. */
   onCursorTime?: (time: number | null) => void
   ref?: Ref<KlineChartHandle | null>
@@ -413,7 +411,14 @@ function cursorUnixFromCrosshair(chart: Chart, raw: unknown): number | null {
   if ((ms == null || !Number.isFinite(ms)) && rec?.x != null && Number.isFinite(rec.x)) {
     const converted = chart.convertFromPixel([{ x: rec.x }])
     const point = Array.isArray(converted) ? converted[0] : converted
-    ms = point?.timestamp
+    const list = chart.getDataList()
+    const idx = point?.dataIndex
+    if (list?.length && idx != null && Number.isFinite(idx)) {
+      const clamped = Math.max(0, Math.min(list.length - 1, Math.round(idx)))
+      ms = list[clamped]?.timestamp
+    } else {
+      ms = point?.timestamp
+    }
   }
   if (ms == null || !Number.isFinite(ms)) return null
   return ms > 1e11 ? Math.floor(ms / 1000) : Math.floor(ms)
@@ -429,11 +434,17 @@ function readVisibleWindow(chart: Chart, interval: TimeframeId): ChartVisibleWin
   const fromTs = data[fromIdx]?.timestamp
   const toTs = data[toIdx]?.timestamp
   if (fromTs == null || toTs == null) return null
+  const times: number[] = []
+  for (let i = fromIdx; i <= toIdx; i += 1) {
+    const ts = data[i]?.timestamp
+    if (ts != null) times.push(Math.floor(ts / 1000))
+  }
   return {
     from: Math.floor(Math.min(fromTs, toTs) / 1000),
     to: Math.floor(Math.max(fromTs, toTs) / 1000),
     coversAll: fromIdx === 0 && toIdx === last,
     interval,
+    times,
   }
 }
 
@@ -554,7 +565,6 @@ export function KlineProChart({
   viewportMode: viewportModeProp,
   onViewportModeChange,
   onVisibleWindow,
-  onUserAdjust,
   onCursorTime,
   ref,
 }: Props) {
@@ -576,11 +586,9 @@ export function KlineProChart({
   const viewportMode = viewportModeProp ?? viewportModeState
   const viewportModeRef = useRef(viewportMode)
   const onVisibleWindowRef = useRef(onVisibleWindow)
-  const onUserAdjustRef = useRef(onUserAdjust)
   const onCursorTimeRef = useRef(onCursorTime)
   const activeToolRef = useRef(activeTool)
   const lastCursorRef = useRef<number | null>(null)
-  const userAdjustRef = useRef(false)
   const publishedWindowRef = useRef<ChartVisibleWindow | null>(null)
   const rangeRafRef = useRef(0)
   const inputLockRef = useRef<InputLock | null>(null)
@@ -596,7 +604,6 @@ export function KlineProChart({
   marksRef.current = marks
   viewportModeRef.current = viewportMode
   onVisibleWindowRef.current = onVisibleWindow
-  onUserAdjustRef.current = onUserAdjust
   onCursorTimeRef.current = onCursorTime
   activeToolRef.current = activeTool
 
@@ -615,11 +622,13 @@ export function KlineProChart({
     try {
       const fitted = fitInputWindow(chart, hostRef.current, lock)
       if (!fitted) return false
+      const read = readVisibleWindow(chart, intervalRef.current)
       const next: ChartVisibleWindow = {
-        from: fitted.from,
-        to: fitted.to,
+        from: read?.from ?? fitted.from,
+        to: read?.to ?? fitted.to,
         coversAll: false,
         interval: intervalRef.current,
+        times: read?.times,
       }
       const prev = publishedWindowRef.current
       publishedWindowRef.current = next
@@ -638,11 +647,12 @@ export function KlineProChart({
     if (rangeRafRef.current) window.clearTimeout(rangeRafRef.current)
     rangeRafRef.current = window.setTimeout(() => {
       rangeRafRef.current = 0
-      if (inputLockRef.current || !userAdjustRef.current) return
+      if (inputLockRef.current) return
       const chart = chartRef.current
       if (!chart) return
       const next = readVisibleWindow(chart, intervalRef.current)
       if (!next) return
+      syncWindowRef.current(next)
       const prev = publishedWindowRef.current
       if (
         prev &&
@@ -659,8 +669,6 @@ export function KlineProChart({
   }, [])
 
   const noteUserAdjust = useCallback(() => {
-    userAdjustRef.current = true
-    onUserAdjustRef.current?.()
     publishVisibleWindow()
   }, [publishVisibleWindow])
   const publishVisibleWindowRef = useRef(publishVisibleWindow)
@@ -798,7 +806,7 @@ export function KlineProChart({
         const current = chartRef.current
         if (!current) return
         const unix = cursorUnixFromCrosshair(current, raw)
-        if (lastCursorRef.current === unix) return
+        if (unix == null || lastCursorRef.current === unix) return
         lastCursorRef.current = unix
         onCursorTimeRef.current?.(unix)
       }
@@ -947,8 +955,6 @@ export function KlineProChart({
     const lock = lockAfterCommit(edge, parsed, prev, shown?.from ?? null, lastUnix)
     inputLockRef.current = lock
     setInputMode(true)
-    userAdjustRef.current = true
-    onUserAdjustRef.current?.()
     publishLockedWindow(chart)
     editingRef.current = null
     setFromText(formatBound(lock.fromUnix, lock.fromHasTime, intervalRef.current))
@@ -963,8 +969,6 @@ export function KlineProChart({
     if (!chart) return
     const next = readVisibleWindow(chart, intervalRef.current)
     if (!next) return
-    userAdjustRef.current = true
-    onUserAdjustRef.current?.()
     publishedWindowRef.current = next
     onVisibleWindowRef.current?.(next)
     syncWindowText(next)
@@ -990,7 +994,6 @@ export function KlineProChart({
   }, [])
 
   useEffect(() => {
-    userAdjustRef.current = false
     publishedWindowRef.current = null
     inputLockRef.current = null
     setInputMode(false)

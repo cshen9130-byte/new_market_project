@@ -1,7 +1,8 @@
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import { futuresTradeDateYmd, isNightHqPrint, isNightWallClock } from "@/lib/client/market-hours"
-import { aggregateCandles, bucketTime, type TimeframeId } from "@/lib/client/timeframes"
+import { aggregateCandles, bucketTime, shanghaiWallUnix, type TimeframeId } from "@/lib/client/timeframes"
 import { fetchStoredDaily } from "@/lib/server/cffex-daily-history"
+import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import { chinaWallToUnix, sinaGet } from "@/lib/server/sina-fetch"
 import { fetchSinaFuturesQuotes } from "@/lib/server/sina-futures-hq"
 
@@ -30,12 +31,40 @@ function asRows(raw: unknown): unknown[] {
 }
 
 function shanghaiToday() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date())
+  return shanghaiTodayIsoDate()
+}
+
+function isoDaysBefore(iso: string, days: number) {
+  const [year, month, date] = iso.split("-").map(Number)
+  return new Date(Date.UTC(year, month - 1, date - days)).toISOString().slice(0, 10)
+}
+
+function previousChinaTradingDay(iso: string) {
+  for (let days = 1; days <= 14; days += 1) {
+    const day = isoDaysBefore(iso, days)
+    if (isChinaTradingDay(day)) return day
+  }
+  return isoDaysBefore(iso, 1)
+}
+
+/**
+ * Sina's dateless minute line keeps yesterday's session until the cash open,
+ * and the parser stamps those rows with today's date. A bar that is still in
+ * the future belongs to the previous trading day. Bars that already carry a
+ * real date stay put.
+ */
+export function rewindFutureMinuteStamps(candles: CtpCandle[], now = new Date()): CtpCandle[] {
+  const nowSec = shanghaiWallUnix(now)
+  if (!candles.some((candle) => candle.time > nowSec + 5 * 60)) return candles
+  const today = shanghaiTodayIsoDate(now)
+  const prev = previousChinaTradingDay(today)
+  const todayMidnight = chinaWallToUnix(`${today} 00:00:00`)
+  const prevMidnight = chinaWallToUnix(`${prev} 00:00:00`)
+  if (todayMidnight == null || prevMidnight == null || todayMidnight <= prevMidnight) return candles
+  const delta = todayMidnight - prevMidnight
+  return candles.map((candle) => (
+    candle.time > nowSec + 5 * 60 ? { ...candle, time: candle.time - delta } : candle
+  ))
 }
 
 function toCandle(time: number | null, open: number | null, high: number | null, low: number | null, close: number | null, volume: number | null): CtpCandle | null {
@@ -125,7 +154,7 @@ async function fetchMinLine(symbol: string) {
     candles.push(candle)
     prev = candle.close
   }
-  return sanitizeIntraday(candles)
+  return sanitizeIntraday(rewindFutureMinuteStamps(candles))
 }
 
 async function fetchFewMin(symbol: string, type: 5 | 15 | 30 | 60) {
@@ -135,7 +164,7 @@ async function fetchFewMin(symbol: string, type: 5 | 15 | 30 | 60) {
   )
   const rows = asRows(raw)
   const date = shanghaiToday()
-  return rows.map((row) => parseRow(row, date)).filter((c): c is CtpCandle => !!c)
+  return rewindFutureMinuteStamps(rows.map((row) => parseRow(row, date)).filter((c): c is CtpCandle => !!c))
 }
 
 async function fetchDaily(symbol: string) {

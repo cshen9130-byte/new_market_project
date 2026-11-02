@@ -12,6 +12,7 @@ import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import {
   annualizedBasisPct,
   basisPoints,
+  daysForBasisBar,
   daysToCffexExpiry,
   isNearCffexExpiry,
 } from "@/lib/client/cffex-expiry"
@@ -23,8 +24,8 @@ import {
 import { INDEX_CHART_COLOR, type SpotSnapshot } from "@/lib/client/realtime-overlay"
 import { formatCandleTime, getTimeframe, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
-import { useSyncedCrosshair } from "@/components/ma/use-synced-crosshair"
-import { padIntradaySeries, quoteAxisEnd, sliceSeriesToWindow, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
+import { SyncedCrosshairLayer } from "@/components/ma/use-synced-crosshair"
+import { padIntradaySeries, plotOnVisibleWindow, quoteAxisEnd, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
 import type { ChartViewportMode } from "@/components/ma/kline-pro-chart"
 
 type Props = {
@@ -105,7 +106,13 @@ export function IndexBasisRateChart({
   const [localInterval, setLocalInterval] = useState<TimeframeId>("1m")
   const interval = controlledInterval ?? localInterval
   const setInterval = onIntervalChange ?? setLocalInterval
-  const { candles: tfCandles, error: klineError } = useSymbolKline(symbol, interval, candles, quote)
+  const { candles: tfCandles, error: klineError } = useSymbolKline(
+    symbol,
+    interval,
+    candles,
+    quote,
+    variant === "pro" && !isIntradayTimeframe(interval) ? { history: true } : undefined,
+  )
   const { bars: spotBars, error: spotError } = useSpotKline(product, interval, spot)
   const days = symbol ? daysToCffexExpiry(symbol) : null
   const nearExpiry = symbol ? isNearCffexExpiry(symbol) : false
@@ -144,7 +151,7 @@ export function IndexBasisRateChart({
       }
       const spotPx = spotByTime.get(candle.time) ?? lastKnown
       if (spotPx == null) continue
-      const barDays = daysToCffexExpiry(symbol, new Date(candle.time * 1000))
+      const barDays = daysForBasisBar(symbol, new Date(candle.time * 1000))
       if (barDays == null) continue
       const value = annualizedBasisPct(candle.close, spotPx, barDays)
       if (value == null) continue
@@ -164,6 +171,8 @@ export function IndexBasisRateChart({
   const color = INDEX_CHART_COLOR[product]
   const chartRef = useRef<ReactECharts>(null)
   const plottedTimesRef = useRef<number[]>([])
+  const describeRef = useRef<(index: number) => string>(() => "")
+  const linkedCursor = variant === "pro" && cursorTime != null
   const option = useMemo(() => {
     const alignSession = variant === "pro" && isIntradayTimeframe(interval) && series.length > 0
     const follow = variant === "pro" ? visibleWindow : null
@@ -178,10 +187,16 @@ export function IndexBasisRateChart({
           quoteAxisEnd(viewportMode),
         )
       : series.map((point) => ({ time: point.time, close: point.value }))
-    const plot = sliceSeriesToWindow(aligned, follow, interval, extendTo)
+    const plot = plotOnVisibleWindow(aligned, follow, interval, extendTo)
     plottedTimesRef.current = plot.map((p) => p.time)
     const times = plot.map((p) => formatCandleTime(p.time, interval))
     const values = plot.map((p) => (p.close == null || !Number.isFinite(p.close) ? null : Number(p.close.toFixed(2))))
+    describeRef.current = (index) => {
+      const when = times[index] ?? ""
+      const value = values[index]
+      const text = typeof value === "number" ? `${value.toFixed(2)}%` : "--"
+      return `${when}  ${text}`
+    }
     const numeric = values.filter((value): value is number => value != null)
     const minV = numeric.length ? Math.min(0, ...numeric) : -1
     const maxV = numeric.length ? Math.max(0, ...numeric) : 1
@@ -193,8 +208,13 @@ export function IndexBasisRateChart({
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis",
+        // The linked cross is drawn outside ECharts. Its pointer hides on a null
+        // daily slot and flashes every time the chart redraws.
+        show: !linkedCursor,
+        triggerOn: linkedCursor ? "none" : "mousemove",
         axisPointer: {
-          type: "cross",
+          type: linkedCursor ? "none" : "cross",
+          animation: false,
           lineStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1, type: "dashed" },
           crossStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1 },
           label: { backgroundColor: dark ? "#2a2e39" : "#334155" },
@@ -272,9 +292,7 @@ export function IndexBasisRateChart({
         },
       ],
     }
-  }, [color, interval, series, variant, viewportMode, visibleWindow, zoom?.start, zoom?.end])
-
-  useSyncedCrosshair(chartRef, plottedTimesRef, variant === "pro" ? cursorTime : null, interval, option)
+  }, [color, interval, linkedCursor, series, variant, viewportMode, visibleWindow, zoom?.start, zoom?.end])
 
   const pro = variant === "pro"
   const continuous = !!symbol && /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
@@ -326,26 +344,36 @@ export function IndexBasisRateChart({
           </div>
         </div>
       </div>
-      <div className="min-h-0 flex-1 px-1 pb-1">
+      <div className={pro ? "relative min-h-0 flex-1 px-1 pb-1" : "relative px-1 pb-1"} style={pro ? undefined : { height: 240 }}>
         {series.length > 0 ? (
-          <ReactECharts
-            ref={chartRef}
-            option={option}
-            style={{ height: pro ? "100%" : 240 }}
-            notMerge
-            onEvents={
-              onZoomChange
-                ? {
-                    dataZoom: (params: { start?: number; end?: number; batch?: Array<{ start?: number; end?: number }> }) => {
-                      const batch = params.batch?.[0] ?? params
-                      if (typeof batch.start === "number" && typeof batch.end === "number") {
-                        onZoomChange({ start: batch.start, end: batch.end })
-                      }
-                    },
-                  }
-                : undefined
-            }
-          />
+          <>
+            <ReactECharts
+              ref={chartRef}
+              option={option}
+              style={{ position: "absolute", inset: 0, height: "100%", width: "100%" }}
+              notMerge
+              onEvents={
+                onZoomChange
+                  ? {
+                      dataZoom: (params: { start?: number; end?: number; batch?: Array<{ start?: number; end?: number }> }) => {
+                        const batch = params.batch?.[0] ?? params
+                        if (typeof batch.start === "number" && typeof batch.end === "number") {
+                          onZoomChange({ start: batch.start, end: batch.end })
+                        }
+                      },
+                    }
+                  : undefined
+              }
+            />
+            <SyncedCrosshairLayer
+              chartRef={chartRef}
+              timesRef={plottedTimesRef}
+              describeRef={describeRef}
+              cursorTime={cursorTime}
+              interval={interval}
+              active={linkedCursor}
+            />
+          </>
         ) : (
           <div className={pro ? "flex h-full items-center justify-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center text-sm text-muted-foreground"}>
             {waitText}

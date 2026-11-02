@@ -63,6 +63,14 @@ function shanghaiClockMinutes(now = new Date()) {
   return hour * 60 + minute
 }
 
+/** A minute tape reaches the cash close when its last print is 14:55 or later. */
+export function barsReachCashClose(bars: Array<{ time: number }>) {
+  const last = bars[bars.length - 1]
+  if (!last) return false
+  const clock = new Date(last.time * 1000)
+  return clock.getUTCHours() * 60 + clock.getUTCMinutes() >= 14 * 60 + 55
+}
+
 /** CFFEX option session: 09:30–11:30 and 13:00–15:00, Shanghai weekdays. 15:00 itself is still the session. */
 export function indexOptionSessionOpen(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -117,6 +125,18 @@ export function pickClosedSessionSnap<T extends MinuteSnap>(
     nextKey === primaryKey &&
     keptKey &&
     keptKey !== primaryKey
+  ) {
+    return { snap: next, frozen: true }
+  }
+  // The delayed CFFEX file arrives after the close. Let that same tape grow
+  // out to 15:00 instead of freezing the 14:47 prefix.
+  if (
+    next?.bars.length &&
+    kept?.bars.length &&
+    nextKey &&
+    nextKey === keptKey &&
+    !barsReachCashClose(kept.bars) &&
+    (next.bars[next.bars.length - 1]?.time ?? 0) > (kept.bars[kept.bars.length - 1]?.time ?? 0)
   ) {
     return { snap: next, frozen: true }
   }
@@ -466,16 +486,30 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
   let source: string | null = null
   let contract: string | null = null
 
-  // After the close, use the Sina ETF minutes already stored in Postgres.
-  // Do not replace them with 期权论坛 or the index-option fallback.
+  // After the close, use the minutes already stored in Postgres.
+  // ETF tapes are complete. The 中证1000 tape is the delayed CFFEX file, so a
+  // copy that stops before 14:55 is replaced by a fresh read that includes 15:00.
   if (!indexOptionSessionOpen()) {
     const archived = await readArchivedIv({ key: meta.key, days: 1 })
     const today = todayShanghai()
     const stored = archived?.bars.filter((bar) => wallDay(bar.time) === today) ?? []
-    if (stored.length >= 8 && archived) {
+    const indexTape = meta.key.endsWith("index")
+    if (stored.length >= 8 && archived && (!indexTape || barsReachCashClose(stored))) {
       bars = stored
       contract = archived.contract
       source = `archive:${meta.key}`
+    } else if (indexTape) {
+      const live = await fetchCffexAtmIvMinutes(meta.key)
+      const liveBars = (live?.bars || []).filter((bar) => wallDay(bar.time) === today)
+      if (live && liveBars.length >= 8) {
+        bars = liveBars
+        contract = live.contract || null
+        source = labelAtmExplicitly() ? `em-atm:${meta.key}` : `qvix-cffex:${meta.key}`
+      } else if (stored.length >= 8 && archived) {
+        bars = stored
+        contract = archived.contract
+        source = `archive:${meta.key}`
+      }
     } else {
       const etf = await fetchEtfAtmIvMinutes(meta.key)
       if (etf && etf.bars.length >= 8) {

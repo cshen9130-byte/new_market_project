@@ -12,14 +12,14 @@ import { useQvixSeries } from "@/hooks/use-qvix-series"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import { annualizedGarmanKlassByTime, levelScaleFactor, volPeriodsPerYear } from "@/lib/client/rolling-volatility"
-import { ivReturnScale, omitIsolatedNulls, padIntradaySeries, previousSessionClose, quoteAxisEnd, sliceSeriesToWindow, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
+import { ivReturnScale, omitIsolatedNulls, padIntradaySeries, plotOnVisibleWindow, previousSessionClose, quoteAxisEnd, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
 import type { ChartViewportMode } from "@/components/ma/kline-pro-chart"
 import { useIvContracts } from "@/hooks/use-iv-contracts"
 import { type IndexProduct } from "@/lib/client/ctp-market"
 import { INDEX_CHART_COLOR, type IvSnapshot } from "@/lib/client/realtime-overlay"
 import { bucketTime, formatCandleTime, getTimeframe, intradaySessionSlots, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
-import { useSyncedCrosshair } from "@/components/ma/use-synced-crosshair"
+import { SyncedCrosshairLayer } from "@/components/ma/use-synced-crosshair"
 import { CFFEX_CONTRACT_ROLES, cffexOptionMonthForRole } from "@/lib/client/cffex-expiry"
 
 type Props = {
@@ -275,6 +275,8 @@ export function IndexIvChart({
 
   const chartRef = useRef<ReactECharts>(null)
   const plottedTimesRef = useRef<number[]>([])
+  const describeRef = useRef<(index: number) => string>(() => "")
+  const driven = variant === "pro" && cursorTime != null
   const chartModel = useMemo(() => {
     const padded =
       mode === "intraday" && isIntradayTimeframe(interval)
@@ -285,7 +287,7 @@ export function IndexIvChart({
       ? quoteAxisEnd("fixed-window")
       : undefined
     const aligned = padded ? (variant === "pro" ? padded : omitIsolatedNulls(padded)) : bars
-    const plot = sliceSeriesToWindow(aligned, follow, interval, extendTo)
+    const plot = plotOnVisibleWindow(aligned, follow, interval, extendTo)
     plottedTimesRef.current = plot.map((p) => p.time)
     const times = plot.map((p) => formatCandleTime(p.time, interval))
     const values = plot.map((p) => (p.close == null || !Number.isFinite(p.close) ? null : Number(p.close.toFixed(2))))
@@ -327,13 +329,27 @@ export function IndexIvChart({
       mode === "intraday" && isIntradayTimeframe(interval)
         ? sessionOpenEchartsMarkLine(times, plot.map((p) => p.time), dark, zeroLine)
         : undefined
+    describeRef.current = (index) => {
+      const when = times[index] ?? ""
+      const value = values[index]
+      const text = typeof value === "number" ? `${value.toFixed(2)}%` : "--"
+      if (!returnScale || typeof value !== "number") return `${when}\n隐含波动率 ${text}`
+      const ret = ((value - returnScale.prev) / returnScale.prev) * 100
+      const retText = `${ret > 0 ? "+" : ""}${ret.toFixed(2)}%`
+      return `${when}\n隐含波动率 ${text}\n昨收 ${retText}`
+    }
     const option = {
       animation: false,
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis",
+        // The linked cross is drawn outside ECharts so a redraw cannot flash it.
+        show: !driven,
+        triggerOn: driven ? "none" : "mousemove",
         axisPointer: {
-          type: "cross",
+          type: driven ? "none" : "cross",
+          animation: false,
+          animationDurationUpdate: 0,
           lineStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1, type: "dashed" },
           crossStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1 },
           label: { backgroundColor: dark ? "#2a2e39" : "#334155" },
@@ -407,6 +423,7 @@ export function IndexIvChart({
             formatter: (v: number) => Number(v).toFixed(returnScale ? 2 : 1),
           },
           splitLine: { lineStyle: { color: variant === "pro" ? "#1e222d" : "#f1f5f9" } },
+          axisPointer: { show: !driven, animation: false },
         },
         returnScale
           ? {
@@ -415,15 +432,8 @@ export function IndexIvChart({
               min: returnScale.rightMin,
               max: returnScale.rightMax,
               interval: returnScale.rightInterval,
-              axisPointer: {
-                label: {
-                  formatter: (p: { value?: number | string }) => {
-                    const n = Number(p.value)
-                    if (!Number.isFinite(n)) return ""
-                    return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`
-                  },
-                },
-              },
+              // A second crosshair on the return axis fights the level axis and the line flickers.
+              axisPointer: { show: false },
               axisLabel: {
                 fontSize: 10,
                 color: "#94a3b8",
@@ -451,11 +461,9 @@ export function IndexIvChart({
       ],
     }
     return { option, gkScale }
-  }, [bars, color, compareGk, gkByTime, interval, lookbackDays, mode, prevClose, variant, viewportMode, visibleWindow])
+  }, [bars, color, compareGk, driven, gkByTime, interval, lookbackDays, mode, prevClose, variant, viewportMode, visibleWindow])
   const option = chartModel.option
   const gkScale = chartModel.gkScale
-
-  useSyncedCrosshair(chartRef, plottedTimesRef, variant === "pro" ? cursorTime : null, interval, option)
 
   const emptyText = loading
     ? (ivStrike || ivMonth ? "加载该合约…" : "加载 QVIX 日线…")
@@ -565,9 +573,19 @@ export function IndexIvChart({
           </div>
         </div>
       </div>
-      <div className="min-h-0 flex-1 px-1 pb-1">
+      <div className={pro ? "relative min-h-0 flex-1 px-1 pb-1" : "relative px-1 pb-1"} style={pro ? undefined : { height: 240 }}>
         {bars.length > 0 ? (
-          <ReactECharts ref={chartRef} option={option} style={{ height: pro ? "100%" : 240 }} notMerge />
+          <>
+            <ReactECharts ref={chartRef} option={option} style={{ position: "absolute", inset: 0, height: "100%", width: "100%" }} notMerge />
+            <SyncedCrosshairLayer
+              chartRef={chartRef}
+              timesRef={plottedTimesRef}
+              describeRef={describeRef}
+              cursorTime={cursorTime}
+              interval={interval}
+              active={driven}
+            />
+          </>
         ) : (
           <div className={pro ? "flex h-full items-center justify-center px-3 text-center text-sm text-[#787b86]" : "flex h-[240px] items-center justify-center px-3 text-center text-sm text-muted-foreground"}>
             {emptyText}
