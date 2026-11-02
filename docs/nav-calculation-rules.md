@@ -3462,18 +3462,22 @@ SAAL90 tip still carries dividend gap on 2026-08-26 (累计 ~4.28, 复权 ~5.30)
 - Existing dividend / rechain paths for real ex-div days
 - Vendor jumps that already sit in one feed (now correctly labeled 源数据异常): **SN3648**, **SGH173**, **SSH449**, **SVC066**, **SNN006**, **SQD690**, **SLC571** 2026-01-30, **SGK119** 2021-03-19, **SXV381** 2025-04-07
 
-### Remaining 计算或修正导致 (not fixed here)
+### Follow-up (same cohort, 2026-11-02)
 
-| Code | Why left |
-|---|---|
-| **SVP162** | Email 单位 itself has a ~5.8% V on 2026-02-06; `sanitizeVShapeNavOutliers` threshold is 7%. Lowering it risks R0423B-style false flats |
-| **SLN974** | type6 vs 火富牛 复权 scale handoff mid-series; needs a dedicated source-preference rule |
-| **SCB622** | Residual 2020-04-14 step after the rebase week |
-| **SEM163** | Separate 2019-06-28 neighborhood still inflated vs type6 |
-| **SCY439** | 2024-06-26 unit/adj rewrite vs type6 |
-| **SVL369** | 2023-07-17 rebase tail is fixed; a later 2023-08-15 collapse (累计 already flat while 复权 still elevated on 08-14) still cliffs |
+The six rows still labeled 计算或修正导致 after the guards above were the same mechanisms, on a later date:
 
-Stale list flags for funds that are now clean still need a 净值断档 reload (or flag rule bump) and detail-cache rebuild on each machine.
+| Code | What the chart was doing | Fix |
+|---|---|---|
+| **SEM163** | 2019-06-24 unit came back to 累计 within about 1%, and the collapse carry reopened the old gap | Recovery tolerance in `repairAdjCollapsedToUnitRows` is 2% |
+| **SCY439** | 2024-06-26 单位, 累计, and 复权 all moved together; the 7% unit V-shape flattened 单位 and rebuilt 复权 from the previous 累计 | Skip that flatten when 累计 or 复权 confirms the move |
+| **SCB622** | 2020-04-13 复权 was lifted to 累计, then 2020-04-14 stayed on the continuous raw 复权 | `rawAdjContinuesForward` does not lift a day whose next stored 复权 already continues it |
+| **SVL369** | 2023-08-14 negative 复权 was replaced, and the collapsed 累计 was left on 单位, so the next day lost the gap | `clampSanityNavRows` writes the carried 累计 when it restores that 复权 |
+| **SLN974** | Type6 复权 near the running series was swapped with 累计, or an 8% 复权 wiggle was replaced by unit + the old gap. 火富牛's higher 复权 won on days Type6 still continued | Skip a swap when the stored 复权 is the column that continues. Prefer the feed within 10% of the previous 复权. Do not rebuild a 复权 wiggle when 累计 already has the dividend gap |
+| **SVP162** | 2026-02-06 is the A-class email 单位, scaled onto the parent 复权. The return is in that email | Cause diagnosis also reads A/B share-class feeds. C类 is still excluded |
+
+After this, those six are either clean or a vendor print (源数据异常). SQX078 still swaps, SQX646 2022-01-07 stays on the Type6 step, S29263 stays 0.697714, SBPC20 / SAVM35 / SBGS17 paths are unchanged.
+
+Detail caches and `ops_nav_series_flags` for the original 28 codes were rebuilt. List caches are `platform_data_list_cache_v9` and `nav_gap_rebase_v9`. Do not bump `NAV_SERIES_FLAG_RULE` for this; `FLAG_MEMORY_REV` is 7 so a running server rereads the saved flags.
 
 ### Verified
 

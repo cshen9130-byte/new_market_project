@@ -3,6 +3,7 @@
 import type React from "react"
 import { Suspense, useEffect, useLayoutEffect, useState } from "react"
 import { usePathname, useRouter } from "next/navigation"
+import { AccountShortcutListener } from "@/components/ma/account-shortcut-listener"
 import { DashboardSidebar } from "@/components/ma/dashboard-sidebar"
 import { cn } from "@/lib/utils"
 import { DashboardHeader } from "@/components/dashboard-header"
@@ -140,9 +141,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     </Suspense>
   )
 
+  const shortcutListener = <AccountShortcutListener userId={user.id} />
+
   if (isEmbedBriefing) {
     return (
       <>
+        {shortcutListener}
         {visitTracker}
         <div className="h-screen overflow-auto bg-background" data-mom-embed-shell="1">{children}</div>
       </>
@@ -152,6 +156,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (isSettingsPage || isAllWeatherPage || isNhciIndexPage) {
     return (
       <>
+        {shortcutListener}
         {visitTracker}
         {children}
       </>
@@ -162,6 +167,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
+      {shortcutListener}
       {visitTracker}
       <DashboardSidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="flex min-w-0 flex-col flex-1 overflow-hidden">

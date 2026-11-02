@@ -84,10 +84,14 @@ export function ensureDevPostgresTunnel(): Promise<void> {
   const url = process.env.DATABASE_URL || ""
   if (!url.includes(`:${LOCAL_PORT}/`)) return Promise.resolve()
   if (!global._devPgTunnelPromise) {
-    global._devPgTunnelPromise = openTunnel().catch((err) => {
+    // Only the in-flight open is cached. A resolved promise must not outlive
+    // the SSH process, or the next query hits a closed 5433 and looks empty.
+    global._devPgTunnelPromise = openTunnel().finally(() => {
       global._devPgTunnelPromise = undefined
-      throw err
     })
   }
   return global._devPgTunnelPromise
 }
+
+// Hot reload keeps the previous resolved promise even after ssh has exited.
+global._devPgTunnelPromise = undefined

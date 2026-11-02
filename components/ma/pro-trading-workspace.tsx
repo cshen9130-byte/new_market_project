@@ -13,6 +13,7 @@ import {
   type ChartViewportMode,
   type KlineChartHandle,
 } from "@/components/ma/kline-pro-chart"
+import { chartWindowForSeries, type ChartVisibleWindow } from "@/lib/client/qvix-series"
 import { PaperNavChart } from "@/components/ma/paper-nav-chart"
 import {
   PaperAllWeatherOrderDialog,
@@ -51,7 +52,7 @@ import { overlaySinaQuote } from "@/lib/client/market-hours"
 import { isNhciSymbol, looksLikeNhciInput, NHCI_NAME, NHCI_SYMBOL } from "@/lib/client/nhci-market"
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
-import { isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
+import { barsOnLastTradeDay, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 import { cn } from "@/lib/utils"
 
 export type ProTradingLayout = "market" | "paper"
@@ -89,6 +90,7 @@ export function ProTradingWorkspace({
   const [symbol, setSymbol] = useState(initialSymbol || "")
   const [query, setQuery] = useState(initialSymbol || "")
   const [tool, setTool] = useState("cross")
+  const [cursorTime, setCursorTime] = useState<number | null>(null)
   const [interval, setInterval] = useState<TimeframeId>("1m")
   const [basisInterval, setBasisInterval] = useState<TimeframeId>("1m")
   const [ivInterval, setIvInterval] = useState<TimeframeId>("1m")
@@ -104,6 +106,8 @@ export function ProTradingWorkspace({
   const [mounted, setMounted] = useState(false)
   const klineRef = useRef<KlineChartHandle>(null)
   const [viewportMode, setViewportMode] = useState<ChartViewportMode>(() => readStoredViewportMode())
+  const [scrollWindow, setScrollWindow] = useState<ChartVisibleWindow | null>(null)
+  const [userAdjusted, setUserAdjusted] = useState(false)
   const paper = usePaperTrading(quotes, candles)
   const awBootRef = useRef(false)
   const awSymbols = paper.state.products
@@ -129,9 +133,9 @@ export function ProTradingWorkspace({
     setQuery(initialSymbol)
     const role = cffexRoleOfContract(initialSymbol) || "next"
     setContractRole(role)
-    const prod = productOfSymbol(initialSymbol)
-    if (prod && ivMonthPinned) setIvMonth(cffexOptionMonthForRole(prod, role))
-  }, [open, initialSymbol, initialLayout, ivMonthPinned])
+    setIvMonth(null)
+    setIvMonthPinned(false)
+  }, [open, initialSymbol, initialLayout])
 
   useEffect(() => {
     if (layout !== "paper") setShowNavChart(false)
@@ -202,7 +206,22 @@ export function ProTradingWorkspace({
 
   const product = productOfSymbol(symbol)
   const live1m = candles[symbol] || []
-  const { candles: tfCandles, quote: klineQuote } = useSymbolKline(symbol || null, interval, live1m, quotes[symbol])
+  const { candles: tfCandles, quote: klineQuote } = useSymbolKline(symbol || null, interval, live1m, quotes[symbol], {
+    history: true,
+  })
+  const derivedWindow = useMemo(
+    () => chartWindowForSeries(
+      isIntradayTimeframe(interval) ? barsOnLastTradeDay(tfCandles, symbol) : tfCandles,
+      interval,
+      viewportMode,
+    ),
+    [interval, symbol, tfCandles, viewportMode],
+  )
+  useEffect(() => {
+    setScrollWindow(null)
+    setUserAdjusted(false)
+  }, [symbol, interval, viewportMode])
+  const visibleWindow = userAdjusted && scrollWindow?.interval === interval ? scrollWindow : derivedWindow
   const quote = klineQuote || quotes[symbol]
   const meta = isNhciSymbol(symbol)
     ? { product: NHCI_SYMBOL, name: NHCI_NAME }
@@ -294,8 +313,6 @@ export function ProTradingWorkspace({
     setContractRole(role)
     if (layout === "paper") focusChart(picked)
     else commit(picked)
-    setIvMonth(cffexOptionMonthForRole(nextProduct, role))
-    setIvMonthPinned(false)
   }
 
   function onContractRoleChange(role: CffexContractRole) {
@@ -306,8 +323,6 @@ export function ProTradingWorkspace({
         if (layout === "paper") focusChart(picked)
         else commit(picked)
       }
-      setIvMonth(cffexOptionMonthForRole(product, role))
-      setIvMonthPinned(false)
     }
   }
 
@@ -433,28 +448,31 @@ export function ProTradingWorkspace({
             复位
           </button>
         </div>
-        <label
-          className="inline-flex h-7 shrink-0 items-center gap-1 rounded border border-[#2a2e39] bg-[#1e222d] px-2 text-[11px] text-[#adb3bd]"
-          title="图表视窗设置：自动缩放 / 跟随右侧 / 固定窗口"
+        <div
+          className="flex shrink-0 items-center overflow-hidden rounded border border-[#2a2e39]"
+          title="切换K线视窗"
         >
-          <span className="text-[#787b86]">视窗</span>
-          <select
-            value={viewportMode}
-            onChange={(e) => {
-              const next = e.target.value as ChartViewportMode
-              setViewportMode(next)
-              klineRef.current?.setViewportMode(next)
-            }}
-            className="max-w-[7.5rem] cursor-pointer border-0 bg-transparent py-0 text-[11px] text-[#adb3bd] outline-none hover:text-white"
-            aria-label="图表视窗设置"
-          >
-            {CHART_VIEWPORT_MODES.map((mode) => (
-              <option key={mode.id} value={mode.id} title={mode.title}>
-                {mode.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          {CHART_VIEWPORT_MODES.map((mode, index) => (
+            <button
+              key={mode.id}
+              type="button"
+              title={mode.title}
+              onClick={() => {
+                setViewportMode(mode.id)
+                klineRef.current?.setViewportMode(mode.id)
+              }}
+              className={cn(
+                "inline-flex h-7 items-center px-2 text-[11px]",
+                index > 0 && "border-l border-[#2a2e39]",
+                viewportMode === mode.id
+                  ? "bg-[#4c84ff] text-white"
+                  : "text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white",
+              )}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
         {layout === "paper" ? (
           <>
           <button
@@ -537,7 +555,7 @@ export function ProTradingWorkspace({
           <ResizablePanelGroup direction="horizontal">
             <ResizablePanel defaultSize={74} minSize={48}>
               {symbol ? (
-                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} viewportMode={viewportMode} onViewportModeChange={setViewportMode} />
+                <KlineProChart ref={klineRef} symbol={symbol} interval={interval} candles={tfCandles} marks={orderMarks} activeTool={tool} onTool={setTool} viewportMode={viewportMode} onViewportModeChange={setViewportMode} onVisibleWindow={setScrollWindow} onUserAdjust={() => setUserAdjusted(true)} onCursorTime={setCursorTime} />
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-[#787b86]">输入或选择一个合约</div>
               )}
@@ -558,6 +576,9 @@ export function ProTradingWorkspace({
                       interval={tfLocked ? interval : basisInterval}
                       onIntervalChange={(id) => selectTimeframe(id, "basis")}
                       linked={tfLocked}
+                      viewportMode={viewportMode}
+                      visibleWindow={tfLocked || basisInterval === interval ? visibleWindow : null}
+                      cursorTime={tool === "link-cross" ? cursorTime : null}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">
@@ -581,6 +602,12 @@ export function ProTradingWorkspace({
                         setIvMonthPinned(!!m)
                         setIvMonth(m)
                       }}
+                      viewportMode={viewportMode}
+                      visibleWindow={tfLocked || ivInterval === interval ? visibleWindow : null}
+                      cursorTime={tool === "link-cross" ? cursorTime : null}
+                      symbol={symbol}
+                      priceCandles={tfCandles}
+                      priceInterval={interval}
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#787b86]">

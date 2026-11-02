@@ -1,11 +1,22 @@
 "use client"
 
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react"
+import { createPortal } from "react-dom"
 import type { Chart, KLineData } from "klinecharts"
 
 import { isBuyMark, snapOrderMarks, type ChartOrderMark } from "@/lib/client/chart-order-marks"
 import type { CtpCandle } from "@/lib/client/ctp-market"
-import { isIntradayTimeframe, klinePeriod, type TimeframeId } from "@/lib/client/timeframes"
+import {
+  barsOnLastTradeDay,
+  countBarsOnTradeDay,
+  intradaySessionSlots,
+  isIntradayTimeframe,
+  klinePeriod,
+  type TimeframeId,
+} from "@/lib/client/timeframes"
+import type { ChartVisibleWindow } from "@/lib/client/qvix-series"
+import { formatWindowInput, lockAfterCommit, parseWindowInput, type InputLock } from "@/lib/client/window-input"
+import { rollingGarmanKlass, rollingLogVolatility, type OhlcBar } from "@/lib/client/rolling-volatility"
 import { CFFEX_SESSION_OPENS, sessionOpenIndices } from "@/lib/client/session-opens"
 import { cn } from "@/lib/utils"
 
@@ -13,19 +24,28 @@ const DEFAULT_BAR_SPACE = 6
 const ZOOM_IN_SCALE = 1.25
 const ZOOM_OUT_SCALE = 0.8
 const Y_AXIS_RESERVE_PX = 56
-const FOLLOW_RIGHT_OFFSET_PX = 80
+/** Keeps the last candle fully inside the plot, clear of the price-axis border. */
+const RIGHT_GAP_PX = 28
 const FIXED_WINDOW_BARS = 120
-const FIXED_WINDOW_OFFSET_PX = 40
 const AUTO_SCALE_MAX_BAR_SPACE = 160
 const VIEWPORT_MODE_STORAGE_KEY = "ma.kline.viewportMode"
 
-export type ChartViewportMode = "auto-scale" | "follow-right" | "fixed-window"
+export type ChartViewportMode = "auto-scale" | "fixed-window"
 
 export const CHART_VIEWPORT_MODES: Array<{ id: ChartViewportMode; label: string; title: string }> = [
-  { id: "auto-scale", label: "自动缩放", title: "当日首根K线贴左，随新K线自动缩放铺满，右侧无空白" },
-  { id: "follow-right", label: "跟随右侧", title: "固定柱宽，最新K线贴右并保留右侧边距" },
-  { id: "fixed-window", label: "固定窗口", title: "固定显示最近约120根K线，跟随右侧" },
+  {
+    id: "auto-scale",
+    label: "跟随K线",
+    title: "从当日起始画到最新K线，右侧留一点空隙。新K线出现时右边界跟着走。",
+  },
+  {
+    id: "fixed-window",
+    label: "固定窗口",
+    title: "日内横轴固定为今日完整交易时段，K线从左向右填满，右侧留给还没走完的时间。日线及以上固定最近120根。",
+  },
 ]
+
+export type { ChartVisibleWindow }
 
 export type KlineChartHandle = {
   zoomIn: () => void
@@ -36,13 +56,14 @@ export type KlineChartHandle = {
 }
 
 function isChartViewportMode(value: unknown): value is ChartViewportMode {
-  return value === "auto-scale" || value === "follow-right" || value === "fixed-window"
+  return value === "auto-scale" || value === "fixed-window"
 }
 
 export function readStoredViewportMode(): ChartViewportMode {
   if (typeof window === "undefined") return "auto-scale"
   try {
     const raw = window.localStorage.getItem(VIEWPORT_MODE_STORAGE_KEY)
+    if (raw === "follow-right") return "auto-scale"
     if (isChartViewportMode(raw)) return raw
   } catch {
     /* ignore */
@@ -64,35 +85,120 @@ function chartContentWidth(host: HTMLElement | null) {
   return Math.max(80, width - Y_AXIS_RESERVE_PX)
 }
 
-function applyViewportMode(chart: Chart | null, host: HTMLElement | null, mode: ChartViewportMode) {
+function plotWidth(chart: Chart, host: HTMLElement | null) {
+  const pane = chart.getSize("candle_pane", "main")
+  if (pane && pane.width > 80) return pane.width
+  return chartContentWidth(host)
+}
+
+function clampBarSpace(space: number) {
+  return Math.min(AUTO_SCALE_MAX_BAR_SPACE, Math.max(1, space))
+}
+
+/**
+ * Follow: today's bars stretch from the left edge to the latest candle, with a
+ * small right gap so the last body is not cut by the axis.
+ * Fixed: the plot width is one full session. Printed candles occupy the left
+ * portion and the unfinished session stays empty on the right.
+ */
+function applyViewportMode(
+  chart: Chart | null,
+  host: HTMLElement | null,
+  mode: ChartViewportMode,
+  symbol: string,
+  interval: TimeframeId,
+) {
   if (!chart) return
   const data = chart.getDataList()
   const count = data?.length ?? 0
   if (count <= 0) return
-  const width = chartContentWidth(host)
+  const width = plotWidth(chart, host)
+  const intraday = isIntradayTimeframe(interval)
+  const todayCount = intraday
+    ? countBarsOnTradeDay(
+        data.map((bar) => ({ time: Math.floor(bar.timestamp / 1000) })),
+        symbol,
+      )
+    : count
+  const sessionSlots = intraday ? intradaySessionSlots(symbol, interval) : FIXED_WINDOW_BARS
 
-  if (mode === "auto-scale") {
-    const space = Math.min(AUTO_SCALE_MAX_BAR_SPACE, Math.max(1, width / count))
-    chart.setMaxOffsetRightDistance(0)
-    chart.setOffsetRightDistance(0)
-    chart.setBarSpace(space)
-    chart.scrollToRealTime(0)
-    return
-  }
-
+  let windowBars: number
+  let filled: number
   if (mode === "fixed-window") {
-    const space = Math.min(50, Math.max(1, width / FIXED_WINDOW_BARS))
-    chart.setRightMinVisibleBarCount(1)
-    chart.setOffsetRightDistance(FIXED_WINDOW_OFFSET_PX)
-    chart.setBarSpace(space)
-    chart.scrollToRealTime(0)
-    return
+    if (intraday) {
+      windowBars = Math.max(sessionSlots, todayCount)
+      filled = todayCount
+    } else {
+      windowBars = FIXED_WINDOW_BARS
+      filled = Math.min(count, windowBars)
+    }
+  } else {
+    windowBars = intraday ? Math.max(1, todayCount) : count
+    filled = windowBars
   }
 
-  chart.setRightMinVisibleBarCount(1)
-  chart.setOffsetRightDistance(FOLLOW_RIGHT_OFFSET_PX)
-  chart.setBarSpace(DEFAULT_BAR_SPACE)
+  const provisional = clampBarSpace(width / Math.max(1, windowBars))
+  const gapBars = Math.max(1.35, RIGHT_GAP_PX / provisional)
+  const space = clampBarSpace(width / (windowBars + gapBars))
+  const offsetPx = (Math.max(0, windowBars - filled) + gapBars) * space
+
+  chart.setLeftMinVisibleBarCount(0)
+  chart.setRightMinVisibleBarCount(0)
+  chart.setOffsetRightDistance(offsetPx)
+  chart.setBarSpace(space)
   chart.scrollToRealTime(0)
+}
+
+function dayStartUnix(unix: number) {
+  const d = new Date(unix * 1000)
+  return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000)
+}
+
+function edgeIndex(data: Array<{ timestamp: number }>, unix: number, edge: "start" | "end", hasTime: boolean) {
+  const dayStart = dayStartUnix(unix)
+  const target = (hasTime ? unix : edge === "start" ? dayStart : dayStart + 86400 - 1) * 1000
+  if (!data.length) return 0
+  if (edge === "start") {
+    const idx = data.findIndex((bar) => bar.timestamp >= target)
+    return idx < 0 ? data.length - 1 : idx
+  }
+  for (let i = data.length - 1; i >= 0; i -= 1) {
+    if (data[i]!.timestamp <= target) return i
+  }
+  return 0
+}
+
+/** Show exactly the locked dates. The bar count changes so neither edge is pushed off. */
+function fitInputWindow(chart: Chart, host: HTMLElement | null, lock: InputLock) {
+  const data = chart.getDataList()
+  if (!data?.length) return null
+  let fromIdx = edgeIndex(data, lock.fromUnix, "start", lock.fromHasTime)
+  let toIdx = edgeIndex(data, lock.toUnix, "end", lock.toHasTime)
+  if (toIdx < fromIdx) toIdx = fromIdx
+  const span = Math.max(1, toIdx - fromIdx + 1)
+  const space = clampBarSpace(plotWidth(chart, host) / span)
+  const range = chart.getVisibleRange()
+  const left = data[Math.max(0, range.realFrom)]
+  const rightIndex = Math.min(data.length - 1, Math.max(0, range.realTo - 1))
+  const leftOk = left != null && Math.floor(left.timestamp / 1000) === Math.floor(data[fromIdx]!.timestamp / 1000)
+  const rightOk = rightIndex === toIdx || rightIndex === Math.min(data.length - 1, toIdx + 1)
+  const already = Math.abs(chart.getBarSpace().bar - space) < 0.05 && leftOk && rightOk
+  if (!already) {
+    chart.setLeftMinVisibleBarCount(0)
+    chart.setRightMinVisibleBarCount(0)
+    if (Math.abs(chart.getBarSpace().bar - space) >= 0.05) chart.setBarSpace(space)
+    chart.scrollToDataIndex(toIdx, 0)
+  }
+  return {
+    from: Math.floor(data[fromIdx]!.timestamp / 1000),
+    to: Math.floor(data[toIdx]!.timestamp / 1000),
+  }
+}
+
+function formatBound(unix: number, hasTime: boolean, interval: TimeframeId) {
+  if (hasTime) return formatWindowInput(unix, interval)
+  const d = new Date(unix * 1000)
+  return `${d.getUTCFullYear()}.${d.getUTCMonth() + 1}.${d.getUTCDate()}`
 }
 
 function zoomKline(chart: Chart | null, direction: "in" | "out") {
@@ -105,10 +211,102 @@ function zoomKline(chart: Chart | null, direction: "in" | "out") {
 const ORDER_GROUP = "strategy-orders"
 const DRAW_GROUP = "drawings"
 const SESSION_GROUP = "session-opens"
+const SUB_PANE_ID = "bottom-tech"
 let orderOverlayRegistered = false
 
-const TOOLS: Array<{ id: string; overlay?: string; label: string }> = [
+const SUB_INDICATORS: Array<{ name: string; label: string; title?: string }> = [
+  { name: "MACD", label: "MACD" },
+  { name: "KDJ", label: "KDJ" },
+  { name: "RSI", label: "RSI" },
+  { name: "WR", label: "WR 威廉" },
+  { name: "CCI", label: "CCI" },
+  { name: "BIAS", label: "BIAS 乖离" },
+  { name: "ROC", label: "ROC" },
+  { name: "MTM", label: "MTM 动量" },
+  { name: "DMI", label: "DMI" },
+  { name: "OBV", label: "OBV" },
+  { name: "TRIX", label: "TRIX" },
+  { name: "PSY", label: "PSY 心理线" },
+  { name: "HV", label: "波动率20", title: "最近20根K线收盘价对数收益率的标准差，单位 %" },
+  { name: "GK", label: "区间波动20", title: "最近20根K线的 Garman-Klass 波动率，用开高低收，单位 %（与波动率20相同，不年化）。同样长度下比收盘价波动率更接近隐含波动率。" },
+]
+
+let priceVolReady: Promise<void> | null = null
+
+function ensureRollingVolatility() {
+  if (!priceVolReady) {
+    priceVolReady = import("klinecharts").then(({ registerIndicator }) => {
+      registerRollingVolatility(registerIndicator as (indicator: Record<string, unknown>) => void)
+    })
+  }
+  return priceVolReady
+}
+
+const HV_COLOR = "#f5a623"
+const GK_COLOR = "#2dd4bf"
+
+function registerRollingVolatility(registerIndicator: (indicator: Record<string, unknown>) => void) {
+  registerIndicator({
+    name: "HV",
+    shortName: "波动率",
+    calcParams: [20],
+    precision: 3,
+    figures: [{ key: "hv", title: "HV20%: ", type: "line" }],
+    styles: { lines: [{ color: HV_COLOR }] },
+    calc: (dataList: Array<{ close: number }>, indicator: { calcParams?: number[] }) => {
+      const period = Number(indicator.calcParams?.[0]) || 20
+      return rollingLogVolatility(
+        dataList.map((bar) => bar.close),
+        period,
+      ).map((hv) => (hv == null ? {} : { hv }))
+    },
+  })
+  registerIndicator({
+    name: "GK",
+    shortName: "区间波动",
+    calcParams: [20],
+    precision: 3,
+    figures: [{ key: "gk", title: "GK20%: ", type: "line" }],
+    styles: { lines: [{ color: GK_COLOR }] },
+    calc: (dataList: OhlcBar[], indicator: { calcParams?: number[] }) => {
+      const period = Number(indicator.calcParams?.[0]) || 20
+      return rollingGarmanKlass(dataList, period).map((gk) => (gk == null ? {} : { gk }))
+    },
+  })
+}
+
+function priceVolStyle(name: string) {
+  if (name === "HV") return { lines: [{ color: HV_COLOR }] }
+  if (name === "GK") return { lines: [{ color: GK_COLOR }] }
+  return null
+}
+
+function containsClientPoint(el: HTMLElement, clientX: number, clientY: number) {
+  const rect = el.getBoundingClientRect()
+  return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom
+}
+
+/** The lowest indicator pane. Volume sits above it, so a right-click there is left alone. */
+function bottomIndicatorPane(chart: Chart): { id: string; el: HTMLElement } | null {
+  const ids = new Set<string>()
+  for (const indicator of chart.getIndicators()) {
+    const id = indicator.paneId
+    if (!id || id === "candle_pane" || id === "x_axis_pane") continue
+    ids.add(id)
+  }
+  let best: { id: string; el: HTMLElement; top: number } | null = null
+  for (const id of ids) {
+    const el = chart.getDom(id, "root")
+    if (!el) continue
+    const top = el.getBoundingClientRect().top
+    if (!best || top >= best.top) best = { id, el, top }
+  }
+  return best ? { id: best.id, el: best.el } : null
+}
+
+const TOOLS: Array<{ id: string; overlay?: string; label: string; title?: string }> = [
   { id: "cross", label: "十字" },
+  { id: "link-cross", label: "联动", title: "主图十字光标同步到右侧基差率和隐含波动率，指向同一日期" },
   { id: "segment", overlay: "segment", label: "线段" },
   { id: "ray", overlay: "rayLine", label: "射线" },
   { id: "line", overlay: "straightLine", label: "直线" },
@@ -127,6 +325,12 @@ function pricePrecisionOf(symbol: string) {
   if (asset === "IF" || asset === "IH" || asset === "IC" || asset === "IM") return 1
   if (asset === "NHCI") return 2
   return 0
+}
+
+/** Intraday charts stay on the latest session. 5分 changes bar size, not how many days are on screen. */
+function plottedCandles(candles: CtpCandle[], symbol: string, interval: TimeframeId) {
+  if (!isIntradayTimeframe(interval)) return candles
+  return barsOnLastTradeDay(candles, symbol)
 }
 
 function toBar(c: CtpCandle): KLineData {
@@ -194,7 +398,43 @@ type Props = {
   onTool?: (id: string) => void
   viewportMode?: ChartViewportMode
   onViewportModeChange?: (mode: ChartViewportMode) => void
+  /** Visible time range after the user scrolls or zooms. Programmatic viewport changes are not reported. */
+  onVisibleWindow?: (window: ChartVisibleWindow) => void
+  /** The user panned or zoomed the main chart, so its visible range should drive the side charts. */
+  onUserAdjust?: () => void
+  /** Unix seconds of the hovered bar while the 联动 tool is on. Null when the pointer leaves. */
+  onCursorTime?: (time: number | null) => void
   ref?: Ref<KlineChartHandle | null>
+}
+
+function cursorUnixFromCrosshair(chart: Chart, raw: unknown): number | null {
+  const rec = raw as { x?: number; timestamp?: number; kLineData?: { timestamp?: number } } | null
+  let ms = rec?.kLineData?.timestamp ?? rec?.timestamp
+  if ((ms == null || !Number.isFinite(ms)) && rec?.x != null && Number.isFinite(rec.x)) {
+    const converted = chart.convertFromPixel([{ x: rec.x }])
+    const point = Array.isArray(converted) ? converted[0] : converted
+    ms = point?.timestamp
+  }
+  if (ms == null || !Number.isFinite(ms)) return null
+  return ms > 1e11 ? Math.floor(ms / 1000) : Math.floor(ms)
+}
+
+function readVisibleWindow(chart: Chart, interval: TimeframeId): ChartVisibleWindow | null {
+  const data = chart.getDataList()
+  if (!data?.length) return null
+  const range = chart.getVisibleRange()
+  const last = data.length - 1
+  const fromIdx = Math.max(0, Math.min(last, Math.floor(range.realFrom)))
+  const toIdx = Math.max(fromIdx, Math.min(last, Math.ceil(range.realTo) - 1))
+  const fromTs = data[fromIdx]?.timestamp
+  const toTs = data[toIdx]?.timestamp
+  if (fromTs == null || toTs == null) return null
+  return {
+    from: Math.floor(Math.min(fromTs, toTs) / 1000),
+    to: Math.floor(Math.max(fromTs, toTs) / 1000),
+    coversAll: fromIdx === 0 && toIdx === last,
+    interval,
+  }
 }
 
 function registerOrderOverlay(registerOverlay: (overlay: Record<string, unknown>) => void) {
@@ -313,6 +553,9 @@ export function KlineProChart({
   onTool,
   viewportMode: viewportModeProp,
   onViewportModeChange,
+  onVisibleWindow,
+  onUserAdjust,
+  onCursorTime,
   ref,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -327,13 +570,101 @@ export function KlineProChart({
   const marksRef = useRef(marks)
   const defaultBarSpaceRef = useRef(DEFAULT_BAR_SPACE)
   const [viewportModeState, setViewportModeState] = useState<ChartViewportMode>(() => readStoredViewportMode())
+  const [subIndicator, setSubIndicator] = useState("MACD")
+  const [subMenu, setSubMenu] = useState<{ x: number; y: number } | null>(null)
+  const subIndicatorRef = useRef("MACD")
   const viewportMode = viewportModeProp ?? viewportModeState
   const viewportModeRef = useRef(viewportMode)
+  const onVisibleWindowRef = useRef(onVisibleWindow)
+  const onUserAdjustRef = useRef(onUserAdjust)
+  const onCursorTimeRef = useRef(onCursorTime)
+  const activeToolRef = useRef(activeTool)
+  const lastCursorRef = useRef<number | null>(null)
+  const userAdjustRef = useRef(false)
+  const publishedWindowRef = useRef<ChartVisibleWindow | null>(null)
+  const rangeRafRef = useRef(0)
+  const inputLockRef = useRef<InputLock | null>(null)
+  const fittingRef = useRef(false)
+  const [inputMode, setInputMode] = useState(false)
+  const shownWindowRef = useRef<ChartVisibleWindow | null>(null)
+  const editingRef = useRef<"from" | "to" | null>(null)
+  const [fromText, setFromText] = useState("")
+  const [toText, setToText] = useState("")
   candlesRef.current = candles
   symbolRef.current = symbol
   intervalRef.current = interval
   marksRef.current = marks
   viewportModeRef.current = viewportMode
+  onVisibleWindowRef.current = onVisibleWindow
+  onUserAdjustRef.current = onUserAdjust
+  onCursorTimeRef.current = onCursorTime
+  activeToolRef.current = activeTool
+
+  const syncWindowText = useCallback((window: ChartVisibleWindow) => {
+    shownWindowRef.current = window
+    if (editingRef.current !== "from") setFromText(formatWindowInput(window.from, window.interval))
+    if (editingRef.current !== "to") setToText(formatWindowInput(window.to, window.interval))
+  }, [])
+  const syncWindowRef = useRef(syncWindowText)
+  syncWindowRef.current = syncWindowText
+
+  const publishLockedWindow = useCallback((chart: Chart) => {
+    const lock = inputLockRef.current
+    if (!lock || fittingRef.current) return false
+    fittingRef.current = true
+    try {
+      const fitted = fitInputWindow(chart, hostRef.current, lock)
+      if (!fitted) return false
+      const next: ChartVisibleWindow = {
+        from: fitted.from,
+        to: fitted.to,
+        coversAll: false,
+        interval: intervalRef.current,
+      }
+      const prev = publishedWindowRef.current
+      publishedWindowRef.current = next
+      if (!prev || prev.from !== next.from || prev.to !== next.to || prev.interval !== next.interval) {
+        onVisibleWindowRef.current?.(next)
+      }
+      return true
+    } finally {
+      fittingRef.current = false
+    }
+  }, [])
+  const publishLockedRef = useRef(publishLockedWindow)
+  publishLockedRef.current = publishLockedWindow
+
+  const publishVisibleWindow = useCallback(() => {
+    if (rangeRafRef.current) window.clearTimeout(rangeRafRef.current)
+    rangeRafRef.current = window.setTimeout(() => {
+      rangeRafRef.current = 0
+      if (inputLockRef.current || !userAdjustRef.current) return
+      const chart = chartRef.current
+      if (!chart) return
+      const next = readVisibleWindow(chart, intervalRef.current)
+      if (!next) return
+      const prev = publishedWindowRef.current
+      if (
+        prev &&
+        prev.from === next.from &&
+        prev.to === next.to &&
+        prev.coversAll === next.coversAll &&
+        prev.interval === next.interval
+      ) {
+        return
+      }
+      publishedWindowRef.current = next
+      onVisibleWindowRef.current?.(next)
+    }, 40)
+  }, [])
+
+  const noteUserAdjust = useCallback(() => {
+    userAdjustRef.current = true
+    onUserAdjustRef.current?.()
+    publishVisibleWindow()
+  }, [publishVisibleWindow])
+  const publishVisibleWindowRef = useRef(publishVisibleWindow)
+  publishVisibleWindowRef.current = publishVisibleWindow
 
   const setViewportMode = useCallback(
     (mode: ChartViewportMode) => {
@@ -341,7 +672,9 @@ export function KlineProChart({
       if (viewportModeProp == null) setViewportModeState(mode)
       onViewportModeChange?.(mode)
       viewportModeRef.current = mode
-      applyViewportMode(chartRef.current, hostRef.current, mode)
+      inputLockRef.current = null
+      setInputMode(false)
+      applyViewportMode(chartRef.current, hostRef.current, mode, symbolRef.current, intervalRef.current)
     },
     [onViewportModeChange, viewportModeProp],
   )
@@ -349,7 +682,15 @@ export function KlineProChart({
   const zoomIn = useCallback(() => zoomKline(chartRef.current, "in"), [])
   const zoomOut = useCallback(() => zoomKline(chartRef.current, "out"), [])
   const resetZoom = useCallback(() => {
-    applyViewportMode(chartRef.current, hostRef.current, viewportModeRef.current)
+    inputLockRef.current = null
+    setInputMode(false)
+    applyViewportMode(
+      chartRef.current,
+      hostRef.current,
+      viewportModeRef.current,
+      symbolRef.current,
+      intervalRef.current,
+    )
   }, [])
 
   useImperativeHandle(
@@ -367,7 +708,16 @@ export function KlineProChart({
   useEffect(() => {
     if (viewportModeProp != null) {
       viewportModeRef.current = viewportModeProp
-      applyViewportMode(chartRef.current, hostRef.current, viewportModeProp)
+      inputLockRef.current = null
+      setInputMode(false)
+      applyViewportMode(
+        chartRef.current,
+        hostRef.current,
+        viewportModeProp,
+        symbolRef.current,
+        intervalRef.current,
+      )
+      publishVisibleWindowRef.current()
     }
   }, [viewportModeProp])
 
@@ -378,9 +728,10 @@ export function KlineProChart({
     let chart: Chart | null = null
     let ro: ResizeObserver | null = null
 
-    void import("klinecharts").then(({ init, dispose, registerOverlay }) => {
+    void import("klinecharts").then(({ init, dispose, registerOverlay, registerIndicator }) => {
       if (disposed || !hostRef.current) return
       registerOrderOverlay(registerOverlay as (overlay: Record<string, unknown>) => void)
+      registerRollingVolatility(registerIndicator as (indicator: Record<string, unknown>) => void)
       chart = init(hostRef.current, {
         locale: "zh-CN",
         timezone: "UTC",
@@ -400,7 +751,7 @@ export function KlineProChart({
           callback: (data: KLineData[], more?: boolean) => void
         }) => {
           const { type, timestamp, callback } = params
-          const bars = candlesRef.current.map(toBar)
+          const bars = plottedCandles(candlesRef.current, symbolRef.current, intervalRef.current).map(toBar)
           // Always tell the chart this in-memory series is complete. Returning the
           // full list on `forward` prepends duplicates and leaves a blank left gap.
           if (type === "forward") {
@@ -427,16 +778,45 @@ export function KlineProChart({
       appliedIntervalRef.current = intervalRef.current
       chart.createIndicator({ name: "MA", calcParams: compact ? [5, 20] : [5, 10, 20] }, true)
       chart.createIndicator("VOL")
-      if (!compact) chart.createIndicator("MACD")
-      applyOrderMarks(chart, marksRef.current, candlesRef.current, intervalRef.current)
+      if (!compact) {
+        chart.createIndicator({ name: subIndicatorRef.current, paneId: SUB_PANE_ID }, false)
+      }
+      applyOrderMarks(chart, marksRef.current, plottedCandles(candlesRef.current, symbolRef.current, intervalRef.current), intervalRef.current)
+      const onRange = () => {
+        const current = chartRef.current
+        if (!current) return
+        const next = readVisibleWindow(current, intervalRef.current)
+        if (next && !inputLockRef.current) syncWindowRef.current(next)
+        if (inputLockRef.current && !fittingRef.current) {
+          publishLockedRef.current(current)
+          return
+        }
+        publishVisibleWindowRef.current()
+      }
+      const onCrosshair = (raw?: unknown) => {
+        if (activeToolRef.current !== "link-cross") return
+        const current = chartRef.current
+        if (!current) return
+        const unix = cursorUnixFromCrosshair(current, raw)
+        if (lastCursorRef.current === unix) return
+        lastCursorRef.current = unix
+        onCursorTimeRef.current?.(unix)
+      }
+      chart.subscribeAction("onVisibleRangeChange", onRange)
+      chart.subscribeAction("onCrosshairChange", onCrosshair)
       // After first layout, apply preferred viewport (default auto-scale).
       requestAnimationFrame(() => {
-        applyViewportMode(chart, hostRef.current, viewportModeRef.current)
+        applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
+        publishVisibleWindowRef.current()
       })
       ro = new ResizeObserver(() => {
         chart?.resize()
+        if (inputLockRef.current && chart) {
+          publishLockedRef.current(chart)
+          return
+        }
         if (viewportModeRef.current === "auto-scale" || viewportModeRef.current === "fixed-window") {
-          applyViewportMode(chart, hostRef.current, viewportModeRef.current)
+          applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
         }
       })
       ro.observe(hostRef.current)
@@ -447,7 +827,14 @@ export function KlineProChart({
       ro?.disconnect()
       subRef.current = null
       appliedRef.current = null
+      if (rangeRafRef.current) window.clearTimeout(rangeRafRef.current)
+      if (lastCursorRef.current != null) {
+        lastCursorRef.current = null
+        onCursorTimeRef.current?.(null)
+      }
       if (chart) {
+        chart.unsubscribeAction("onVisibleRangeChange")
+        chart.unsubscribeAction("onCrosshairChange")
         void import("klinecharts").then(({ dispose }) => dispose(chart!))
       }
       chartRef.current = null
@@ -455,6 +842,158 @@ export function KlineProChart({
   }, [])
 
   useEffect(() => {
+    if (activeTool === "link-cross") return
+    if (lastCursorRef.current == null) return
+    lastCursorRef.current = null
+    onCursorTimeRef.current?.(null)
+  }, [activeTool])
+
+  useEffect(() => {
+    if (!subMenu) return
+    const close = () => setSubMenu(null)
+    let armed = false
+    const arm = window.setTimeout(() => {
+      armed = true
+    }, 0)
+    const onPointer = (event: PointerEvent) => {
+      if (!armed || event.button === 2) return
+      const target = event.target
+      if (target instanceof Element && target.closest("[data-sub-indicator-menu]")) return
+      close()
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close()
+    }
+    window.addEventListener("pointerdown", onPointer)
+    window.addEventListener("keydown", onKey)
+    window.addEventListener("scroll", close, true)
+    return () => {
+      window.clearTimeout(arm)
+      window.removeEventListener("pointerdown", onPointer)
+      window.removeEventListener("keydown", onKey)
+      window.removeEventListener("scroll", close, true)
+    }
+  }, [subMenu])
+
+  const openSubMenu = useCallback((event: { clientX: number; clientY: number; preventDefault: () => void }) => {
+    if (compact) return
+    const chart = chartRef.current
+    const pane = chart ? bottomIndicatorPane(chart) : null
+    if (!chart || !pane || !containsClientPoint(pane.el, event.clientX, event.clientY)) {
+      setSubMenu(null)
+      return
+    }
+    event.preventDefault()
+    const shown = chart.getIndicators({ paneId: pane.id })[0]?.name
+    if (shown) {
+      subIndicatorRef.current = shown
+      setSubIndicator(shown)
+    }
+    const width = 168
+    const height = Math.min(window.innerHeight * 0.7, 28 + SUB_INDICATORS.length * 28)
+    const x = Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8))
+    const y = event.clientY + height > window.innerHeight - 8 ? Math.max(8, event.clientY - height) : event.clientY
+    setSubMenu({ x, y })
+  }, [compact])
+
+  const openSubMenuRef = useRef(openSubMenu)
+  openSubMenuRef.current = openSubMenu
+
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return
+    const onRightPointer = (event: Event) => {
+      if (!(event instanceof MouseEvent) || event.button !== 2) return
+      openSubMenuRef.current(event)
+    }
+    el.addEventListener("pointerdown", onRightPointer, true)
+    el.addEventListener("mousedown", onRightPointer, true)
+    return () => {
+      el.removeEventListener("pointerdown", onRightPointer, true)
+      el.removeEventListener("mousedown", onRightPointer, true)
+    }
+  }, [])
+
+  const applySubIndicator = useCallback((name: string) => {
+    setSubMenu(null)
+    const chart = chartRef.current
+    if (!chart) return
+    const paneId = bottomIndicatorPane(chart)?.id ?? SUB_PANE_ID
+    if (chart.getIndicators({ paneId }).some((indicator) => indicator.name === name)) return
+    const place = () => {
+      const current = chartRef.current
+      if (!current) return
+      const styles = priceVolStyle(name)
+      const created = current.createIndicator(styles ? { name, paneId, styles } : { name, paneId }, false)
+      if (!created) return
+      subIndicatorRef.current = name
+      setSubIndicator(name)
+    }
+    if (name === "HV" || name === "GK") {
+      void ensureRollingVolatility().then(place)
+      return
+    }
+    place()
+  }, [])
+
+  const commitWindow = useCallback((edge: "start" | "end", text: string) => {
+    const chart = chartRef.current
+    const parsed = parseWindowInput(text)
+    const data = chart?.getDataList()
+    if (!chart || !parsed || !data?.length) return
+    const prev = inputLockRef.current
+    const shown = shownWindowRef.current
+    const lastUnix = Math.floor(data[data.length - 1]!.timestamp / 1000)
+    const lock = lockAfterCommit(edge, parsed, prev, shown?.from ?? null, lastUnix)
+    inputLockRef.current = lock
+    setInputMode(true)
+    userAdjustRef.current = true
+    onUserAdjustRef.current?.()
+    publishLockedWindow(chart)
+    editingRef.current = null
+    setFromText(formatBound(lock.fromUnix, lock.fromHasTime, intervalRef.current))
+    setToText(formatBound(lock.toUnix, lock.toHasTime, intervalRef.current))
+  }, [publishLockedWindow])
+
+  const useFollowMode = useCallback(() => {
+    inputLockRef.current = null
+    setInputMode(false)
+    const chart = chartRef.current
+    applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
+    if (!chart) return
+    const next = readVisibleWindow(chart, intervalRef.current)
+    if (!next) return
+    userAdjustRef.current = true
+    onUserAdjustRef.current?.()
+    publishedWindowRef.current = next
+    onVisibleWindowRef.current?.(next)
+    syncWindowText(next)
+  }, [syncWindowText])
+
+  const useInputMode = useCallback(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    if (!inputLockRef.current) {
+      const shown = shownWindowRef.current ?? readVisibleWindow(chart, intervalRef.current)
+      if (!shown) return
+      const intraday = isIntradayTimeframe(intervalRef.current)
+      inputLockRef.current = {
+        fromUnix: shown.from,
+        toUnix: shown.to,
+        fromHasTime: intraday,
+        toHasTime: intraday,
+        fromUser: false,
+        toUser: false,
+      }
+    }
+    setInputMode(true)
+  }, [])
+
+  useEffect(() => {
+    userAdjustRef.current = false
+    publishedWindowRef.current = null
+    inputLockRef.current = null
+    setInputMode(false)
     const chart = chartRef.current
     if (!chart) return
     let changed = false
@@ -492,20 +1031,28 @@ export function KlineProChart({
     appliedRef.current = { first, last: last.time, len: candles.length, fingerprint }
     if (needInit || historyExtended || seriesReplaced) {
       chart.resetData()
-      applyOrderMarks(chart, marksRef.current, candles, interval)
-      applySessionMarks(chart, candles, interval)
-      requestAnimationFrame(() => {
-        applyViewportMode(chart, hostRef.current, viewportModeRef.current)
-      })
+      const plotted = plottedCandles(candles, symbol, interval)
+      applyOrderMarks(chart, marksRef.current, plotted, interval)
+      applySessionMarks(chart, plotted, interval)
+      const fit = () => {
+        if (inputLockRef.current && publishLockedRef.current(chart)) return
+        applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
+        publishVisibleWindowRef.current()
+      }
+      fit()
+      requestAnimationFrame(fit)
       return
     }
     if (prev?.fingerprint === fingerprint) return
     if (subRef.current) subRef.current(toBar(last))
-    // Auto-scale / fixed-window should re-fit when a new candle prints or the last bar updates.
-    if (viewportModeRef.current === "auto-scale" || (viewportModeRef.current === "fixed-window" && lenGrew)) {
-      applyViewportMode(chart, hostRef.current, viewportModeRef.current)
-    } else if (viewportModeRef.current === "follow-right" && lenGrew) {
-      chart.scrollToRealTime(0)
+    // Follow refits on every tick so the right gap stays put as the last candle moves.
+    // Fixed window only refits when a new bar prints, so earlier candles keep their width
+    // and the unfinished session stays empty on the right.
+    if (inputLockRef.current) {
+      publishLockedRef.current(chart)
+    } else if (viewportModeRef.current === "auto-scale" || (viewportModeRef.current === "fixed-window" && lenGrew)) {
+      applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
+      publishVisibleWindowRef.current()
     }
   }, [candles, symbol, interval])
 
@@ -515,8 +1062,9 @@ export function KlineProChart({
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
-    applyOrderMarks(chart, marksRef.current, candlesRef.current, intervalRef.current)
-    applySessionMarks(chart, candlesRef.current, intervalRef.current)
+    const plotted = plottedCandles(candlesRef.current, symbolRef.current, intervalRef.current)
+    applyOrderMarks(chart, marksRef.current, plotted, intervalRef.current)
+    applySessionMarks(chart, plotted, intervalRef.current)
   }, [marksKey, seriesKey])
 
   const modeSelect = (
@@ -543,13 +1091,13 @@ export function KlineProChart({
   return (
     <div className="flex h-full min-h-0">
       {compact ? null : (
-        <div className="flex w-14 shrink-0 flex-col gap-0.5 border-r border-[#2a2e39] bg-[#1e222d] py-1">
+        <div className="flex min-h-0 w-14 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[#2a2e39] bg-[#1e222d] py-1">
           {modeSelect}
           {TOOLS.map((tool) => (
             <button
               key={tool.id}
               type="button"
-              title={tool.label}
+              title={tool.title ?? tool.label}
               onClick={() => {
                 onTool?.(tool.id)
                 const chart = chartRef.current
@@ -601,7 +1149,119 @@ export function KlineProChart({
         </div>
       )}
       <div className="relative min-h-0 min-w-0 flex-1">
-        <div ref={hostRef} className="h-full min-h-0 min-w-0" />
+        <div
+          ref={hostRef}
+          className="h-full min-h-0 min-w-0"
+          onWheel={noteUserAdjust}
+          onPointerDown={(event) => {
+            noteUserAdjust()
+            if (event.button === 2) openSubMenu(event)
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault()
+            openSubMenu(event)
+          }}
+          onMouseLeave={() => {
+            if (activeToolRef.current !== "link-cross") return
+            if (lastCursorRef.current == null) return
+            lastCursorRef.current = null
+            onCursorTimeRef.current?.(null)
+          }}
+        />
+        {compact ? null : (
+          <div
+            className="absolute right-[4.75rem] top-1 z-20 flex items-center gap-1"
+            onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+          >
+            <span className="flex items-center text-[10px] leading-none text-[#3e4451]">
+              <button
+                type="button"
+                title="跟随K线滚动和周期"
+                onClick={useFollowMode}
+                className={cn("hover:text-[#8b919c]", inputMode ? "text-[#3e4451]" : "text-[#6b7280]")}
+              >
+                跟随
+              </button>
+              <span className="px-0.5">/</span>
+              <button
+                type="button"
+                title="用输入的开始和结束日期固定窗口，互不影响"
+                onClick={useInputMode}
+                className={cn("hover:text-[#8b919c]", inputMode ? "text-[#6b7280]" : "text-[#3e4451]")}
+              >
+                输入
+              </button>
+            </span>
+            <input
+              value={fromText}
+              aria-label="窗口开始"
+              title="开始日期。点一下清空，输入 2024.9.24 后回车。结束停在最新一天；如果已经输入过结束日期，结束保持不变"
+              placeholder="2026.10.16"
+              onChange={(event) => setFromText(event.target.value)}
+              onMouseDown={(event) => {
+                if (event.button !== 0 || editingRef.current === "from") return
+                editingRef.current = "from"
+                setFromText("")
+              }}
+              onBlur={() => {
+                if (editingRef.current === "from") editingRef.current = null
+                const lock = inputLockRef.current
+                if (lock) {
+                  setFromText(formatBound(lock.fromUnix, lock.fromHasTime, intervalRef.current))
+                  return
+                }
+                const shown = shownWindowRef.current
+                if (shown) setFromText(formatWindowInput(shown.from, shown.interval))
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.blur()
+                  return
+                }
+                if (event.key !== "Enter") return
+                event.preventDefault()
+                commitWindow("start", fromText)
+                event.currentTarget.blur()
+              }}
+              className="h-6 w-[9.25rem] rounded border border-[#2a2e39] bg-[#131722]/95 px-1.5 font-mono text-[11px] text-[#d1d4dc] outline-none placeholder:text-[#787b86] focus:border-[#4c84ff]"
+            />
+            <span className="text-[10px] text-[#787b86]">–</span>
+            <input
+              value={toText}
+              aria-label="窗口结束"
+              title="结束日期。点一下清空，输入后回车。开始日期保持你输入的那一天"
+              placeholder="2026.10.16"
+              onChange={(event) => setToText(event.target.value)}
+              onMouseDown={(event) => {
+                if (event.button !== 0 || editingRef.current === "to") return
+                editingRef.current = "to"
+                setToText("")
+              }}
+              onBlur={() => {
+                if (editingRef.current === "to") editingRef.current = null
+                const lock = inputLockRef.current
+                if (lock) {
+                  setToText(formatBound(lock.toUnix, lock.toHasTime, intervalRef.current))
+                  return
+                }
+                const shown = shownWindowRef.current
+                if (shown) setToText(formatWindowInput(shown.to, shown.interval))
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.blur()
+                  return
+                }
+                if (event.key !== "Enter") return
+                event.preventDefault()
+                commitWindow("end", toText)
+                event.currentTarget.blur()
+              }}
+              className="h-6 w-[9.25rem] rounded border border-[#2a2e39] bg-[#131722]/95 px-1.5 font-mono text-[11px] text-[#d1d4dc] outline-none placeholder:text-[#787b86] focus:border-[#4c84ff]"
+            />
+          </div>
+        )}
         {compact ? (
           <div className="absolute right-1 top-1 z-10 flex overflow-hidden rounded border border-[#2a2e39] bg-[#1e222d]/90">
             <button
@@ -629,6 +1289,33 @@ export function KlineProChart({
           </div>
         ) : null}
       </div>
+      {subMenu && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              data-sub-indicator-menu
+              className="fixed z-[80] w-[168px] overflow-y-auto rounded border border-[#2a2e39] bg-[#1e222d] py-1 shadow-lg"
+              style={{ left: subMenu.x, top: subMenu.y, maxHeight: "70vh" }}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <div className="px-3 py-1 text-[10px] text-[#787b86]">切换指标</div>
+              {SUB_INDICATORS.map((item) => (
+                <button
+                  key={item.name}
+                  type="button"
+                  title={item.title ?? item.label}
+                  onClick={() => applySubIndicator(item.name)}
+                  className={cn(
+                    "block w-full px-3 py-1.5 text-left text-xs text-[#d1d4dc] hover:bg-[#2a2e39]",
+                    subIndicator === item.name && "text-[#4c84ff]",
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }

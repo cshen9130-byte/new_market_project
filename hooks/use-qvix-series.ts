@@ -11,7 +11,7 @@ import { aggregateCloseSeries, isIntradayTimeframe, type TimeframeId } from "@/l
 
 const dailyCache = new Map<IndexProduct, OverlayPoint[]>()
 const monthCache = new Map<string, OverlayPoint[]>()
-const windowCache = new Map<string, { bars: OverlayPoint[]; source: string | null; resolution: string | null }>()
+const windowCache = new Map<string, { bars: OverlayPoint[]; source: string | null; resolution: string | null; contract: string | null }>()
 
 export function useQvixSeries(
   product: IndexProduct,
@@ -19,16 +19,19 @@ export function useQvixSeries(
   iv?: IvSnapshot,
   month?: string | null,
   lookbackDays: IvLookbackDays = 1,
+  strike?: number | null,
 ) {
   const history = !isIntradayTimeframe(interval)
   const monthKey = (month || "").trim().toUpperCase() || null
   const days = lookbackDays > 0 ? lookbackDays : 1
-  const needWindow = (!!monthKey || days > 1) && (isIntradayTimeframe(interval) || !!monthKey)
+  const strikeKey = strike != null && Number.isFinite(strike) && strike > 0 ? String(strike) : ""
+  const needWindow = (!!monthKey || days > 1 || !!strikeKey) && (isIntradayTimeframe(interval) || !!monthKey || !!strikeKey)
   const still = useChartStill()
   const [daily, setDaily] = useState<OverlayPoint[]>(() => dailyCache.get(product) || [])
   const [windowBars, setWindowBars] = useState<OverlayPoint[]>([])
   const [windowSource, setWindowSource] = useState<string | null>(null)
   const [windowResolution, setWindowResolution] = useState<string | null>(null)
+  const [windowContract, setWindowContract] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -72,15 +75,23 @@ export function useQvixSeries(
       setWindowBars([])
       setWindowSource(null)
       setWindowResolution(null)
+      setWindowContract(null)
       return
     }
     let cancelled = false
-    const cacheId = `${product}:${monthKey || ""}:d${days}`
+    const cacheId = `${product}:${monthKey || ""}:d${days}:k${strikeKey}`
     async function load() {
-      if (!windowCache.has(cacheId)) setLoading(true)
+      if (!windowCache.has(cacheId)) {
+        setWindowBars([])
+        setWindowSource(null)
+        setWindowResolution(null)
+        setWindowContract(null)
+        setLoading(true)
+      }
       try {
         const qs = new URLSearchParams({ product, days: String(days) })
         if (monthKey) qs.set("month", monthKey)
+        if (strikeKey) qs.set("strike", strikeKey)
         const res = await fetch(`/ma/api/realtime-quotes/qvix?${qs.toString()}`, { cache: "no-store" })
         const json = (await res.json()) as {
           ok?: boolean
@@ -88,15 +99,22 @@ export function useQvixSeries(
           bars?: OverlayPoint[]
           source?: string | null
           resolution?: string | null
+          contract?: string | null
         }
         if (!res.ok || json.ok === false) throw new Error(json.error || `load failed ${res.status}`)
         const bars = json.bars || []
-        const packed = { bars, source: json.source || null, resolution: json.resolution || null }
+        const packed = {
+          bars,
+          source: json.source || null,
+          resolution: json.resolution || null,
+          contract: json.contract || null,
+        }
         windowCache.set(cacheId, packed)
         if (!cancelled) {
           setWindowBars(bars)
           setWindowSource(packed.source)
           setWindowResolution(packed.resolution)
+          setWindowContract(packed.contract)
           setError(null)
         }
       } catch (err) {
@@ -111,12 +129,12 @@ export function useQvixSeries(
         cancelled = true
       }
     }
-    const timer = window.setInterval(() => void load(), days > 1 ? 60_000 : 30_000)
+    const timer = window.setInterval(() => void load(), strikeKey ? 10_000 : days > 1 ? 60_000 : 30_000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [needWindow, monthKey, product, still, days])
+  }, [needWindow, monthKey, product, still, days, strikeKey])
 
   return useMemo(() => {
     if (needWindow) {
@@ -137,6 +155,7 @@ export function useQvixSeries(
         loading: loading && bars.length === 0,
         source: windowSource,
         resolution: windowResolution,
+        contract: windowContract,
         degradedToDaily: windowResolution === "daily",
       }
     }
@@ -149,8 +168,9 @@ export function useQvixSeries(
       error,
       loading: history && loading && bars.length === 0,
       source: iv?.source ?? null,
+      contract: iv?.contract ?? null,
       resolution: series.mode === "history" ? "daily" : "minute",
       degradedToDaily: false,
     }
-  }, [daily, days, error, history, interval, iv, loading, needWindow, windowBars, windowResolution, windowSource])
+  }, [daily, days, error, history, interval, iv, loading, needWindow, windowBars, windowContract, windowResolution, windowSource])
 }

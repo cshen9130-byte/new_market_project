@@ -3,6 +3,7 @@ import {
   loadBenchmarkIntervalMetrics,
   loadFundIntervalMetrics,
 } from "@/lib/server/fund-compare-interval-metrics"
+import { isPrivateFundBenchmarkKey } from "@/lib/server/private-fund-benchmarks"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -43,8 +44,8 @@ export async function POST(req: Request) {
       .at(-1) ?? null
 
     let benchmarkRow = null
-    if (benchmark && benchmark in { IF: 1, IC: 1, IM: 1 }) {
-      benchmarkRow = await loadBenchmarkIntervalMetrics(benchmark as "IF" | "IC" | "IM")
+    if (benchmark && isPrivateFundBenchmarkKey(benchmark)) {
+      benchmarkRow = await loadBenchmarkIntervalMetrics(benchmark)
     }
 
     return NextResponse.json({

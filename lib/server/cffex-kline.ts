@@ -1,6 +1,7 @@
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import { futuresTradeDateYmd, isNightHqPrint, isNightWallClock } from "@/lib/client/market-hours"
 import { aggregateCandles, bucketTime, type TimeframeId } from "@/lib/client/timeframes"
+import { fetchStoredDaily } from "@/lib/server/cffex-daily-history"
 import { chinaWallToUnix, sinaGet } from "@/lib/server/sina-fetch"
 import { fetchSinaFuturesQuotes } from "@/lib/server/sina-futures-hq"
 
@@ -164,6 +165,18 @@ function sortUnique(bars: CtpCandle[]) {
   return [...map.values()].sort((a, b) => a.time - b.time)
 }
 
+/** Stored history wins on a shared day. The live feed only fills days we do not have yet. */
+function mergePreferFirst(primary: CtpCandle[], extra: CtpCandle[]) {
+  const map = new Map(primary.map((bar) => [bar.time, bar]))
+  for (const bar of extra) if (!map.has(bar.time)) map.set(bar.time, bar)
+  return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+async function fetchDailyHistory(symbol: string) {
+  const [stored, sina] = await Promise.all([fetchStoredDaily(symbol), fetchDaily(symbol)])
+  return mergePreferFirst(stored, sina)
+}
+
 async function fetchSessionHq(symbol: string) {
   try {
     const tick = (await fetchSinaFuturesQuotes([symbol])).get(symbol.toUpperCase())
@@ -216,11 +229,20 @@ function applySessionHq(bars: CtpCandle[], session: CtpCandle | null, interval: 
 
 const cache = new Map<string, { at: number; data: CtpCandle[] }>()
 
-export async function getCffexKline(symbol: string, interval: TimeframeId) {
-  const key = `${symbol}:${interval}`
+/**
+ * Daily and higher bars.
+ * `history` prepends the stored continuous series for the pro chart.
+ * Without it, the series is the listed contract only, which is where the
+ * dashboard 年化基差率 charts used to begin.
+ */
+export async function getCffexKline(symbol: string, interval: TimeframeId, opts?: { history?: boolean }) {
+  const history = opts?.history === true
+  const key = `${history ? "db" : "live"}:${symbol}:${interval}`
   const ttl = interval === "1d" || interval === "1w" || interval === "1M" ? 60_000 : 12_000
   const hit = cache.get(key)
   if (hit && Date.now() - hit.at < ttl) return hit.data
+
+  const loadDaily = () => (history ? fetchDailyHistory(symbol) : fetchDaily(symbol))
 
   let data: CtpCandle[] = []
   if (interval === "1m") {
@@ -233,9 +255,9 @@ export async function getCffexKline(symbol: string, interval: TimeframeId) {
     if (data.length < 8) data = aggregateCandles(await fetchMinLine(symbol), interval)
   } else if (interval === "4h") {
     const hourly = await fetchFewMin(symbol, 60)
-    data = aggregateCandles(hourly.length ? hourly : await fetchDaily(symbol), "4h")
+    data = aggregateCandles(hourly.length ? hourly : await loadDaily(), "4h")
   } else {
-    const daily = await fetchDaily(symbol)
+    const daily = await loadDaily()
     const session = await fetchSessionHq(symbol)
     const withToday = applySessionHq(daily, session, "1d")
     data = interval === "1d" ? withToday : aggregateCandles(withToday, interval)

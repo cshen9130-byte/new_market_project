@@ -51,7 +51,7 @@ function exportNavChartCsv(
     const s = String(v)
     return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
   }
-  const valueHeader = chartMode === "return" ? "基金收益率(%)" : fundLabel
+  const valueHeader = chartMode === "return" ? `${fundLabel}(%)` : fundLabel
   const headers = ["日期", valueHeader]
   if (hasBench) headers.push(chartMode === "return" ? `${benchmarkLabel}(%)` : benchmarkLabel)
   const fmtVal = (v: number) => (chartMode === "return" ? v.toFixed(2) : v.toFixed(4))
@@ -602,12 +602,12 @@ export function FundPerformanceIndicatorsPanel({
     exportNavChartCsv(
       activeChartData,
       chartMode,
-      chartMode === "return" ? "基金收益率" : navType,
+      chartMode === "return" ? productName : navType,
       benchmarkLabel,
       hasBenchmark,
       `${navChartExportName}.csv`,
     )
-  }, [activeChartData, chartMode, navType, benchmarkLabel, hasBenchmark, navChartExportName])
+  }, [activeChartData, chartMode, navType, productName, benchmarkLabel, hasBenchmark, navChartExportName])
 
   useEffect(() => {
     if (!navChartLightboxOpen) {
@@ -646,6 +646,7 @@ export function FundPerformanceIndicatorsPanel({
                   <NavChartSeriesLegend
                     chartMode={chartMode}
                     navTypeLabel={navType}
+                    fundName={productName}
                     benchmarkLabel={benchmarkLabel}
                     hasBenchmark={hasBenchmark}
                     fundVisible={fundSeriesVisible}
@@ -728,6 +729,7 @@ export function FundPerformanceIndicatorsPanel({
                   data={activeChartData}
                   chartMode={chartMode}
                   navTypeLabel={navType}
+                  fundName={productName}
                   yDomain={yDomain}
                   showDots={navChartShowDots}
                   showFund={fundSeriesVisible}
@@ -820,6 +822,7 @@ export function FundPerformanceIndicatorsPanel({
                   <NavChartSeriesLegend
                     chartMode={chartMode}
                     navTypeLabel={navType}
+                    fundName={productName}
                     benchmarkLabel={benchmarkLabel}
                     hasBenchmark={hasBenchmark}
                     fundVisible={fundSeriesVisible}
@@ -902,6 +905,7 @@ export function FundPerformanceIndicatorsPanel({
                   data={activeChartData}
                   chartMode={chartMode}
                   navTypeLabel={navType}
+                  fundName={productName}
                   yDomain={yDomain}
                   showDots={navChartShowDots}
                   showFund={fundSeriesVisible}
@@ -1075,6 +1079,7 @@ export function FundPerformanceIndicatorsPanel({
               <NavChartSeriesLegend
                 chartMode={chartMode}
                 navTypeLabel={navType}
+                fundName={productName}
                 benchmarkLabel={benchmarkLabel}
                 hasBenchmark={hasBenchmark}
                 fundVisible={fundSeriesVisible}
@@ -1088,6 +1093,7 @@ export function FundPerformanceIndicatorsPanel({
                 data={activeChartData}
                 chartMode={chartMode}
                 navTypeLabel={navType}
+                fundName={productName}
                 yDomain={yDomain}
                 showDots={navChartShowDots}
                 showFund={fundSeriesVisible}

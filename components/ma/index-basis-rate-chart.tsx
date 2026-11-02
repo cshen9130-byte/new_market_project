@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Lock } from "lucide-react"
 
@@ -23,6 +23,9 @@ import {
 import { INDEX_CHART_COLOR, type SpotSnapshot } from "@/lib/client/realtime-overlay"
 import { formatCandleTime, getTimeframe, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
+import { useSyncedCrosshair } from "@/components/ma/use-synced-crosshair"
+import { padIntradaySeries, quoteAxisEnd, sliceSeriesToWindow, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
+import type { ChartViewportMode } from "@/components/ma/kline-pro-chart"
 
 type Props = {
   title: string
@@ -38,6 +41,12 @@ type Props = {
   linked?: boolean
   zoom?: ChartZoomRange
   onZoomChange?: (zoom: ChartZoomRange) => void
+  /** Pro kline window. Fixed keeps the axis through 15:00; follow ends at the current minute. */
+  viewportMode?: ChartViewportMode
+  /** Main-chart visible range. Pro charts on the same frequency draw this window. */
+  visibleWindow?: ChartVisibleWindow | null
+  /** Unix seconds of the main-chart hover, while the 联动 tool is on. */
+  cursorTime?: number | null
 }
 
 function fmt(n: number | null | undefined, digits = 2) {
@@ -89,6 +98,9 @@ export function IndexBasisRateChart({
   linked = false,
   zoom,
   onZoomChange,
+  viewportMode,
+  visibleWindow,
+  cursorTime,
 }: Props) {
   const [localInterval, setLocalInterval] = useState<TimeframeId>("1m")
   const interval = controlledInterval ?? localInterval
@@ -105,7 +117,7 @@ export function IndexBasisRateChart({
     ? annualizedBasisPct(lastFut, lastSpot, days)
     : null
   const up = lastBasis == null ? null : lastBasis >= 0
-  const sessionOnly = interval === "1m"
+  const sessionOnly = isIntradayTimeframe(interval)
   const higherTf = interval === "1d" || interval === "1w" || interval === "1M"
 
   const series = useMemo(() => {
@@ -146,15 +158,33 @@ export function IndexBasisRateChart({
         points[points.length - 1].value = lastBasis
       }
     }
-    return sessionOnly ? trimOpeningSpikes(points) : points
-  }, [higherTf, lastBasis, lastFut, lastSpot, sessionOnly, spotBars, symbol, tfCandles])
+    return interval === "1m" ? trimOpeningSpikes(points) : points
+  }, [higherTf, interval, lastBasis, lastFut, lastSpot, sessionOnly, spotBars, symbol, tfCandles])
 
   const color = INDEX_CHART_COLOR[product]
+  const chartRef = useRef<ReactECharts>(null)
+  const plottedTimesRef = useRef<number[]>([])
   const option = useMemo(() => {
-    const times = series.map((p) => formatCandleTime(p.time, interval))
-    const values = series.map((p) => Number(p.value.toFixed(2)))
-    const minV = values.length ? Math.min(0, ...values) : -1
-    const maxV = values.length ? Math.max(0, ...values) : 1
+    const alignSession = variant === "pro" && isIntradayTimeframe(interval) && series.length > 0
+    const follow = variant === "pro" ? visibleWindow : null
+    const extendTo = follow?.coversAll && viewportMode === "fixed-window" && isIntradayTimeframe(interval)
+      ? quoteAxisEnd("fixed-window")
+      : undefined
+    const aligned = alignSession
+      ? padIntradaySeries(
+          series.map((point) => ({ time: point.time, close: point.value })),
+          interval,
+          1,
+          quoteAxisEnd(viewportMode),
+        )
+      : series.map((point) => ({ time: point.time, close: point.value }))
+    const plot = sliceSeriesToWindow(aligned, follow, interval, extendTo)
+    plottedTimesRef.current = plot.map((p) => p.time)
+    const times = plot.map((p) => formatCandleTime(p.time, interval))
+    const values = plot.map((p) => (p.close == null || !Number.isFinite(p.close) ? null : Number(p.close.toFixed(2))))
+    const numeric = values.filter((value): value is number => value != null)
+    const minV = numeric.length ? Math.min(0, ...numeric) : -1
+    const maxV = numeric.length ? Math.max(0, ...numeric) : 1
     const pad = Math.max(1, (maxV - minV) * 0.12)
     const { yMin, yMax, yInterval } = nicePercentAxis(minV - pad, maxV + pad)
     const dark = variant === "pro"
@@ -163,22 +193,34 @@ export function IndexBasisRateChart({
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis",
-        axisPointer: { type: "cross" },
+        axisPointer: {
+          type: "cross",
+          lineStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1, type: "dashed" },
+          crossStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1 },
+          label: { backgroundColor: dark ? "#2a2e39" : "#334155" },
+        },
         backgroundColor: dark ? "rgba(19,22,34,0.95)" : "rgba(255,255,255,0.95)",
         borderColor: dark ? "#2a2e39" : "#e5e7eb",
         textStyle: { color: dark ? "#d1d4dc" : "#111827", fontSize: 12 },
         valueFormatter: (v: number) => (typeof v === "number" ? `${v.toFixed(2)}%` : "--"),
       },
-      grid: { left: 52, right: 16, top: 12, bottom: 24 },
-      dataZoom: [
-        {
-          type: "inside",
-          start: zoom?.start ?? 0,
-          end: zoom?.end ?? 100,
-          // Keep full category axis so session/zero markLine never hits filtered holes.
-          filterMode: "none",
-        },
-      ],
+      grid: {
+        left: STACKED_QUOTE_PLOT.left,
+        right: variant === "pro" ? STACKED_QUOTE_PLOT.right : 16,
+        top: 12,
+        bottom: 24,
+      },
+      dataZoom: follow
+        ? undefined
+        : [
+            {
+              type: "inside",
+              start: zoom?.start ?? 0,
+              end: zoom?.end ?? 100,
+              // Keep full category axis so session/zero markLine never hits filtered holes.
+              filterMode: "none",
+            },
+          ],
       xAxis: {
         type: "category",
         data: times,
@@ -203,6 +245,7 @@ export function IndexBasisRateChart({
           type: "line",
           data: values,
           showSymbol: false,
+          connectNulls: true,
           smooth: interval === "1m" ? 0.1 : 0,
           lineStyle: { width: 1.8, color },
           itemStyle: { color },
@@ -213,7 +256,7 @@ export function IndexBasisRateChart({
               isIntradayTimeframe(interval)
                 ? sessionOpenEchartsMarkLine(
                     times,
-                    series.map((p) => p.time),
+                    plot.map((p) => p.time),
                     dark,
                     [zero],
                   )
@@ -229,7 +272,9 @@ export function IndexBasisRateChart({
         },
       ],
     }
-  }, [color, interval, series, variant, zoom?.start, zoom?.end])
+  }, [color, interval, series, variant, viewportMode, visibleWindow, zoom?.start, zoom?.end])
+
+  useSyncedCrosshair(chartRef, plottedTimesRef, variant === "pro" ? cursorTime : null, interval, option)
 
   const pro = variant === "pro"
   const continuous = !!symbol && /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
@@ -284,10 +329,10 @@ export function IndexBasisRateChart({
       <div className="min-h-0 flex-1 px-1 pb-1">
         {series.length > 0 ? (
           <ReactECharts
+            ref={chartRef}
             option={option}
             style={{ height: pro ? "100%" : 240 }}
             notMerge
-            lazyUpdate
             onEvents={
               onZoomChange
                 ? {

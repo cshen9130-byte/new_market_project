@@ -7,12 +7,14 @@ import { ChevronDown, ChevronRight, ChevronUp, Folder, FolderOpen, GripVertical,
 
 import { AccountAvatarCard } from "@/components/ma/account-avatar-card"
 import { AccountChartSlot } from "@/components/ma/account-chart-slot"
+import { AccountShortcutsCard } from "@/components/ma/account-shortcuts-card"
 import { UserAvatar } from "@/components/ma/user-avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { authService, type User } from "@/lib/auth"
+import { ACCOUNT_SHORTCUTS_EVENT, type AccountShortcut } from "@/lib/ma/account-shortcuts"
 import {
   ACCOUNT_PROFILE_EVENT,
   accountCanUseMom,
@@ -255,6 +257,7 @@ export default function AccountDashboardPage() {
       const confirmed = data.prefs as AccountDashboardPrefs
       savedJson.current = JSON.stringify(confirmed)
       setSaveState("saved")
+      window.dispatchEvent(new CustomEvent<AccountShortcut[]>(ACCOUNT_SHORTCUTS_EVENT, { detail: confirmed.shortcuts }))
       setPrefs((current) => {
         if (!current || JSON.stringify(current) !== sent) return current
         return JSON.stringify(confirmed) === sent ? current : confirmed
@@ -266,6 +269,9 @@ export default function AccountDashboardPage() {
 
   function patch(partial: Partial<AccountDashboardPrefs>) {
     setPrefs((current) => (current ? { ...current, ...partial } : current))
+    if (partial.shortcuts) {
+      window.dispatchEvent(new CustomEvent<AccountShortcut[]>(ACCOUNT_SHORTCUTS_EVENT, { detail: partial.shortcuts }))
+    }
   }
 
   function updateHolders(change: (holders: AccountChartHolder[]) => AccountChartHolder[]) {
@@ -421,7 +427,7 @@ export default function AccountDashboardPage() {
               {user?.email ? ` · ${user.email}` : ""}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              图表、布局和账户设置保存在这个账号上。同一账号在其他电脑打开，看到的是同一套看板。
+              图表、布局、快捷键和账户设置保存在这个账号上。同一账号在其他电脑打开，看到的是同一套看板。
             </p>
           </div>
         </div>
@@ -980,6 +986,11 @@ export default function AccountDashboardPage() {
           </TabsContent>
 
           <TabsContent value="account" className="mt-4 space-y-6">
+            <AccountShortcutsCard
+              user={user}
+              shortcuts={prefs.shortcuts}
+              onChange={(shortcuts) => patch({ shortcuts })}
+            />
             <AccountAvatarCard
               avatarUrl={user?.avatar_url ?? null}
               onUser={(next) => {

@@ -49,12 +49,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "invalid interval" }, { status: 400 })
   }
   const tf = interval as TimeframeId
+  const history = url.searchParams.get("history") === "1"
   try {
     if (symbols.length > 1) {
       const rows = await mapPool(symbols, 6, async (item) => {
         try {
           if (isNhciSymbol(item)) return [NHCI_SYMBOL, await getNhciKline(tf)] as const
-          return [item, await getCffexKline(item, tf)] as const
+          return [item, await getCffexKline(item, tf, { history })] as const
         } catch {
           return [item, []] as const
         }
@@ -66,7 +67,7 @@ export async function GET(req: Request) {
       const [candles, quote] = await Promise.all([getNhciKline(tf), getNhciQuote()])
       return NextResponse.json({ ok: true, symbol: NHCI_SYMBOL, interval: tf, candles, quote })
     }
-    const [candles, quotes] = await Promise.all([getCffexKline(one, tf), fetchSinaFuturesQuotes([one])])
+    const [candles, quotes] = await Promise.all([getCffexKline(one, tf, { history }), fetchSinaFuturesQuotes([one])])
     const quote = quotes.get(one) || null
     return NextResponse.json({ ok: true, symbol: one, interval: tf, candles, quote })
   } catch (err) {

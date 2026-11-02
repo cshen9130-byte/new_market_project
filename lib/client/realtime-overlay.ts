@@ -46,7 +46,11 @@ export type IvSnapshot = {
   value: number | null
   change: number | null
   pct: number | null
+  /** Prior-session QVIX close. The intraday chart's 0% line. */
+  prevClose?: number | null
   source: string | null
+  /** Call/put pair behind an ATM rebuild, or the near-month ATM pair for a QVIX index. */
+  contract: string | null
   bars: OverlayPoint[]
 }
 
@@ -73,7 +77,8 @@ export function isDailyOverlayBars(bars: OverlayPoint[], source?: string | null)
     !!source?.startsWith("qvix-sina:") ||
     !!source?.startsWith("qvix-cffex:") ||
     !!source?.startsWith("sina-atm:") ||
-    !!source?.startsWith("em-atm:")
+    !!source?.startsWith("em-atm:") ||
+    !!source?.startsWith("archive:")
   ) {
     return false
   }
@@ -100,14 +105,16 @@ function ivSourceFamily(source: string | null | undefined) {
 function mergeIntradayIvBars(prev: OverlayPoint[], next: OverlayPoint[]): OverlayPoint[] {
   if (!prev.length) return next
   if (!next.length) return prev
-  const prevByTime = new Map(prev.map((b) => [b.time, b]))
+  const nextByTime = new Map(next.map((b) => [b.time, b]))
   const nextTimes = next.map((b) => b.time).sort((a, b) => a - b)
-  const tipCutoff = nextTimes[Math.max(0, nextTimes.length - 1)]!
+  const tipCutoff = nextTimes[Math.max(0, nextTimes.length - 2)]!
   const map = new Map<number, OverlayPoint>()
-  for (const bar of prev) map.set(bar.time, bar)
+  for (const bar of prev) {
+    if (bar.time >= tipCutoff && !nextByTime.has(bar.time)) continue
+    map.set(bar.time, bar)
+  }
   for (const bar of next) {
-    const old = prevByTime.get(bar.time)
-    if (!old || bar.time >= tipCutoff) map.set(bar.time, bar)
+    if (!map.has(bar.time) || bar.time >= tipCutoff) map.set(bar.time, bar)
   }
   return [...map.values()].sort((a, b) => a.time - b.time)
 }
@@ -158,8 +165,19 @@ export function stabilizeOverlay(
       } else if (prevIntraday && nextIntraday) {
         // Same-family: freeze settled minutes so rebuild jitter cannot flip the chart.
         // Cross-family: keep previous series (server should also sticky; this is the client guard).
-        if (ivSourceFamily(prevIv.source) !== ivSourceFamily(nextIv.source)) {
-          iv[product] = prevIv
+        const nextIsStoredSina =
+          !!nextIv.source &&
+          (nextIv.source.startsWith("archive:") ||
+            nextIv.source.startsWith("qvix-sina:") ||
+            nextIv.source.startsWith("sina-atm:"))
+        if (prevIv.source?.startsWith("optbbs:") && nextIsStoredSina) {
+          iv[product] = nextIv
+        } else if (ivSourceFamily(prevIv.source) !== ivSourceFamily(nextIv.source)) {
+          if (prevIv.source?.startsWith("archive:") && !nextIv.source?.startsWith("archive:")) {
+            iv[product] = nextIv
+          } else {
+            iv[product] = prevIv
+          }
         } else {
           const merged = mergeIntradayIvBars(prevIv.bars, nextIv.bars)
           iv[product] = withIvBars({ ...nextIv }, merged, nextIv.source || prevIv.source)

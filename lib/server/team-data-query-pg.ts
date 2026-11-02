@@ -18,7 +18,7 @@ import {
 } from "@/lib/server/email-nav-query"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
 import { buildTieredBeianCode, shareClassFamilyBeianCodes, type ShareClassLetter } from "@/lib/server/share-class-product"
-import { gapDatesFilledFromShareClassFamily, shareClassDonorExplainsGap } from "@/lib/server/share-class-nav-fill"
+import { gapDatesFilledFromShareClassFamily, isCShareClassBeian, shareClassDonorExplainsGap } from "@/lib/server/share-class-nav-fill"
 import { expandBeiansWithShareClassFamily } from "@/lib/server/list-cache-nav-batch"
 import {
   canonicalizeEmailProductCode,
@@ -1869,6 +1869,23 @@ export function parentFilingCodes(code: string): string[] {
 
 function anomalyRawCodes(code: string): string[] {
   return [...new Set([...beianCodeAliases(code), ...parentFilingCodes(code)])]
+}
+
+/**
+ * Cause diagnosis may also read A/B share-class feeds. A parent 复权 that is
+ * a constant scale of the A-class 单位 is that email's return (SVP162), not a
+ * calculated spike. C类 stays out: pasting LQ415C onto SLQ415 must not look
+ * like a source print.
+ */
+function anomalyDiagnosisCodes(code: string): string[] {
+  const own = anomalyRawCodes(code)
+  const family = expandBeiansWithShareClassFamily(own).filter((item) => {
+    const upper = item.trim().toUpperCase()
+    if (isCShareClassBeian(upper)) return false
+    if (upper.endsWith("(C类)")) return false
+    return true
+  })
+  return [...new Set([...own, ...family])]
 }
 
 function shareClassFromCode(code: string): string {
@@ -3726,7 +3743,7 @@ async function attachNavAnomalyDiagnosisInner<T extends NavAnomalyDiagnosisRow>(
 ): Promise<T[]> {
 
   const codes = [...new Set(targets.flatMap((row) => beianCodeAliases(row.beian_hao ?? "")).filter(Boolean))]
-  const rawCodes = [...new Set(targets.flatMap((row) => anomalyRawCodes(row.beian_hao ?? "")).filter(Boolean))]
+  const rawCodes = [...new Set(targets.flatMap((row) => anomalyDiagnosisCodes(row.beian_hao ?? "")).filter(Boolean))]
   const names = [...new Set(targets.map((row) => row.product_name.trim()).filter(Boolean))]
   const inceptionCodes = [...new Set(targets.flatMap((row) => inceptionLookupCodes(row.beian_hao ?? "")).filter(Boolean))]
   const [cacheRows, rawRows, operationDateByCode, inceptionSources] = await Promise.all([
@@ -3766,7 +3783,7 @@ async function attachNavAnomalyDiagnosisInner<T extends NavAnomalyDiagnosisRow>(
     if (!hit) continue
     const operationDate = operationDateForRow(row, operationDateByCode)
     const inceptionDate = productInceptionDate(row.beian_hao, inceptionSources)
-    const aliases = anomalyRawCodes(row.beian_hao ?? "")
+    const aliases = anomalyDiagnosisCodes(row.beian_hao ?? "")
     const chart = chartSeriesForAnomalyRow(row, cacheRows, levelIndex, operationDate, inceptionDate, hit)
     const fromDate = anomalyScanStart(chart, operationDate, inceptionDate)
     const windowed = windowChartPoints(chart, fromDate)
@@ -4823,6 +4840,55 @@ export async function listTeamPageNavRows(): Promise<TeamPageNavRow[]> {
   }))
 }
 
+/**
+ * 中间缺失超1/10 and 有异常 for the current list.
+ * Saved flags answer the click. Products with no 备案号 still use a live scan.
+ */
+async function navSeriesFlagsForRows(rows: ResolvedFund[]): Promise<{
+  gapped: Set<string>
+  anomalyById: Map<string, NavAnomalyHit>
+}> {
+  const gapped = new Set<string>()
+  const anomalyById = new Map<string, NavAnomalyHit>()
+  const flagged: ResolvedFund[] = []
+  const unflagged: ResolvedFund[] = []
+  for (const row of rows) {
+    if (row.beian_hao?.trim()) flagged.push(row)
+    else unflagged.push(row)
+  }
+  if (flagged.length > 0) {
+    const { loadStoredOrFreshNavSeriesFlags } = await import("@/lib/server/nav-series-flags-pg")
+    const flags = await loadStoredOrFreshNavSeriesFlags(flagged.map((row) => {
+      const beian = row.beian_hao!.trim()
+      return {
+        id: beian,
+        beian_hao: beian,
+        product_name: row.product_name,
+        strategy_l1: row.strategy_l1,
+        strategy_l2: row.strategy_l2,
+        strategy_l3: row.strategy_l3,
+        first_entry_date: row.first_entry_date || null,
+        tipDate: isoDay(row.team_nav_date),
+      }
+    }))
+    for (const row of flagged) {
+      const key = row.beian_hao!.trim()
+      if (flags.gapped.has(key)) gapped.add(row.id)
+      const hit = flags.anomalyById.get(key)
+      if (hit) anomalyById.set(row.id, hit)
+    }
+  }
+  if (unflagged.length > 0) {
+    const [extraGap, extraHits] = await Promise.all([
+      loadProductIdsWithInteriorNavGap(unflagged),
+      loadProductNavAnomalies(unflagged),
+    ])
+    for (const id of extraGap) gapped.add(id)
+    for (const [id, hit] of extraHits) anomalyById.set(id, hit)
+  }
+  return { gapped, anomalyById }
+}
+
 export async function listTeamData(params: TeamDataListParams): Promise<{
   data: TeamDataListRow[]
   total: number
@@ -4888,9 +4954,17 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
   }
 
   let gapDiagnosis = new Map<string, NavGapDiagnosis>()
-  if (navGapFilter === "interior_2w" || navGapFilter === "no_interior_2w") {
-    const gapped = await loadProductIdsWithInteriorNavGap(resolved)
-    resolved = resolved.filter((r) => navGapFilter === "interior_2w" ? gapped.has(r.id) : !gapped.has(r.id))
+  let anomalyHits = new Map<string, NavAnomalyHit>()
+  const needsGap = navGapFilter === "interior_2w" || navGapFilter === "no_interior_2w"
+  const needsAnomaly = navAnomalyFilter === "jump" || navAnomalyFilter === "no_jump"
+  if (needsGap || needsAnomaly) {
+    const flags = await navSeriesFlagsForRows(resolved)
+    if (needsGap) {
+      resolved = resolved.filter((r) => (
+        navGapFilter === "interior_2w" ? flags.gapped.has(r.id) : !flags.gapped.has(r.id)
+      ))
+    }
+    anomalyHits = flags.anomalyById
   }
   if (navGapFilter === "interior_2w" && navGapCauseFilter !== "all") {
     const filtered = await filterByNavGapCause(resolved, navGapCauseFilter)
@@ -4903,10 +4977,10 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
     resolved = resolved.filter((row) => (frequencyById.get(row.id) ?? "无净值") === navFrequencyFilter)
   }
 
-  let anomalyHits = new Map<string, NavAnomalyHit>()
-  if (navAnomalyFilter === "jump" || navAnomalyFilter === "no_jump") {
-    anomalyHits = await loadProductNavAnomalies(resolved)
-    resolved = resolved.filter((r) => navAnomalyFilter === "jump" ? anomalyHits.has(r.id) : !anomalyHits.has(r.id))
+  if (needsAnomaly) {
+    resolved = resolved.filter((r) => (
+      navAnomalyFilter === "jump" ? anomalyHits.has(r.id) : !anomalyHits.has(r.id)
+    ))
   }
   if (navAnomalyFilter === "jump" && navAnomalyCauseFilter !== "all") {
     const filtered = await filterByNavAnomalyCause(resolved, anomalyHits, navAnomalyCauseFilter)

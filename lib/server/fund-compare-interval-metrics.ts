@@ -1,5 +1,9 @@
-import { query, fmtIso, n } from "@/lib/db"
+import { query } from "@/lib/db"
 import type { IntervalMetricsRow } from "@/lib/fund-compare-interval-metrics"
+import {
+  isPrivateFundBenchmarkKey,
+  loadPrivateFundBenchmarkSeries,
+} from "@/lib/server/private-fund-benchmarks"
 import {
   addDays,
   BatchNavResolver,
@@ -8,14 +12,6 @@ import {
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
 import { ensureTrackingFundsListCacheTable } from "@/lib/server/tracking-funds-list-cache-pg"
-
-const BENCHMARKS = {
-  IF: { label: "沪深300", source: "spot" as const, symbol: "IF" },
-  IC: { label: "中证500", source: "spot" as const, symbol: "IC" },
-  IM: { label: "中证1000", source: "spot" as const, symbol: "IM" },
-}
-
-type BenchmarkKey = keyof typeof BENCHMARKS
 
 function parseMetric(v: string | number | null | undefined): number | null {
   if (v == null) return null
@@ -84,29 +80,6 @@ function computeRiskMetrics(prices: { date: string; value: number }[]): { sharpe
     sharpe_1y: sharpe != null ? parseFloat(sharpe.toFixed(4)) : null,
     calmar_1y: calmar != null ? parseFloat(calmar.toFixed(4)) : null,
   }
-}
-
-async function loadBenchmarkPrices(key: BenchmarkKey): Promise<{ date: string; value: number }[]> {
-  const meta = BENCHMARKS[key]
-  const from = new Date()
-  from.setFullYear(from.getFullYear() - 2)
-  const fromStr = from.toISOString().slice(0, 10)
-  const toStr = new Date().toISOString().slice(0, 10)
-
-  const rows = await query<{ trade_date: Date | string; close: string | number | null }>(
-    `SELECT DISTINCT ON (trade_date) trade_date, close
-     FROM raw_spot_daily
-     WHERE symbol = $1
-       AND trade_date >= $2
-       AND trade_date <= $3
-       AND close IS NOT NULL AND close > 0
-     ORDER BY trade_date ASC, fetched_at DESC`,
-    [meta.symbol, fromStr, toStr],
-  )
-
-  return rows
-    .map((row) => ({ date: fmtIso(row.trade_date), value: n(row.close) }))
-    .filter((row): row is { date: string; value: number } => row.value != null)
 }
 
 function fractionToPct(v: number | null): number | null {
@@ -260,17 +233,23 @@ export async function loadFundIntervalMetrics(
   return rows
 }
 
-export async function loadBenchmarkIntervalMetrics(key: BenchmarkKey): Promise<IntervalMetricsRow | null> {
-  if (!(key in BENCHMARKS)) return null
-  const prices = await loadBenchmarkPrices(key)
+export async function loadBenchmarkIntervalMetrics(key: string): Promise<IntervalMetricsRow | null> {
+  if (!isPrivateFundBenchmarkKey(key)) return null
+  const from = new Date()
+  from.setFullYear(from.getFullYear() - 2)
+  const series = await loadPrivateFundBenchmarkSeries(
+    key,
+    from.toISOString().slice(0, 10),
+    new Date().toISOString().slice(0, 10),
+  )
+  const prices = series.data
   if (prices.length === 0) return null
 
   const risk = computeRiskMetrics(prices)
-  const meta = BENCHMARKS[key]
 
   return {
     key,
-    name: meta.label,
+    name: series.label,
     isBenchmark: true,
     navFrom: prices[0]?.date ?? null,
     navTo: prices.at(-1)?.date ?? null,

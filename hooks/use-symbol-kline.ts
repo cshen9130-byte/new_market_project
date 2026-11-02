@@ -6,13 +6,20 @@ import type { CtpCandle, CtpTick } from "@/lib/client/ctp-market"
 import { isCffexProduct, isCffexSession, overlaySinaQuote } from "@/lib/client/market-hours"
 import { applyLiveQuoteBar, mergeHistoryAndLive, type TimeframeId } from "@/lib/client/timeframes"
 
-export function useSymbolKline(symbol: string | null, interval: TimeframeId, live1m: CtpCandle[], quote?: CtpTick) {
+export function useSymbolKline(
+  symbol: string | null,
+  interval: TimeframeId,
+  live1m: CtpCandle[],
+  quote?: CtpTick,
+  opts?: { history?: boolean },
+) {
   const [history, setHistory] = useState<CtpCandle[]>([])
   const [historyKey, setHistoryKey] = useState<string | null>(null)
   const [readyKey, setReadyKey] = useState<string | null>(null)
   const [sinaQuote, setSinaQuote] = useState<CtpTick | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const key = symbol ? `${symbol}:${interval}` : null
+  const extendHistory = opts?.history === true
+  const key = symbol ? `${symbol}:${interval}:${extendHistory ? "db" : "live"}` : null
 
   useEffect(() => {
     if (!symbol) {
@@ -23,16 +30,15 @@ export function useSymbolKline(symbol: string | null, interval: TimeframeId, liv
       return
     }
     let cancelled = false
-    const seriesKey = `${symbol}:${interval}`
+    const seriesKey = `${symbol}:${interval}:${extendHistory ? "db" : "live"}`
     setHistory([])
     setHistoryKey(null)
     setSinaQuote(null)
     async function load() {
       try {
-        const res = await fetch(
-          `/ma/api/realtime-quotes/kline?symbol=${encodeURIComponent(symbol!)}&interval=${interval}`,
-          { cache: "no-store" },
-        )
+        const qs = new URLSearchParams({ symbol: symbol!, interval })
+        if (extendHistory) qs.set("history", "1")
+        const res = await fetch(`/ma/api/realtime-quotes/kline?${qs}`, { cache: "no-store" })
         const json = (await res.json()) as {
           ok?: boolean
           error?: string
@@ -70,7 +76,7 @@ export function useSymbolKline(symbol: string | null, interval: TimeframeId, liv
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [symbol, interval])
+  }, [extendHistory, symbol, interval])
 
   const sessionQuote = useMemo(
     () => (symbol ? overlaySinaQuote(symbol, quote, sinaQuote) : quote),

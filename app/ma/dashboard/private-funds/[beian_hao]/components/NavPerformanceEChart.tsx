@@ -34,6 +34,7 @@ export function NavPerformanceEChart({
   data,
   chartMode,
   navTypeLabel,
+  fundName,
   yDomain,
   showDots,
   showFund = true,
@@ -49,6 +50,7 @@ export function NavPerformanceEChart({
   data: NavChartPoint[]
   chartMode: "nav" | "return"
   navTypeLabel: string
+  fundName?: string
   yDomain: [number, number] | [string, string]
   showDots: boolean
   showFund?: boolean
@@ -61,7 +63,7 @@ export function NavPerformanceEChart({
   materialMarks?: NavChartMaterialMark[]
   onMaterialMarkClick?: (mark: NavChartMaterialMark) => void
 }) {
-  const fundName = chartMode === "return" ? "基金收益率" : navTypeLabel
+  const seriesName = chartMode === "return" ? (fundName?.trim() || "基金收益率") : navTypeLabel
 
   const option = useMemo(() => {
     const numericDomain = Array.isArray(yDomain) && typeof yDomain[0] === "number"
@@ -171,7 +173,7 @@ export function NavPerformanceEChart({
     }
     if (showFund) {
       series.push({
-        name: fundName,
+        name: seriesName,
         type: "line",
         showSymbol: true,
         symbol: "circle",
@@ -262,7 +264,7 @@ export function NavPerformanceEChart({
     chartMode,
     data,
     episodeMarks,
-    fundName,
+    seriesName,
     materialMarks,
     returnLabelMode,
     showBench,
@@ -295,6 +297,7 @@ export function NavPerformanceEChart({
 export function NavChartSeriesLegend({
   chartMode,
   navTypeLabel,
+  fundName,
   benchmarkLabel,
   hasBenchmark,
   fundVisible,
@@ -306,6 +309,7 @@ export function NavChartSeriesLegend({
 }: {
   chartMode: "nav" | "return"
   navTypeLabel: string
+  fundName?: string
   benchmarkLabel: string
   hasBenchmark: boolean
   fundVisible: boolean
@@ -315,7 +319,7 @@ export function NavChartSeriesLegend({
   excessVisible?: boolean
   onToggleExcess?: () => void
 }) {
-  const fundLabel = chartMode === "return" ? "基金收益率" : navTypeLabel
+  const fundLabel = chartMode === "return" ? (fundName?.trim() || "基金收益率") : navTypeLabel
   return (
     <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
       <button

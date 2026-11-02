@@ -1,3 +1,5 @@
+import { normalizeAccountShortcuts, type AccountShortcut } from "./account-shortcuts"
+
 export const ACCOUNT_PROFILE_EVENT = "ma-account-profile"
 
 export type AccountTheme = "system" | "light" | "dark"
@@ -1272,6 +1274,7 @@ export type AccountDashboardPrefs = {
   charts: string[]
   layout: Record<string, AccountChartBox>
   holders: AccountChartHolder[]
+  shortcuts: AccountShortcut[]
 }
 
 export const DEFAULT_ACCOUNT_CHARTS: string[] = []
@@ -1285,6 +1288,7 @@ export const DEFAULT_ACCOUNT_DASHBOARD: AccountDashboardPrefs = {
   charts: [...DEFAULT_ACCOUNT_CHARTS],
   layout: {},
   holders: [],
+  shortcuts: normalizeAccountShortcuts(undefined),
 }
 
 export function defaultChartBox(id: string | null): AccountChartBox {
@@ -1349,7 +1353,8 @@ export function normalizeAccountDashboardPrefs(raw: unknown): AccountDashboardPr
         return { id: stableHolderId(chartId, index, usedIds), chartId, ...box }
       })
   const projected = projectBoard(holders)
-  return { title, theme, density, landing, columns, charts: projected.charts, layout: projected.layout, holders }
+  const shortcuts = normalizeAccountShortcuts(obj.shortcuts)
+  return { title, theme, density, landing, columns, charts: projected.charts, layout: projected.layout, holders, shortcuts }
 }
 
 function projectBoard(holders: AccountChartHolder[]): { charts: string[]; layout: Record<string, AccountChartBox> } {

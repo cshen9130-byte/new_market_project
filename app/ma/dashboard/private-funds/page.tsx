@@ -9,6 +9,7 @@ import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, Chevron
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { DateInput } from "@/components/ui/date-input"
+import { LovelyLoaderOverlay } from "@/components/ui/lovely-loader"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
@@ -15112,7 +15113,7 @@ function teamDataLinkedInvestmentNote(
 type TeamDataListCacheEntry = { data: TeamDataRow[]; total: number; ts?: number }
 const teamDataListMemCache = new Map<string, TeamDataListCacheEntry>()
 const TEAM_DATA_LIST_CACHE_PREFIX = "team_data_list_cache_v18:"
-const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v8:"
+const PLATFORM_DATA_LIST_CACHE_PREFIX = "platform_data_list_cache_v9:"
 const TEAM_DATA_LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTeamDataListRow(row: unknown): row is TeamDataRow {
@@ -16267,6 +16268,7 @@ function OperationsTeamDataView({
                   key={key}
                   title={title || undefined}
                   onClick={() => {
+                    if (navGapFilter !== key) setLoading(true)
                     setNavGapFilter(key)
                     if (key !== "interior_2w") setNavGapCauseFilter("all")
                     setPage(1)
@@ -16279,6 +16281,11 @@ function OperationsTeamDataView({
                   ].join(" ")}
                 >
                   {label}
+                  {loading && navGapFilter === key && key !== "all" && (
+                    <svg className="ml-1 h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
+                    </svg>
+                  )}
                 </span>
               ))}
             </div>
@@ -16321,6 +16328,7 @@ function OperationsTeamDataView({
                   key={key}
                   title={title || undefined}
                   onClick={() => {
+                    if (navAnomalyFilter !== key) setLoading(true)
                     setNavAnomalyFilter(key)
                     if (key !== "jump") setNavAnomalyCauseFilter("all")
                     setPage(1)
@@ -16333,6 +16341,11 @@ function OperationsTeamDataView({
                   ].join(" ")}
                 >
                   {label}
+                  {loading && navAnomalyFilter === key && key !== "all" && (
+                    <svg className="ml-1 h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
+                    </svg>
+                  )}
                 </span>
               ))}
             </div>
@@ -16530,8 +16543,9 @@ function OperationsTeamDataView({
         )}
       </div>
 
-      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1230 + navColCount * 110 + (showNavAnomalyCol ? 390 : 0) + (showNavGapCol ? 460 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
+      {loading && <LovelyLoaderOverlay label="正在加载列表" />}
+      <div className="relative overflow-auto rounded-lg border flex-1 min-h-0" aria-busy={loading}>
+        <table className={`text-sm border-collapse w-full ${loading ? "pointer-events-none" : ""}`} style={{ minWidth: 1230 + navColCount * 110 + (showNavAnomalyCol ? 390 : 0) + (showNavGapCol ? 460 : 0) + (showOperationDateCol ? 120 : 0) + (showInceptionNavCols ? 360 : 0) }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
@@ -16600,8 +16614,8 @@ function OperationsTeamDataView({
             </tr>
           </thead>
           <tbody>
-            {loading && data.length === 0 ? (
-              <tr><td colSpan={teamDataColCount} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            {loading ? (
+              <tr><td colSpan={teamDataColCount} className="py-28" /></tr>
             ) : data.length === 0 ? (
               <tr>
                 <td colSpan={teamDataColCount} className="py-20 text-center text-muted-foreground">
@@ -16911,23 +16925,27 @@ function OperationsTeamDataView({
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">
-          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+          {loading ? (
+            <span>正在加载…</span>
+          ) : (
+            <>共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条</>
+          )}
         </span>
         <div className="flex items-center gap-1">
-          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1 || loading}
             className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
           {pageButtons().map((btn, idx) =>
             btn === "…" ? (
               <span key={`td${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
             ) : (
-              <button key={btn} onClick={() => setPage(btn as number)}
-                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+              <button key={btn} onClick={() => setPage(btn as number)} disabled={loading}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors disabled:opacity-30 disabled:cursor-not-allowed",
                   btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
                 {btn}
               </button>
             )
           )}
-          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1 || loading}
             className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
           <div className="relative ml-3">
             <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}

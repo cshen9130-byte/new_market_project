@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
+import { PRIVATE_FUND_BENCHMARK_OPTIONS as BENCHMARK_OPTIONS } from "@/lib/ma/private-fund-benchmark-options"
 import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
 import { computeFundNavMetrics, type FundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
 import { isWeekendIsoDate, countChinaTradingDaysInclusive } from "@/lib/nav-trading-day"
@@ -277,33 +278,6 @@ interface DetailData {
   nav_data_source?: "team" | "platform"
 }
 
-const BENCHMARK_OPTIONS = [
-  { key: "", label: "不显示" },
-  { key: "IM", label: "中证1000" },
-  { key: "932000.CSI", label: "中证2000" },
-  { key: "IC", label: "中证500" },
-  { key: "IF", label: "沪深300" },
-  { key: "IH", label: "上证50" },
-  { key: "000001.SH", label: "上证指数" },
-  { key: "000906.SH", label: "中证800" },
-  { key: "000903.SH", label: "中证100" },
-  { key: "000688.SH", label: "科创50" },
-  { key: "000510.SH", label: "中证A500" },
-  { key: "000985.SH", label: "中证全指" },
-  { key: "000902.SH", label: "中证流通" },
-  { key: "000832.SH", label: "中证转债" },
-  { key: "H11006.CSI", label: "中证国债" },
-  { key: "399303.SZ", label: "国证2000" },
-  { key: "000922.SH", label: "中证红利" },
-  { key: "899050.BJ", label: "北证50" },
-  { key: "HSI.HI", label: "恒生指数" },
-  { key: "H00300.CSI", label: "沪深300全收益" },
-  { key: "NHCI.NH", label: "南华商品指数" },
-  { key: "100001.CCI", label: "中证商品指数" },
-  { key: "511010.SH", label: "国债ETF" },
-  { key: "518880.SH", label: "黄金ETF" },
-] as const
-
 /** Sentinel select values — not real benchmark codes. */
 const OTHER_BENCHMARKS_VALUE = "__other_benchmarks__"
 const MANAGE_COMMON_BENCHMARKS_VALUE = "__manage_common_benchmarks__"
@@ -471,7 +445,7 @@ function exportNavChartCsv(
     const s = String(v)
     return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
   }
-  const valueHeader = chartMode === "return" ? "基金收益率(%)" : fundLabel
+  const valueHeader = chartMode === "return" ? `${fundLabel}(%)` : fundLabel
   const headers = ["日期", valueHeader]
   if (hasBench) headers.push(chartMode === "return" ? `${benchmarkLabel}(%)` : benchmarkLabel)
   const fmtVal = (v: number) => (chartMode === "return" ? v.toFixed(2) : v.toFixed(4))
@@ -1614,6 +1588,15 @@ export default function PrivateFundDetailPage() {
   const navChartPointCount = activeChartData.length
   const navChartShowDots = navChartPointCount <= 40
 
+  const chartFundName = useMemo(() => {
+    const info = data?.info
+    if (!info) return ""
+    return resolveFundDisplayLabel(info.short_name, info.product_name, info.beian_hao || beian_hao)
+      .replace(/私募证券投资基金/g, "")
+      .replace(/私募股权投资基金/g, "")
+      .trim() || info.product_name
+  }, [beian_hao, data?.info])
+
   const navChartExportName = useMemo(() => {
     const product = data?.info.product_name ?? "chart"
     const modeLabel = chartMode === "return" ? "收益曲线" : "净值曲线"
@@ -1630,12 +1613,12 @@ export default function PrivateFundDetailPage() {
     exportNavChartCsv(
       activeChartData,
       chartMode,
-      chartMode === "return" ? "基金收益率" : filterNavType,
+      chartMode === "return" ? (chartFundName || "基金收益率") : filterNavType,
       benchmarkLabel,
       !!appliedBench,
       `${navChartExportName}.csv`,
     )
-  }, [activeChartData, chartMode, filterNavType, benchmarkLabel, appliedBench, navChartExportName])
+  }, [activeChartData, chartFundName, chartMode, filterNavType, benchmarkLabel, appliedBench, navChartExportName])
 
   useEffect(() => {
     if (!navChartLightboxOpen) {
@@ -2293,6 +2276,7 @@ export default function PrivateFundDetailPage() {
               <NavChartSeriesLegend
                 chartMode={chartMode}
                 navTypeLabel={filterNavType}
+                fundName={displayName}
                 benchmarkLabel={benchmarkLabel}
                 hasBenchmark={!!appliedBench}
                 fundVisible={fundSeriesVisible}
@@ -2384,6 +2368,7 @@ export default function PrivateFundDetailPage() {
               data={activeChartData}
               chartMode={chartMode}
               navTypeLabel={filterNavType}
+              fundName={displayName}
               yDomain={yDomain}
               showDots={navChartShowDots}
               showFund={fundSeriesVisible}
@@ -2901,6 +2886,7 @@ export default function PrivateFundDetailPage() {
               <NavChartSeriesLegend
                 chartMode={chartMode}
                 navTypeLabel={filterNavType}
+                fundName={displayName}
                 benchmarkLabel={benchmarkLabel}
                 hasBenchmark={!!appliedBench}
                 fundVisible={fundSeriesVisible}
@@ -2926,6 +2912,7 @@ export default function PrivateFundDetailPage() {
                 data={activeChartData}
                 chartMode={chartMode}
                 navTypeLabel={filterNavType}
+                fundName={displayName}
                 yDomain={yDomain}
                 showDots={navChartShowDots}
                 showFund={fundSeriesVisible}

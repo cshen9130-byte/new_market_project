@@ -1,8 +1,9 @@
 import { INDEX_FUTURES, type IndexProduct } from "@/lib/client/ctp-market"
 import { INDEX_IV, type IvSnapshot, type OverlayPoint } from "@/lib/client/realtime-overlay"
 import { query } from "@/lib/db"
-import { fetchEtfAtmIvMinutes } from "@/lib/server/atm-iv-minute"
-import { fetchCffexAtmIvMinutes } from "@/lib/server/cffex-atm-iv-minute"
+import { fetchEtfAtmIvMinutes, etfAtmContractLabel } from "@/lib/server/atm-iv-minute"
+import { cffexAtmContractLabel, fetchCffexAtmIvMinutes } from "@/lib/server/cffex-atm-iv-minute"
+import { kickOptionMinuteCapture, readArchivedIv } from "@/lib/server/option-minute-archive"
 import { chinaWallToUnix, SINA_UA, sinaGet } from "@/lib/server/sina-fetch"
 
 function num(value: unknown) {
@@ -24,6 +25,12 @@ function trimLeadingIvOutliers(bars: OverlayPoint[], maxRel = 0.06): OverlayPoin
 }
 
 
+function wallDay(unix: number) {
+  const d = new Date(unix * 1000)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+}
+
 function todayShanghai() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
@@ -40,12 +47,108 @@ function parseCsv(text: string) {
     .filter(Boolean)
 }
 
+/** Minute CSVs carry a clock and no date. Allow a short publisher delay, then treat anything later as the previous session. */
+const UNDATED_FUTURE_GRACE_MIN = 3
+
+function shanghaiClockMinutes(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now)
+  const hour = Number(parts.find((part) => part.type === "hour")?.value)
+  const minute = Number(parts.find((part) => part.type === "minute")?.value)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null
+  return hour * 60 + minute
+}
+
+/** CFFEX option session: 09:30–11:30 and 13:00–15:00, Shanghai weekdays. 15:00 itself is still the session. */
+export function indexOptionSessionOpen(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now)
+  const weekday = parts.find((part) => part.type === "weekday")?.value
+  if (weekday === "Sat" || weekday === "Sun") return false
+  const hour = Number(parts.find((part) => part.type === "hour")?.value)
+  const minute = Number(parts.find((part) => part.type === "minute")?.value)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return false
+  const n = hour * 60 + minute
+  return (n >= 9 * 60 + 30 && n <= 11 * 60 + 30) || (n >= 13 * 60 && n <= 15 * 60)
+}
+
+type MinuteSnap = { bars: Array<{ time: number; close: number }>; source?: string | null }
+
+function underlyingKey(source: string | null | undefined) {
+  if (!source?.includes(":")) return null
+  const key = source.slice(source.indexOf(":") + 1)
+  return key || null
+}
+
+function isForumMinute(source: string | null | undefined) {
+  return !!source?.startsWith("optbbs:")
+}
+
+function isStoredSina(source: string | null | undefined) {
+  return !!source && (source.startsWith("archive:") || source.startsWith("qvix-sina:") || source.startsWith("sina-atm:"))
+}
+
+/**
+ * After the bell, keep the series that was already on the chart.
+ * A fallback underlying (index options standing in for the ETF) may be
+ * replaced by the primary series, and then that series stays.
+ */
+export function pickClosedSessionSnap<T extends MinuteSnap>(
+  kept: T | null,
+  next: T | null,
+  primaryKey: string | null = null,
+): { snap: T | null; frozen: boolean } {
+  const nextKey = underlyingKey(next?.source)
+  const keptKey = underlyingKey(kept?.source)
+  if (isForumMinute(kept?.source) && isStoredSina(next?.source)) return { snap: next, frozen: true }
+  if (
+    next?.bars.length &&
+    kept?.bars.length &&
+    primaryKey &&
+    nextKey === primaryKey &&
+    keptKey &&
+    keptKey !== primaryKey
+  ) {
+    return { snap: next, frozen: true }
+  }
+  if (kept?.bars.length) return { snap: kept, frozen: true }
+  if (next?.bars.length) return { snap: next, frozen: true }
+  return { snap: null, frozen: false }
+}
+
+/**
+ * optbbs / Sina minute files have no date, and the parser stamps them with today.
+ * chinaWallToUnix stores that wall clock in the UTC fields, so compare clock-of-day,
+ * not Date.now(). A tape that already contains 15:00 while the clock is 10:36 is the
+ * previous session and must not be drawn as today.
+ */
+export function undatedMinuteTapeIsStale(bars: OverlayPoint[], now = new Date()) {
+  const nowMin = shanghaiClockMinutes(now)
+  if (nowMin == null || bars.length === 0) return false
+  const limit = nowMin + UNDATED_FUTURE_GRACE_MIN
+  return bars.some((bar) => {
+    const clock = new Date(bar.time * 1000)
+    const mins = clock.getUTCHours() * 60 + clock.getUTCMinutes()
+    return mins > limit
+  })
+}
+
 function barsFromMinCsv(text: string): OverlayPoint[] {
   const lines = parseCsv(text)
   if (lines.length < 2) return []
   const header = lines[0].toLowerCase()
   const date = todayShanghai()
   const bars: OverlayPoint[] = []
+  let undated = false
   for (const line of lines.slice(header.includes("time") || header.includes("date") ? 1 : 0)) {
     const parts = line.split(",").map((p) => p.trim())
     if (parts.length < 2) continue
@@ -53,11 +156,14 @@ function barsFromMinCsv(text: string): OverlayPoint[] {
     const close = num(parts[1])
     if (close == null || !(close > 0)) continue
     const rounded = Math.round(close * 100) / 100
-    const day = stamp.includes(" ") ? stamp : /^\d{1,2}:\d{2}/.test(stamp) ? `${date} ${stamp}` : stamp
+    const timeOnly = !stamp.includes(" ") && /^\d{1,2}:\d{2}/.test(stamp)
+    if (timeOnly) undated = true
+    const day = timeOnly ? `${date} ${stamp}` : stamp
     const time = chinaWallToUnix(day.length === 16 ? `${day}:00` : day)
     if (time == null) continue
     bars.push({ time, close: rounded })
   }
+  if (undated && undatedMinuteTapeIsStale(bars)) return []
   return bars
 }
 
@@ -195,6 +301,7 @@ async function fetchSinaQvixMin(symbol: string) {
     if (time == null || close == null) continue
     bars.push({ time, close })
   }
+  if (undatedMinuteTapeIsStale(bars)) return []
   return bars
 }
 
@@ -267,6 +374,7 @@ function sourceFamily(source: string | null | undefined) {
   if (source === "sina") return "sina"
   if (source.startsWith("qvix-sina:") || source.startsWith("sina-atm:")) return "sina-atm"
   if (source.startsWith("qvix-cffex:") || source.startsWith("em-atm:")) return "cffex-atm"
+  if (source.startsWith("archive:")) return "archive"
   if (source.startsWith("optbbs-k:")) return "optbbs-k"
   if (source.startsWith("db:")) return "db"
   if (source.startsWith("optbbs-pre:")) return "optbbs-pre"
@@ -274,10 +382,28 @@ function sourceFamily(source: string | null | undefined) {
   return source.split(":")[0] || source
 }
 
+function codeFromSource(source: string | null) {
+  if (!source || !source.includes(":")) return null
+  const code = source.slice(source.indexOf(":") + 1)
+  if (!code || /^\d+d$/.test(code)) return null
+  return code
+}
+
+async function pairForCode(code: string | null | undefined, month?: string | null) {
+  if (!code) return null
+  try {
+    const etf = await etfAtmContractLabel(code)
+    if (etf) return etf
+    return await cffexAtmContractLabel(code, month)
+  } catch {
+    return null
+  }
+}
+
 async function loadIvFromFamily(
   product: IndexProduct,
   family: string,
-): Promise<{ bars: OverlayPoint[]; source: string | null } | null> {
+): Promise<{ bars: OverlayPoint[]; source: string | null; contract: string | null } | null> {
   const meta = INDEX_IV[product]
   const codes = [...new Set([meta.key, meta.fallback])]
   const explicit = labelAtmExplicitly()
@@ -285,7 +411,7 @@ async function loadIvFromFamily(
     for (const code of codes) {
       try {
         const bars = await fetchOptbbsMin(code)
-        if (bars.length >= 8) return { bars, source: `optbbs:${code}` }
+        if (bars.length >= 8) return { bars, source: `optbbs:${code}`, contract: null }
       } catch {
         // try next
       }
@@ -295,7 +421,7 @@ async function loadIvFromFamily(
   if (family === "sina") {
     try {
       const bars = await fetchSinaQvixMin(SINA_QVIX_SYMBOL[meta.key] || "50ETF")
-      if (bars.length >= 8) return { bars, source: "sina" }
+      if (bars.length >= 8) return { bars, source: "sina", contract: null }
     } catch {
       return null
     }
@@ -305,8 +431,8 @@ async function loadIvFromFamily(
     if (!allowAtmFallback()) return null
     for (const code of codes) {
       const live = await fetchEtfAtmIvMinutes(code)
-      if (live && live.length >= 8) {
-        return { bars: live, source: explicit ? `sina-atm:${code}` : `qvix-sina:${code}` }
+      if (live && live.bars.length >= 8) {
+        return { bars: live.bars, source: explicit ? `sina-atm:${code}` : `qvix-sina:${code}`, contract: live.contract || null }
       }
     }
     return null
@@ -315,8 +441,17 @@ async function loadIvFromFamily(
     if (!allowAtmFallback()) return null
     for (const code of codes) {
       const live = await fetchCffexAtmIvMinutes(code)
-      if (live && live.length >= 8) {
-        return { bars: live, source: explicit ? `em-atm:${code}` : `qvix-cffex:${code}` }
+      if (live && live.bars.length >= 8) {
+        return { bars: live.bars, source: explicit ? `em-atm:${code}` : `qvix-cffex:${code}`, contract: live.contract || null }
+      }
+    }
+    return null
+  }
+  if (family === "archive") {
+    for (const code of codes) {
+      const archived = await readArchivedIv({ key: code, days: 1 })
+      if (archived && archived.bars.length >= 8) {
+        return { bars: archived.bars, source: `archive:${code}`, contract: archived.contract }
       }
     }
     return null
@@ -329,18 +464,40 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
   const codes = [...new Set([meta.key, meta.fallback])]
   let bars: OverlayPoint[] = []
   let source: string | null = null
+  let contract: string | null = null
+
+  // After the close, use the Sina ETF minutes already stored in Postgres.
+  // Do not replace them with 期权论坛 or the index-option fallback.
+  if (!indexOptionSessionOpen()) {
+    const archived = await readArchivedIv({ key: meta.key, days: 1 })
+    const today = todayShanghai()
+    const stored = archived?.bars.filter((bar) => wallDay(bar.time) === today) ?? []
+    if (stored.length >= 8 && archived) {
+      bars = stored
+      contract = archived.contract
+      source = `archive:${meta.key}`
+    } else {
+      const etf = await fetchEtfAtmIvMinutes(meta.key)
+      if (etf && etf.bars.length >= 8) {
+        bars = etf.bars
+        contract = etf.contract || null
+        source = labelAtmExplicitly() ? `sina-atm:${meta.key}` : `qvix-sina:${meta.key}`
+      }
+    }
+  }
 
   // Stick to the previously established minute source so flaky optbbs vs ATM
   // rebuild do not alternate chart shapes every poll.
-  if (preferFamily && preferFamily !== "none") {
+  if (bars.length < 8 && preferFamily && preferFamily !== "none") {
     const sticky = await loadIvFromFamily(product, preferFamily)
     if (sticky && sticky.bars.length >= 8) {
       bars = sticky.bars
       source = sticky.source
+      contract = sticky.contract
     }
   }
 
-  if (bars.length < 8) {
+  if (bars.length < 8 && indexOptionSessionOpen()) {
   for (const code of codes) {
     try {
       bars = await fetchOptbbsMin(code)
@@ -370,8 +527,9 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
     const explicit = labelAtmExplicitly()
     for (const code of atmKeys) {
       const live = await fetchEtfAtmIvMinutes(code)
-      if (live && live.length >= 8) {
-        bars = live
+      if (live && live.bars.length >= 8) {
+        bars = live.bars
+        contract = live.contract || null
         source = explicit ? `sina-atm:${code}` : `qvix-sina:${code}`
         break
       }
@@ -379,9 +537,21 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
     if (bars.length < 8) {
       for (const code of atmKeys) {
         const live = await fetchCffexAtmIvMinutes(code)
-        if (live && live.length >= 8) {
-          bars = live
+        if (live && live.bars.length >= 8) {
+          bars = live.bars
+          contract = live.contract || null
           source = explicit ? `em-atm:${code}` : `qvix-cffex:${code}`
+          break
+        }
+      }
+    }
+    if (bars.length < 8) {
+      for (const code of atmKeys) {
+        const archived = await readArchivedIv({ key: code, days: 1 })
+        if (archived && archived.bars.length >= 8) {
+          bars = archived.bars
+          contract = archived.contract
+          source = `archive:${code}`
           break
         }
       }
@@ -443,6 +613,20 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
       }
     }
   }
+  if (!contract) contract = await pairForCode(codeFromSource(source) || meta.key)
+  const liveDay = bars.at(-1) ? wallDay(bars.at(-1)!.time) : todayShanghai()
+  let prevClose: number | null = null
+  try {
+    const daily = await getQvixDailyBars(product)
+    for (let i = daily.length - 1; i >= 0; i -= 1) {
+      const close = daily[i]!.close
+      if (!(close > 0) || !(wallDay(daily[i]!.time) < liveDay)) continue
+      prevClose = close
+      break
+    }
+  } catch {
+    prevClose = null
+  }
   const prev = bars.length < 2
     ? null
     : source?.startsWith("db:") || source?.startsWith("optbbs-k:")
@@ -458,14 +642,19 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
     value,
     change,
     pct,
+    prevClose,
     source,
+    contract,
     bars,
   }
 }
 
 let inflight: Promise<Record<IndexProduct, IvSnapshot>> | null = null
 let cached: { at: number; data: Record<IndexProduct, IvSnapshot> } | null = null
-const lastGoodMinute = new Map<IndexProduct, { at: number; snap: IvSnapshot }>()
+const lastGoodMinute: Map<IndexProduct, { at: number; snap: IvSnapshot }> =
+  (globalThis as { __qvixLastGoodMinute?: Map<IndexProduct, { at: number; snap: IvSnapshot }> }).__qvixLastGoodMinute ??
+  ((globalThis as { __qvixLastGoodMinute?: Map<IndexProduct, { at: number; snap: IvSnapshot }> }).__qvixLastGoodMinute = new Map())
+const closedSessionFrozen = new Set<IndexProduct>()
 const TTL_MS = 3000
 const KEEP_MINUTE_MS = 120_000
 
@@ -477,7 +666,8 @@ function isMinuteIv(snap: IvSnapshot) {
       snap.source.startsWith("qvix-sina:") ||
       snap.source.startsWith("qvix-cffex:") ||
       snap.source.startsWith("sina-atm:") ||
-      snap.source.startsWith("em-atm:")) &&
+      snap.source.startsWith("em-atm:") ||
+      snap.source.startsWith("archive:")) &&
     snap.bars.length >= 8
   )
 }
@@ -486,18 +676,38 @@ export async function getQvixRealtime() {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.data
   if (inflight) return inflight
   inflight = (async () => {
+    kickOptionMinuteCapture()
     const now = Date.now()
+    const sessionOpen = indexOptionSessionOpen()
     const rows = await Promise.all(
       INDEX_FUTURES.map((item) => {
         const kept = lastGoodMinute.get(item.product)
+        const keptFamily = kept ? sourceFamily(kept.snap.source) : null
+        // After the close, don't stick to the index-option fallback. Walk the
+        // normal order so the ETF series can come back.
         const prefer =
-          kept && now - kept.at < KEEP_MINUTE_MS && isMinuteIv(kept.snap)
-            ? sourceFamily(kept.snap.source)
+          sessionOpen && kept && now - kept.at < KEEP_MINUTE_MS && isMinuteIv(kept.snap) && keptFamily !== "archive"
+            ? keptFamily
             : null
         return loadIv(item.product, prefer)
       }),
     )
     const sticky = rows.map((row) => {
+      if (!sessionOpen) {
+        const kept = lastGoodMinute.get(row.product)
+        const picked = pickClosedSessionSnap(
+          kept && isMinuteIv(kept.snap) ? kept.snap : null,
+          isMinuteIv(row) ? row : null,
+          INDEX_IV[row.product].key,
+        )
+        if (picked.frozen) closedSessionFrozen.add(row.product)
+        if (picked.snap) {
+          lastGoodMinute.set(row.product, { at: now, snap: picked.snap })
+          return picked.snap
+        }
+        return row
+      }
+      closedSessionFrozen.delete(row.product)
       if (isMinuteIv(row)) {
         const kept = lastGoodMinute.get(row.product)
         // Refuse mid-session source flip-flops that rewrite the whole shape.
@@ -507,6 +717,11 @@ export async function getQvixRealtime() {
           isMinuteIv(kept.snap) &&
           sourceFamily(kept.snap.source) !== sourceFamily(row.source)
         ) {
+          // A stored minute line can fill a dead live feed, then give the chart back when live returns.
+          if (sourceFamily(kept.snap.source) === "archive" && sourceFamily(row.source) !== "archive") {
+            lastGoodMinute.set(row.product, { at: now, snap: row })
+            return row
+          }
           return kept.snap
         }
         lastGoodMinute.set(row.product, { at: now, snap: row })

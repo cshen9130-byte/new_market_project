@@ -66,7 +66,7 @@ export async function GET(req: Request) {
 
     const cacheKey = JSON.stringify({
       pool: "ops-platform-data",
-      v: "nav_gap_rebase_v8",
+      v: "nav_gap_rebase_v9",
       page,
       pageSize,
       keyword,

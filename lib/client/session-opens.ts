@@ -51,6 +51,7 @@ function markLineShell(color: string, data: Array<Record<string, unknown>>) {
     silent: true,
     symbol: "none",
     animation: false,
+    tooltip: { show: false },
     lineStyle: { color, type: "dashed", width: 1 },
     label: { show: true, color, fontSize: 10, position: "insideEndTop" },
     data,

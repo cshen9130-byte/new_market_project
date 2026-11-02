@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useState } from "react"
 
 import { IndexBasisContractsTable } from "@/components/ma/index-basis-contracts-table"
 import { IndexBasisDiffChart } from "@/components/ma/index-basis-diff-chart"
@@ -57,6 +57,21 @@ export default function RealtimeQuotesPage() {
   const [manual, setManual] = useState<Record<string, true>>({})
   const [proOpen, setProOpen] = useState(false)
   const [proLayout, setProLayout] = useState<ProTradingLayout>("market")
+
+  function setProViewParam(on: boolean) {
+    const url = new URL(window.location.href)
+    if (on) url.searchParams.set("view", "pro")
+    else url.searchParams.delete("view")
+    const next = `${url.pathname}${url.search}${url.hash}`
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    if (next !== current) window.history.replaceState(null, "", next)
+  }
+
+  function openPro(layout: ProTradingLayout) {
+    setProLayout(layout)
+    setProOpen(true)
+    if (layout === "market") setProViewParam(true)
+  }
   const [klineInterval, setKlineInterval] = useState<TimeframeId>("1m")
   const [klineRole, setKlineRole] = useState<CffexContractRole>("near")
   const [klineZoom, setKlineZoom] = useState<ChartZoomRange | null>(null)
@@ -172,6 +187,13 @@ export default function RealtimeQuotesPage() {
     return [...merged]
   }, [ctp.status?.index_symbols, ctp.symbols, cffex.symbols, candles, quotes])
 
+  useLayoutEffect(() => {
+    if (new URLSearchParams(window.location.search).get("view") === "pro") {
+      setProLayout("market")
+      setProOpen(true)
+    }
+  }, [])
+
   useEffect(() => {
     setSelected((prev) => {
       const next = { ...prev }
@@ -202,18 +224,8 @@ export default function RealtimeQuotesPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <ProTradingEnterButton
-            onClick={() => {
-              setProLayout("market")
-              setProOpen(true)
-            }}
-          />
-          <PaperTradingEnterButton
-            onClick={() => {
-              setProLayout("paper")
-              setProOpen(true)
-            }}
-          />
+          <ProTradingEnterButton onClick={() => openPro("market")} />
+          <PaperTradingEnterButton onClick={() => openPro("paper")} />
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span
               className={cn(
@@ -454,7 +466,10 @@ export default function RealtimeQuotesPage() {
 
       <ProTradingWorkspace
         open={proOpen}
-        onClose={() => setProOpen(false)}
+        onClose={() => {
+          setProOpen(false)
+          setProViewParam(false)
+        }}
         symbols={indexSymbols}
         quotes={quotes}
         candles={candles}

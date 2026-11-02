@@ -337,5 +337,22 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
+  // Weekday session: roll 1-minute option/spot prints into raw_option_minute (10 trading days).
+  cron.schedule("* 9-15 * * 1-5", () => {
+    void import("./option-minute-archive")
+      .then((mod) => mod.kickOptionMinuteCapture())
+      .catch((e) => console.error("[option-minute] scheduler error:", e))
+  }, { timezone: "Asia/Shanghai" })
+  cron.schedule("10 8 * * 1-5", () => {
+    void import("./option-minute-archive")
+      .then((mod) => mod.kickOptionMinuteCapture())
+      .catch((e) => console.error("[option-minute] history scheduler error:", e))
+  }, { timezone: "Asia/Shanghai" })
+  cron.schedule("6 15 * * 1-5", () => {
+    void import("./option-minute-archive")
+      .then((mod) => mod.kickOptionMinuteCapture({ flush: true }))
+      .catch((e) => console.error("[option-minute] close scheduler error:", e))
+  }, { timezone: "Asia/Shanghai" })
+
   console.log("[background-jobs] cron schedules registered")
 }

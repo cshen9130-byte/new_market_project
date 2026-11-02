@@ -1,11 +1,13 @@
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import {
+  barTradeDayKey,
   futuresTradeDateYmd,
   hasNightSession,
   isCffexProduct,
   isLiveSessionFor,
   isNightHqPrint,
   isNightWallClock,
+  tradingSessionMinuteSegments,
 } from "@/lib/client/market-hours"
 
 export const TIMEFRAMES = [
@@ -28,6 +30,43 @@ export function getTimeframe(id: TimeframeId) {
 
 export function isIntradayTimeframe(id: TimeframeId) {
   return id !== "1d" && id !== "1w" && id !== "1M"
+}
+
+/** How many intraday bars a full session contains (CFFEX 1m = 240). */
+export function intradaySessionSlots(symbol: string | null | undefined, id: TimeframeId) {
+  if (!isIntradayTimeframe(id)) return 0
+  const step = getTimeframe(id).seconds
+  if (step <= 0) return 0
+  // Tuesday midnight, so a Monday-night wrap still lands on a weekday bucket.
+  const day0 = Math.floor(Date.UTC(2024, 0, 2) / 1000)
+  const buckets = new Set<number>()
+  for (const seg of tradingSessionMinuteSegments(symbol)) {
+    const start = day0 + seg.start * 60
+    const end = day0 + seg.end * 60
+    for (let t = start; t < end; t += 60) buckets.add(Math.floor(t / step) * step)
+  }
+  return Math.max(1, buckets.size)
+}
+
+export function countBarsOnTradeDay(
+  bars: Array<{ time: number }>,
+  symbol?: string | null,
+) {
+  if (!bars.length) return 0
+  const lastKey = barTradeDayKey(bars[bars.length - 1].time, symbol)
+  let n = 0
+  for (let i = bars.length - 1; i >= 0; i--) {
+    if (barTradeDayKey(bars[i].time, symbol) !== lastKey) break
+    n++
+  }
+  return n
+}
+
+/** Bars that share the trade day of the last print. Intraday frequency changes stay on that session. */
+export function barsOnLastTradeDay<T extends { time: number }>(bars: T[], symbol?: string | null): T[] {
+  if (bars.length < 2) return bars
+  const day = barTradeDayKey(bars[bars.length - 1].time, symbol)
+  return bars.filter((bar) => barTradeDayKey(bar.time, symbol) === day)
 }
 
 export function isTimeframeId(value: string): value is TimeframeId {

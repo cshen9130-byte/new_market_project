@@ -71,6 +71,44 @@ export function hasNightSession(symbol?: string | null) {
   return !NO_NIGHT.has(productCodeOf(symbol))
 }
 
+/** Half-open minute ranges from local midnight. Night segments may pass 24:00. */
+export function tradingSessionMinuteSegments(symbol?: string | null): Array<{ start: number; end: number }> {
+  if (!symbol || isCffexProduct(symbol)) {
+    return [
+      { start: 9 * 60 + 30, end: 11 * 60 + 30 },
+      { start: 13 * 60, end: 15 * 60 },
+    ]
+  }
+  const day = [
+    { start: 9 * 60, end: 10 * 60 + 15 },
+    { start: 10 * 60 + 30, end: 11 * 60 + 30 },
+    { start: 13 * 60 + 30, end: 15 * 60 },
+  ]
+  if (!hasNightSession(symbol)) return day
+  const nightEnd = nightEndHhmm(symbol)
+  const end =
+    nightEnd >= 2100
+      ? Math.floor(nightEnd / 100) * 60 + (nightEnd % 100)
+      : 24 * 60 + Math.floor(nightEnd / 100) * 60 + (nightEnd % 100)
+  return [{ start: 21 * 60, end }, ...day]
+}
+
+/**
+ * Trade-date key for a bar whose timestamp stores Shanghai wall time in UTC fields.
+ * Night-session bars after 21:00 roll onto the next weekday, matching futuresTradeDateYmd.
+ */
+export function barTradeDayKey(unix: number, symbol?: string | null) {
+  const d = new Date(unix * 1000)
+  const ymd = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`
+  if (!symbol || !hasNightSession(symbol)) return ymd
+  const hhmm = d.getUTCHours() * 100 + d.getUTCMinutes()
+  const weekday = d.getUTCDay()
+  const nightEnd = nightEndHhmm(symbol)
+  if (weekday >= 1 && weekday <= 5 && hhmm >= 2100) return nextWeekdayYmd(ymd)
+  if (nightEnd < 2100 && hhmm <= nightEnd && weekday === 6) return nextWeekdayYmd(ymd)
+  return ymd
+}
+
 export function isNightWallClock(now = new Date(), symbol?: string | null) {
   if (!hasNightSession(symbol)) return false
   const { weekday, hhmm } = shanghaiParts(now)

@@ -28,6 +28,7 @@ import {
   type SavedFundCompareFund,
 } from "@/lib/ma-fund-compare-storage"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
+import { PRIVATE_FUND_BENCHMARK_OPTIONS as BENCHMARK_OPTIONS } from "@/lib/ma/private-fund-benchmark-options"
 import { DateInput } from "@/components/ui/date-input"
 import {
   filterPointsByFrequency,
@@ -42,13 +43,6 @@ import {
 const NAV_FREQ_OPTIONS: NavFrequencyFilter[] = ["全部", "日频", "周频", "月频"]
 
 const LINE_COLORS = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899", "#64748b"]
-
-const BENCHMARK_OPTIONS = [
-  { key: "IF", label: "沪深300" },
-  { key: "IC", label: "中证500" },
-  { key: "IM", label: "中证1000" },
-  { key: "", label: "不显示" },
-] as const
 
 interface CurvePoint {
   d: string
@@ -627,7 +621,7 @@ export function FundCompareDetailView({
           <select
             value={filterBench}
             onChange={(e) => setFilterBench(e.target.value as typeof filterBench)}
-            className="border rounded px-2 py-1 bg-white min-w-[100px]"
+            className="border rounded px-2 py-1 bg-white min-w-[140px]"
           >
             {BENCHMARK_OPTIONS.map((o) => <option key={o.key || "none"} value={o.key}>{o.label}</option>)}
           </select>

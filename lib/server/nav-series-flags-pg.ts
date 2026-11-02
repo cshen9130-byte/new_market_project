@@ -1,9 +1,10 @@
 /**
- * Saved 净值断档 / 净值异常 results for 平台数据.
+ * Saved 净值断档 / 净值异常 results for 平台数据 and 团队数据.
  *
  * The list filters used to re-read every fund's NAV series on each click.
  * Flags are recomputed only when the latest NAV date, 运作日, or the rule
- * version no longer matches.
+ * version no longer matches. The team list reads a saved flag immediately and
+ * only waits on funds that have never been scored (or a small stale batch).
  */
 
 import { query } from "@/lib/db"
@@ -18,10 +19,12 @@ import {
 export const NAV_SERIES_FLAG_RULE = "jump30_spike15_quiet5x8_gap10_v5"
 const FLAG_TTL_MS = 10 * 60 * 1000
 // Bump when the scorer changes so a running server drops flags cached under the old rule.
-const FLAG_MEMORY_REV = 6
+const FLAG_MEMORY_REV = 7
 const OP_TTL_MS = 60 * 1000
 const ASSESS_BATCH = 400
 const ASSESS_CONCURRENCY = 4
+/** Recompute this many stale funds before answering. A larger batch refreshes after the list returns. */
+const STALE_INLINE_LIMIT = 40
 
 const CREATE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_nav_series_flags (
@@ -238,6 +241,7 @@ async function upsertFlags(
 }
 
 let writeChain: Promise<unknown> = Promise.resolve()
+let backgroundRefresh: Promise<unknown> | null = null
 
 export async function loadFreshNavSeriesFlags(rows: FlagSeed[]): Promise<{
   gapped: Set<string>
@@ -281,6 +285,89 @@ async function loadFreshNavSeriesFlagsInner(rows: FlagSeed[]): Promise<{
     if (assessed.gappedIds.has(row.id)) gapped.add(row.id)
     const hit = assessed.anomalyById.get(row.id)
     if (hit) anomalyById.set(row.id, hit)
+  }
+  return { gapped, anomalyById }
+}
+
+async function platformNavTips(ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (ids.length === 0) return out
+  const rows = await query<{ beian_hao: string | null; tip: string | null }>(
+    `SELECT BTRIM(beian_hao) AS beian_hao,
+            LEFT(COALESCE(latest_nav_date::text, ''), 10) AS tip
+     FROM private_fund_info
+     WHERE BTRIM(beian_hao) = ANY($1::text[])`,
+    [ids],
+  ).catch(() => [] as Array<{ beian_hao: string | null; tip: string | null }>)
+  for (const row of rows) {
+    const id = row.beian_hao?.trim()
+    if (!id || out.has(id)) continue
+    out.set(id, (row.tip ?? "").slice(0, 10))
+  }
+  return out
+}
+
+function withPlatformTips(rows: FlagSeed[], tips: Map<string, string>): FlagSeed[] {
+  return rows.map((row) => (
+    tips.has(row.id) ? { ...row, tipDate: tips.get(row.id) ?? "" } : row
+  ))
+}
+
+/**
+ * Flags for a list click. Saved rows come back without re-reading NAV series.
+ * Funds with no flag, and up to STALE_INLINE_LIMIT stale funds, are scored
+ * before the response. A larger stale set is refreshed after the list returns,
+ * using the same latest-NAV tip as 平台数据 so the two lists do not overwrite
+ * each other.
+ */
+export async function loadStoredOrFreshNavSeriesFlags(rows: FlagSeed[]): Promise<{
+  gapped: Set<string>
+  anomalyById: Map<string, NavAnomalyHit>
+}> {
+  await ensureTable()
+  const gapped = new Set<string>()
+  const anomalyById = new Map<string, NavAnomalyHit>()
+  if (rows.length === 0) return { gapped, anomalyById }
+
+  const [stored, opById, tips] = await Promise.all([
+    readStoredFlags(rows.map((row) => row.id)),
+    operationDatesFor(rows),
+    platformNavTips(rows.map((row) => row.id)),
+  ])
+  const missing: FlagSeed[] = []
+  const stale: FlagSeed[] = []
+  for (const row of withPlatformTips(rows, tips)) {
+    const flag = stored.get(row.id)
+    const tip = row.tipDate ?? ""
+    const op = opById.get(row.id) ?? ""
+    if (!flag || flag.rule !== NAV_SERIES_FLAG_RULE) {
+      missing.push(row)
+      continue
+    }
+    if (flag.gap) gapped.add(row.id)
+    if (flag.anomaly) anomalyById.set(row.id, flag.anomaly)
+    if (flag.tip !== tip || flag.op !== op) stale.push(row)
+  }
+
+  const inlineStale = stale.length <= STALE_INLINE_LIMIT ? stale : []
+  const inline = [...missing, ...inlineStale]
+  if (inline.length > 0) {
+    const fresh = await loadFreshNavSeriesFlags(inline)
+    for (const row of inline) {
+      gapped.delete(row.id)
+      anomalyById.delete(row.id)
+      if (fresh.gapped.has(row.id)) gapped.add(row.id)
+      const hit = fresh.anomalyById.get(row.id)
+      if (hit) anomalyById.set(row.id, hit)
+    }
+  }
+  if (stale.length > STALE_INLINE_LIMIT && !backgroundRefresh) {
+    // Not on writeChain: a full rescore must not block the next list click.
+    backgroundRefresh = loadFreshNavSeriesFlagsInner(stale).catch((err) => {
+      console.error("[nav-series-flags] background refresh failed:", err)
+    }).finally(() => {
+      backgroundRefresh = null
+    })
   }
   return { gapped, anomalyById }
 }

@@ -63,6 +63,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("futures", "期货市场", "/ma/dashboard/futures-market", "期货市场", "any", ["期货", "南华", "商品期货"]),
   p("options", "期权市场", "/ma/dashboard/options-market", "期权市场", "any", ["期权"]),
   p("realtime", "实时行情", "/ma/dashboard/realtime-quotes", "实时行情", "any", ["CTP", "股指期货行情"]),
+  p("realtime-pro", "专业交易", "/ma/dashboard/realtime-quotes?view=pro", "实时行情 → 专业交易", "any", ["专业交易模式", "专业盘面"]),
   p("all-weather", "全天候跟踪", "/ma/dashboard/all-weather", "全天候跟踪", "any", ["全天候"]),
   p("nhci-index", "南华商品指数", "/ma/dashboard/nhci-index", "南华商品指数", "any", ["NHCI", "南华指数"]),
   p("private-funds", "私募基金", "/ma/dashboard/private-funds", "私募基金", "any", ["私募"]),
