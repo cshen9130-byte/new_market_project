@@ -227,10 +227,10 @@ async function optionMinutes(code: string): Promise<{ date: string | null; point
   return { date, points }
 }
 
-async function underlyingMinutes(symbol: string, ndays = 1) {
+async function underlyingMinutes(symbol: string, ndays = 1, recentBars?: number) {
   try {
     const days = Math.min(Math.max(Math.round(ndays) || 1, 1), 10)
-    const datalen = Math.min(240 * days, 1600)
+    const datalen = recentBars && recentBars > 0 ? recentBars : Math.min(240 * days, 1600)
     const text = await jsonGet(
       `https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&ma=no&datalen=${datalen}`,
       "https://finance.sina.com.cn/",
@@ -350,8 +350,19 @@ function buildBars(
   return settleIvBars(bars)
 }
 
+const ATM_PIN_MS = 10 * 60_000
+const atmPin = new Map<string, { at: number; step: number; resolved: NonNullable<Awaited<ReturnType<typeof resolveEtfAtm>>> }>()
+
 async function resolveEtfAtm(key: string, prevStrike: number | null) {
   const cfg = ETF[key as EtfKey]
+  const pin = atmPin.get(key)
+  if (pin && Date.now() - pin.at < ATM_PIN_MS) {
+    const spot = await underlyingSpot(cfg.underlying)
+    const sticky = pin.step * 0.85
+    if (spot != null && Math.abs(spot - pin.resolved.best.strike) <= sticky) {
+      return { ...pin.resolved, spot0: spot }
+    }
+  }
   const month = await frontMonth(cfg.cate)
   if (!month) return null
   const [quotes, spotQuote] = await Promise.all([
@@ -383,7 +394,9 @@ async function resolveEtfAtm(key: string, prevStrike: number | null) {
     }
   }
   if (!best) return null
-  return { cfg, month, spot0, best, contract: etfPairLabel(cfg.listed, month.yymm, best.strike) }
+  const resolved = { cfg, month, spot0, best, contract: etfPairLabel(cfg.listed, month.yymm, best.strike) }
+  atmPin.set(key, { at: Date.now(), step, resolved })
+  return resolved
 }
 
 export async function etfAtmContractLabel(key: string): Promise<string | null> {
@@ -714,6 +727,28 @@ async function etfExpireDay(cate: string, month: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(expireDay) ? expireDay : null
 }
 
+/** Near-month ATM call and put for the three default ETF charts. */
+export async function listDefaultEtfAtmContracts(): Promise<CaptureContract[]> {
+  const out: CaptureContract[] = []
+  for (const key of ["50etf", "300etf", "500etf"] as const) {
+    try {
+      const resolved = await resolveEtfAtm(key, null)
+      if (!resolved) continue
+      const common = {
+        underlyingKey: key,
+        monthCode: resolved.month.yymm,
+        strike: resolved.best.strike,
+        expireDay: resolved.month.expireDay,
+      }
+      out.push({ ...common, contractId: resolved.best.call, side: "call" })
+      out.push({ ...common, contractId: resolved.best.put, side: "put" })
+    } catch {
+      // one underlying failing leaves the others usable
+    }
+  }
+  return out
+}
+
 /** Every listed month of 50/300/500 ETF options, cached for the capture sweep. */
 export async function listEtfCaptureContracts(): Promise<CaptureContract[]> {
   if (etfCapturePlan && Date.now() - etfCapturePlan.at < 10 * 60_000 && etfCapturePlan.contracts.length) {
@@ -788,11 +823,11 @@ export async function fetchEtfCaptureMinutes(contracts: CaptureContract[], histo
   return batches.flat()
 }
 
-export async function fetchEtfSpotMinutes(days: number): Promise<StoredMinute[]> {
+export async function fetchEtfSpotMinutes(days: number, recentBars?: number): Promise<StoredMinute[]> {
   const today = todayShanghai()
   const rows: StoredMinute[] = []
   for (const key of Object.keys(ETF) as EtfKey[]) {
-    const map = await underlyingMinutes(ETF[key].underlying, days)
+    const map = await underlyingMinutes(ETF[key].underlying, days, recentBars)
     for (const [stamp, price] of map) {
       const dated = stamp.includes(" ")
       const day = dated ? stamp.slice(0, 10) : today

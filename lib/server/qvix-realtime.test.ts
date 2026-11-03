@@ -6,7 +6,7 @@ import { describe, it } from "node:test"
 
 import { clipBarsAfterSession } from "./cffex-atm-iv-minute"
 import { cffexTapeMissesClose } from "./option-minute-archive"
-import { barsReachCashClose, indexOptionSessionOpen, pickClosedSessionSnap, undatedMinuteTapeIsStale } from "./qvix-realtime"
+import { barsReachCashClose, cashDayUnderway, indexOptionSessionOpen, pickClosedSessionSnap, undatedMinuteTapeIsStale } from "./qvix-realtime"
 
 function wall(h: number, min: number) {
   return Math.floor(Date.UTC(2026, 10, 2, h, min) / 1000)
@@ -36,6 +36,16 @@ describe("undated minute tape", () => {
     assert.equal(indexOptionSessionOpen(new Date("2026-11-02T07:00:00Z")), true)
     assert.equal(indexOptionSessionOpen(new Date("2026-11-02T07:01:00Z")), false)
     assert.equal(indexOptionSessionOpen(new Date("2026-11-02T04:00:00Z")), false)
+  })
+
+  it("keeps the same cash day through lunch and ends it after 15:00", () => {
+    const lunch = new Date("2026-11-03T04:00:00Z")
+    assert.equal(indexOptionSessionOpen(lunch), false)
+    assert.equal(cashDayUnderway(lunch), true)
+    assert.equal(cashDayUnderway(new Date("2026-11-03T01:30:00Z")), true)
+    assert.equal(cashDayUnderway(new Date("2026-11-03T07:00:00Z")), true)
+    assert.equal(cashDayUnderway(new Date("2026-11-03T07:01:00Z")), false)
+    assert.equal(cashDayUnderway(new Date("2026-11-03T01:29:00Z")), false)
   })
 
   it("treats a 14:47 index tape as the delayed file, and a 14:57 tape as the close", () => {

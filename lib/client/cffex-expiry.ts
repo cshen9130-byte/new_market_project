@@ -283,16 +283,12 @@ export function daysToCffexExpiry(symbol: string, now = new Date()): number | nu
 }
 
 /**
- * Days used to annualize a historical basis bar.
- * Stored daily history prepends the main continuous series before this contract
- * lists. Those older prices expire with the front month of that day, not with
- * the contract selected on the chart.
+ * Days used to annualize the live quote and an intraday bar of this symbol.
+ * Daily history does not use this: it rolls to the contract that held the
+ * same term that day. Dividing a continuous price by one far expiry flattens
+ * the curve, and dividing it by the front month's last week prints about −85%.
  */
 export function daysForBasisBar(symbol: string, now = new Date()): number | null {
-  const own = calendarDaysToCffexExpiry(symbol, now)
-  if (own != null && own > 240) {
-    return Math.max(1, daysUntil(dominantCffexExpiry(now), now))
-  }
   return daysToCffexExpiry(symbol, now)
 }
 

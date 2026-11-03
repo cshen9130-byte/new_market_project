@@ -127,6 +127,10 @@ export function SleeveKlineGrid({
       zoomIn: () => chartRefs.forEach((item) => item.current?.zoomIn()),
       zoomOut: () => chartRefs.forEach((item) => item.current?.zoomOut()),
       resetZoom: () => chartRefs.forEach((item) => item.current?.resetZoom()),
+      setViewportMode: (mode) => chartRefs.forEach((item) => item.current?.setViewportMode(mode)),
+      getViewportMode: () => chartRefs[0]?.current?.getViewportMode() ?? "auto-scale",
+      showWindow: (fromUnix, toUnix) => chartRefs.some((item) => item.current?.showWindow(fromUnix, toUnix)),
+      clearWindow: () => chartRefs.forEach((item) => item.current?.clearWindow()),
     }),
     [chartRefs],
   )

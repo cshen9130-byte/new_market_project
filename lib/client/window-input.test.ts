@@ -4,7 +4,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
-import { formatWindowInput, lockAfterCommit, parseWindowInput } from "./window-input"
+import { formatWindowInput, lockAfterCommit, parseWindowInput, shanghaiMonthsAgoUnix } from "./window-input"
 
 function unix(y: number, m: number, d: number, h = 0, min = 0) {
   return Math.floor(Date.UTC(y, m - 1, d, h, min) / 1000)
@@ -21,6 +21,12 @@ describe("window input", () => {
 
   it("rejects a day that does not exist", () => {
     assert.equal(parseWindowInput("2026.2.31"), null)
+  })
+
+  it("steps a Shanghai day back by whole months", () => {
+    const day = new Date("2026-11-03T02:00:00Z")
+    assert.equal(shanghaiMonthsAgoUnix(3, day), unix(2026, 8, 3))
+    assert.equal(shanghaiMonthsAgoUnix(5, day), unix(2026, 6, 3))
   })
 
   it("keeps the latest day when the start is typed, then keeps that start when the end is typed", () => {

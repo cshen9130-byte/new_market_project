@@ -7,6 +7,7 @@ import {
   ACCOUNT_SHORTCUTS_EVENT,
   DEFAULT_ACCOUNT_SHORTCUTS,
   SHORTCUT_CAPTURE_ATTR,
+  openAccountShortcutTab,
   shortcutComboFromEvent,
   type AccountShortcut,
 } from "@/lib/ma/account-shortcuts"
@@ -57,9 +58,7 @@ export function AccountShortcutListener({ userId }: { userId: string }) {
       event.preventDefault()
       event.stopPropagation()
       if (hit.newTab) {
-        const opened = window.open(hit.href, "_blank")
-        if (opened) opened.opener = null
-        else router.push(hit.href)
+        if (!openAccountShortcutTab(hit.href)) router.push(hit.href)
         return
       }
       router.push(hit.href)

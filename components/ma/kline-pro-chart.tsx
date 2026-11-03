@@ -53,6 +53,10 @@ export type KlineChartHandle = {
   resetZoom: () => void
   setViewportMode: (mode: ChartViewportMode) => void
   getViewportMode: () => ChartViewportMode
+  /** Lock the plot to these unix edges. Returns false until the series is on the chart. */
+  showWindow: (fromUnix: number, toUnix: number) => boolean
+  /** Drop a locked window and use the current viewport mode. */
+  clearWindow: () => void
 }
 
 function isChartViewportMode(value: unknown): value is ChartViewportMode {
@@ -593,6 +597,10 @@ export function KlineProChart({
   const rangeRafRef = useRef(0)
   const inputLockRef = useRef<InputLock | null>(null)
   const fittingRef = useRef(false)
+  // True only while the pointer or wheel is moving the chart. A data reload
+  // also fires a range event, and that one must keep the locked window.
+  const userAdjustRef = useRef(false)
+  const adjustTimerRef = useRef<number | null>(null)
   const [inputMode, setInputMode] = useState(false)
   const shownWindowRef = useRef<ChartVisibleWindow | null>(null)
   const editingRef = useRef<"from" | "to" | null>(null)
@@ -668,9 +676,27 @@ export function KlineProChart({
     }, 40)
   }, [])
 
+  const armUserAdjust = useCallback((hold: boolean) => {
+    userAdjustRef.current = true
+    if (adjustTimerRef.current != null) window.clearTimeout(adjustTimerRef.current)
+    if (hold) return
+    adjustTimerRef.current = window.setTimeout(() => {
+      userAdjustRef.current = false
+    }, 250)
+  }, [])
+
   const noteUserAdjust = useCallback(() => {
+    armUserAdjust(false)
     publishVisibleWindow()
-  }, [publishVisibleWindow])
+  }, [armUserAdjust, publishVisibleWindow])
+
+  useEffect(() => {
+    const release = () => {
+      if (userAdjustRef.current) armUserAdjust(false)
+    }
+    window.addEventListener("pointerup", release)
+    return () => window.removeEventListener("pointerup", release)
+  }, [armUserAdjust])
   const publishVisibleWindowRef = useRef(publishVisibleWindow)
   publishVisibleWindowRef.current = publishVisibleWindow
 
@@ -687,8 +713,51 @@ export function KlineProChart({
     [onViewportModeChange, viewportModeProp],
   )
 
-  const zoomIn = useCallback(() => zoomKline(chartRef.current, "in"), [])
-  const zoomOut = useCallback(() => zoomKline(chartRef.current, "out"), [])
+  const clearWindow = useCallback(() => {
+    inputLockRef.current = null
+    setInputMode(false)
+    const chart = chartRef.current
+    applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
+    if (!chart) return
+    const next = readVisibleWindow(chart, intervalRef.current)
+    if (!next) return
+    publishedWindowRef.current = next
+    onVisibleWindowRef.current?.(next)
+    syncWindowText(next)
+  }, [syncWindowText])
+
+  const showWindow = useCallback((fromUnix: number, toUnix: number) => {
+    inputLockRef.current = {
+      fromUnix,
+      toUnix,
+      fromHasTime: false,
+      toHasTime: false,
+      fromUser: true,
+      toUser: true,
+    }
+    setInputMode(true)
+    setFromText(formatBound(fromUnix, false, intervalRef.current))
+    setToText(formatBound(toUnix, false, intervalRef.current))
+    const attempt = () => {
+      const lock = inputLockRef.current
+      const chart = chartRef.current
+      if (!lock || lock.fromUnix !== fromUnix || lock.toUnix !== toUnix) return
+      if (!chart?.getDataList()?.length) return
+      publishLockedWindow(chart)
+    }
+    attempt()
+    requestAnimationFrame(attempt)
+    return true
+  }, [publishLockedWindow])
+
+  const zoomIn = useCallback(() => {
+    armUserAdjust(false)
+    zoomKline(chartRef.current, "in")
+  }, [armUserAdjust])
+  const zoomOut = useCallback(() => {
+    armUserAdjust(false)
+    zoomKline(chartRef.current, "out")
+  }, [armUserAdjust])
   const resetZoom = useCallback(() => {
     inputLockRef.current = null
     setInputMode(false)
@@ -709,8 +778,10 @@ export function KlineProChart({
       resetZoom,
       setViewportMode,
       getViewportMode: () => viewportModeRef.current,
+      showWindow,
+      clearWindow,
     }),
-    [zoomIn, zoomOut, resetZoom, setViewportMode],
+    [zoomIn, zoomOut, resetZoom, setViewportMode, showWindow, clearWindow],
   )
 
   useEffect(() => {
@@ -792,14 +863,39 @@ export function KlineProChart({
       applyOrderMarks(chart, marksRef.current, plottedCandles(candlesRef.current, symbolRef.current, intervalRef.current), intervalRef.current)
       const onRange = () => {
         const current = chartRef.current
-        if (!current) return
+        if (!current || fittingRef.current) return
         const next = readVisibleWindow(current, intervalRef.current)
-        if (next && !inputLockRef.current) syncWindowRef.current(next)
-        if (inputLockRef.current && !fittingRef.current) {
+        if (!next) return
+        if (inputLockRef.current && !userAdjustRef.current) {
           publishLockedRef.current(current)
           return
         }
-        publishVisibleWindowRef.current()
+        // A scroll or zoom moves the window. Keep those edges so a later quote
+        // refresh does not jump back to the range 当季 first opened.
+        if (inputLockRef.current) {
+          const intraday = isIntradayTimeframe(intervalRef.current)
+          inputLockRef.current = {
+            fromUnix: next.from,
+            toUnix: next.to,
+            fromHasTime: intraday,
+            toHasTime: intraday,
+            fromUser: true,
+            toUser: true,
+          }
+        }
+        syncWindowRef.current(next)
+        const prev = publishedWindowRef.current
+        if (
+          prev &&
+          prev.from === next.from &&
+          prev.to === next.to &&
+          prev.coversAll === next.coversAll &&
+          prev.interval === next.interval
+        ) {
+          return
+        }
+        publishedWindowRef.current = next
+        onVisibleWindowRef.current?.(next)
       }
       const onCrosshair = (raw?: unknown) => {
         if (activeToolRef.current !== "link-cross") return
@@ -961,18 +1057,7 @@ export function KlineProChart({
     setToText(formatBound(lock.toUnix, lock.toHasTime, intervalRef.current))
   }, [publishLockedWindow])
 
-  const useFollowMode = useCallback(() => {
-    inputLockRef.current = null
-    setInputMode(false)
-    const chart = chartRef.current
-    applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
-    if (!chart) return
-    const next = readVisibleWindow(chart, intervalRef.current)
-    if (!next) return
-    publishedWindowRef.current = next
-    onVisibleWindowRef.current?.(next)
-    syncWindowText(next)
-  }, [syncWindowText])
+  const useFollowMode = clearWindow
 
   const useInputMode = useCallback(() => {
     const chart = chartRef.current
@@ -994,18 +1079,21 @@ export function KlineProChart({
   }, [])
 
   useEffect(() => {
-    publishedWindowRef.current = null
-    inputLockRef.current = null
-    setInputMode(false)
     const chart = chartRef.current
     if (!chart) return
     let changed = false
     if (appliedIntervalRef.current !== interval) {
+      // A new period is a manual change, so the previous date lock does not carry over.
+      publishedWindowRef.current = null
+      inputLockRef.current = null
+      setInputMode(false)
       chart.setPeriod(klinePeriod(interval))
       appliedIntervalRef.current = interval
       changed = true
     }
     if (appliedSymbolRef.current !== symbol) {
+      // Keep the date lock. Switching IH/IF/IC/IM should stay on the same 当季 window.
+      publishedWindowRef.current = null
       chart.setSymbol({ ticker: symbol, pricePrecision: pricePrecisionOf(symbol), volumePrecision: 0 })
       appliedSymbolRef.current = symbol
       changed = true
@@ -1038,12 +1126,20 @@ export function KlineProChart({
       applyOrderMarks(chart, marksRef.current, plotted, interval)
       applySessionMarks(chart, plotted, interval)
       const fit = () => {
-        if (inputLockRef.current && publishLockedRef.current(chart)) return
+        if (inputLockRef.current) {
+          publishLockedRef.current(chart)
+          return
+        }
         applyViewportMode(chart, hostRef.current, viewportModeRef.current, symbolRef.current, intervalRef.current)
         publishVisibleWindowRef.current()
       }
       fit()
       requestAnimationFrame(fit)
+      // The chart applies its own default range after resetData. Fit again once that settles.
+      if (inputLockRef.current) {
+        window.setTimeout(fit, 60)
+        window.setTimeout(fit, 280)
+      }
       return
     }
     if (prev?.fingerprint === fingerprint) return
@@ -1157,9 +1253,10 @@ export function KlineProChart({
           className="h-full min-h-0 min-w-0"
           onWheel={noteUserAdjust}
           onPointerDown={(event) => {
-            noteUserAdjust()
+            armUserAdjust(true)
             if (event.button === 2) openSubMenu(event)
           }}
+          onPointerUp={() => armUserAdjust(false)}
           onContextMenu={(event) => {
             event.preventDefault()
             openSubMenu(event)

@@ -12,14 +12,14 @@ import { useQvixSeries } from "@/hooks/use-qvix-series"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import { annualizedGarmanKlassByTime, levelScaleFactor, volPeriodsPerYear } from "@/lib/client/rolling-volatility"
-import { ivReturnScale, omitIsolatedNulls, padIntradaySeries, plotOnVisibleWindow, previousSessionClose, quoteAxisEnd, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
+import { ivReturnScale, omitIsolatedNulls, padIntradaySeries, plotOnVisibleWindow, quoteAxisEnd, returnBaseline, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
 import type { ChartViewportMode } from "@/components/ma/kline-pro-chart"
 import { useIvContracts } from "@/hooks/use-iv-contracts"
 import { type IndexProduct } from "@/lib/client/ctp-market"
 import { INDEX_CHART_COLOR, type IvSnapshot } from "@/lib/client/realtime-overlay"
 import { bucketTime, formatCandleTime, getTimeframe, intradaySessionSlots, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
 import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
-import { SyncedCrosshairLayer } from "@/components/ma/use-synced-crosshair"
+import { ChartPointerCapture } from "@/components/ma/use-synced-crosshair"
 import { CFFEX_CONTRACT_ROLES, cffexOptionMonthForRole } from "@/lib/client/cffex-expiry"
 
 type Props = {
@@ -234,7 +234,7 @@ export function IndexIvChart({
   const { bars, mode, loading, error, source: seriesSource, degradedToDaily, contract: seriesContract } = useQvixSeries(product, interval, iv, ivMonth, lookbackDays, strikeNum)
   const pinnedSeries = strikeNum != null || !!ivMonth || lookbackDays > 1
   const last = pinnedSeries ? (bars.at(-1)?.close ?? null) : (iv?.value ?? bars.at(-1)?.close ?? null)
-  const prevClose = previousSessionClose(bars) ?? (!ivMonth && strikeNum == null ? (iv?.prevClose ?? null) : null)
+  const prevClose = returnBaseline(bars, !ivMonth && strikeNum == null ? (iv?.prevClose ?? null) : null)
   const dayReturn = last != null && prevClose != null && prevClose > 0 ? ((last - prevClose) / prevClose) * 100 : null
   const up = dayReturn == null ? null : dayReturn >= 0
   const color = INDEX_CHART_COLOR[product]
@@ -282,7 +282,8 @@ export function IndexIvChart({
       mode === "intraday" && isIntradayTimeframe(interval)
         ? padIntradaySeries(bars, interval, Math.max(lookbackDays, 1), quoteAxisEnd(variant === "pro" ? viewportMode : undefined))
         : null
-    const follow = variant === "pro" ? visibleWindow : null
+    // 当日 stays on the main chart's window. 2日 / 5日 / 10日 own this chart's axis.
+    const follow = variant === "pro" && lookbackDays <= 1 ? visibleWindow : null
     const extendTo = follow?.coversAll && viewportMode === "fixed-window" && isIntradayTimeframe(interval)
       ? quoteAxisEnd("fixed-window")
       : undefined
@@ -336,47 +337,12 @@ export function IndexIvChart({
       if (!returnScale || typeof value !== "number") return `${when}\n隐含波动率 ${text}`
       const ret = ((value - returnScale.prev) / returnScale.prev) * 100
       const retText = `${ret > 0 ? "+" : ""}${ret.toFixed(2)}%`
-      return `${when}\n隐含波动率 ${text}\n昨收 ${retText}`
+      return `${when}\n隐含波动率 ${text}\n涨跌 ${retText}`
     }
     const option = {
       animation: false,
       backgroundColor: "transparent",
-      tooltip: {
-        trigger: "axis",
-        // The linked cross is drawn outside ECharts so a redraw cannot flash it.
-        show: !driven,
-        triggerOn: driven ? "none" : "mousemove",
-        axisPointer: {
-          type: driven ? "none" : "cross",
-          animation: false,
-          animationDurationUpdate: 0,
-          lineStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1, type: "dashed" },
-          crossStyle: { color: dark ? "#d1d4dc" : "#64748b", width: 1 },
-          label: { backgroundColor: dark ? "#2a2e39" : "#334155" },
-        },
-        backgroundColor: dark ? "rgba(19,22,34,0.95)" : "rgba(255,255,255,0.95)",
-        borderColor: dark ? "#2a2e39" : "#e5e7eb",
-        textStyle: { color: dark ? "#d1d4dc" : "#111827", fontSize: 12 },
-        valueFormatter: (v: number) => (typeof v === "number" ? `${v.toFixed(2)}%` : "--"),
-        ...(returnScale
-          ? {
-              formatter: (params: Array<{ axisValue?: string; seriesName?: string; value?: number | null }>) => {
-                const rows = Array.isArray(params) ? params : [params]
-                const ivRow = rows.find((item) => item?.seriesName === "隐含波动率" && typeof item.value === "number")
-                  ?? rows.find((item) => typeof item?.value === "number")
-                const level = typeof ivRow?.value === "number" ? ivRow.value : null
-                const ret = level != null ? ((level - returnScale.prev) / returnScale.prev) * 100 : null
-                const retText = ret == null ? "--" : `${ret > 0 ? "+" : ""}${ret.toFixed(2)}%`
-                const body = rows.map((item) => {
-                  const name = item?.seriesName || "隐含波动率"
-                  const text = typeof item?.value === "number" ? `${item.value.toFixed(2)}%` : "--"
-                  return `${name} ${text}`
-                }).join("<br/>")
-                return `${rows[0]?.axisValue ?? ""}<br/>${body}<br/>昨收 ${retText}`
-              },
-            }
-          : {}),
-      },
+      tooltip: { show: false },
       grid: {
         left: STACKED_QUOTE_PLOT.left,
         right: variant === "pro" || returnScale ? STACKED_QUOTE_PLOT.right : 16,
@@ -423,7 +389,7 @@ export function IndexIvChart({
             formatter: (v: number) => Number(v).toFixed(returnScale ? 2 : 1),
           },
           splitLine: { lineStyle: { color: variant === "pro" ? "#1e222d" : "#f1f5f9" } },
-          axisPointer: { show: !driven, animation: false },
+          axisPointer: { show: false },
         },
         returnScale
           ? {
@@ -461,9 +427,10 @@ export function IndexIvChart({
       ],
     }
     return { option, gkScale }
-  }, [bars, color, compareGk, driven, gkByTime, interval, lookbackDays, mode, prevClose, variant, viewportMode, visibleWindow])
+  }, [bars, color, compareGk, gkByTime, interval, lookbackDays, mode, prevClose, variant, viewportMode, visibleWindow])
   const option = chartModel.option
   const gkScale = chartModel.gkScale
+  const linkedPointer = driven ? cursorTime ?? null : null
 
   const emptyText = loading
     ? (ivStrike || ivMonth ? "加载该合约…" : "加载 QVIX 日线…")
@@ -577,13 +544,12 @@ export function IndexIvChart({
         {bars.length > 0 ? (
           <>
             <ReactECharts ref={chartRef} option={option} style={{ position: "absolute", inset: 0, height: "100%", width: "100%" }} notMerge />
-            <SyncedCrosshairLayer
+            <ChartPointerCapture
               chartRef={chartRef}
               timesRef={plottedTimesRef}
               describeRef={describeRef}
-              cursorTime={cursorTime}
               interval={interval}
-              active={driven}
+              linkedTime={linkedPointer}
             />
           </>
         ) : (

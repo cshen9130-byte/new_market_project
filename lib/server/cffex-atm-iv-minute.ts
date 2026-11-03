@@ -5,6 +5,7 @@
  */
 
 import type { OverlayPoint } from "@/lib/client/realtime-overlay"
+import { publicQuery } from "@/lib/db"
 import { chinaWallToUnix, SINA_UA, sinaGet } from "@/lib/server/sina-fetch"
 import { curlJson } from "@/lib/server/quote-http"
 import { inSessionMinute, mapLimit, type CaptureContract, type StoredMinute } from "@/lib/server/option-minute-types"
@@ -125,7 +126,15 @@ function parseOptionDm(dm: string): { prefix: string; month: string; side: Side;
   return { prefix: m[1], month: `${m[1]}${m[2]}`, side: m[3] === "C" ? "call" : "put", strike }
 }
 
+let cffexOptionBook: { at: number; rows: EmOption[] } | null = null
+const OPTION_BOOK_MS = 3 * 60_000
+
+/** The listed book changes slowly. ATM selection uses a fresh spot against this grid. */
 async function listCffexOptions(prefix: string): Promise<EmOption[]> {
+  const want = prefix.toUpperCase()
+  if (cffexOptionBook && Date.now() - cffexOptionBook.at < OPTION_BOOK_MS) {
+    return cffexOptionBook.rows.filter((row) => row.dm.toUpperCase().startsWith(want))
+  }
   const out: EmOption[] = []
   for (let page = 0; page < 8; page += 1) {
     const url =
@@ -146,7 +155,7 @@ async function listCffexOptions(prefix: string): Promise<EmOption[]> {
     for (const row of chunk) {
       const dm = String(row.dm || "")
       const parsed = parseOptionDm(dm)
-      if (!parsed || parsed.prefix !== prefix) continue
+      if (!parsed) continue
       const last = num(row.p)
       const dte = num(row.syr)
       if (last == null || !(last > 0) || dte == null) continue
@@ -162,7 +171,8 @@ async function listCffexOptions(prefix: string): Promise<EmOption[]> {
     if (chunk.length < 200) break
     if (typeof json.total === "number" && out.length >= json.total && page > 0) break
   }
-  return out
+  cffexOptionBook = { at: Date.now(), rows: out }
+  return out.filter((row) => row.dm.toUpperCase().startsWith(want))
 }
 
 function pickMonth(rows: EmOption[], monthCode?: string | null) {
@@ -374,10 +384,10 @@ async function underlyingSpot(symbol: string) {
   return last != null && last > 0 ? last : null
 }
 
-async function underlyingMinutes(symbol: string, ndays = 1) {
+async function underlyingMinutes(symbol: string, ndays = 1, recentBars?: number) {
   try {
     const days = Math.min(Math.max(Math.round(ndays) || 1, 1), 10)
-    const datalen = Math.min(240 * days, 1600)
+    const datalen = recentBars && recentBars > 0 ? recentBars : Math.min(240 * days, 1600)
     const text = await sinaGet(
       `https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=${symbol}&scale=1&ma=no&datalen=${datalen}`,
       "https://finance.sina.com.cn/",
@@ -659,6 +669,46 @@ function rememberLiveTip(key: string, strike: number, time: number, close: numbe
   liveTipStore.set(id, prev)
 }
 
+let tipSchemaReady = false
+
+/** The fast CFFEX snapshot, kept so a later read can fill the delayed minute file. */
+async function persistLiveTip(key: string, strike: number, time: number, close: number) {
+  if (!tipSchemaReady) {
+    await publicQuery(`
+      CREATE TABLE IF NOT EXISTS raw_option_iv_tip (
+        underlying_key TEXT NOT NULL,
+        strike         DOUBLE PRECISION NOT NULL,
+        bar_time       TIMESTAMPTZ NOT NULL,
+        iv             DOUBLE PRECISION NOT NULL,
+        PRIMARY KEY (underlying_key, strike, bar_time)
+      )
+    `)
+    tipSchemaReady = true
+  }
+  await publicQuery(
+    `INSERT INTO raw_option_iv_tip (underlying_key, strike, bar_time, iv)
+     VALUES ($1, $2, to_timestamp($3), $4)
+     ON CONFLICT (underlying_key, strike, bar_time) DO UPDATE SET iv = EXCLUDED.iv`,
+    [key, strike, time, close],
+  )
+}
+
+async function storedLiveTips(key: string, strike: number): Promise<LiveTip[]> {
+  try {
+    const res = await publicQuery(
+      `SELECT EXTRACT(EPOCH FROM bar_time)::bigint AS t, iv
+       FROM raw_option_iv_tip
+       WHERE underlying_key = $1 AND strike = $2 AND bar_time > NOW() - INTERVAL '18 hours'`,
+      [key, strike],
+    )
+    return (res.rows as Array<{ t: number | string; iv: number }>)
+      .map((row) => ({ time: Number(row.t), close: Number(row.iv) }))
+      .filter((row) => Number.isFinite(row.time) && row.close > 0)
+  } catch {
+    return []
+  }
+}
+
 /** Live tips win their minute. After the bell, a delayed bar past the last tip is not part of the session. */
 export function clipBarsAfterSession<T extends { time: number; close: number }>(
   bars: T[],
@@ -677,9 +727,13 @@ export function clipBarsAfterSession<T extends { time: number; close: number }>(
   return merged.filter((bar) => bar.time <= lastTip)
 }
 
-function mergeLiveTips(key: string, strike: number, bars: OverlayPoint[]) {
-  const tips = liveTipStore.get(tipId(key, strike))
-  if (!tips?.length) return bars
+async function mergeLiveTips(key: string, strike: number, bars: OverlayPoint[]) {
+  const rounded = Math.round(strike)
+  const byTime = new Map<number, LiveTip>()
+  for (const tip of await storedLiveTips(key, rounded)) byTime.set(tip.time, tip)
+  for (const tip of liveTipStore.get(tipId(key, strike)) || []) byTime.set(tip.time, tip)
+  const tips = [...byTime.values()]
+  if (!tips.length) return bars
   return clipBarsAfterSession(bars, tips, shanghaiSessionMinute() != null)
 }
 
@@ -707,13 +761,33 @@ async function withSinaLiveTip(key: string, atm: AtmChoice | null, bars: Overlay
         const putIv = impliedVolPercent(row.put, spot, row.strike, t, "put")
         if (callIv == null || putIv == null) continue
         const mid = Math.round(((callIv + putIv) / 2) * 100) / 100
-        if (mid > 1 && mid < 150) rememberLiveTip(key, row.strike, minute, mid)
+        if (mid > 1 && mid < 150) {
+          rememberLiveTip(key, row.strike, minute, mid)
+          if (key === "1000index" && Math.round(row.strike) === Math.round(atm.strike)) {
+            void persistLiveTip(key, Math.round(atm.strike), minute, mid).catch(() => undefined)
+          }
+        }
       }
     }
   } catch {
     // The delayed minute file still draws. The next poll tries Sina again.
   }
   return mergeLiveTips(key, atm.strike, bars)
+}
+
+/**
+ * Record the current 中证1000 ATM snapshot. The minute files are stored separately,
+ * so this does not download them again.
+ */
+export async function recordCffexAtmTip(key: string) {
+  if (!(key in INDEX)) return
+  const cfg = INDEX[key as IndexKey]
+  const [options, spot] = await Promise.all([listCffexOptions(cfg.prefix), underlyingSpot(cfg.underlying)])
+  const month = pickMonth(options, null)
+  if (!month || spot == null) return
+  const atm = resolveAtm(month.list, spot, month.month, null, cfg.step)
+  if (!atm) return
+  await withSinaLiveTip(key, atm, [])
 }
 
 /** Live Sina ATM IV for one listed month, merged onto that month's delayed minutes. */
@@ -867,6 +941,32 @@ export async function listCffexIvContracts(key: string, monthCode?: string | nul
   return rows
 }
 
+/** Near-month ATM call and put for the default 中证1000 chart. */
+export async function listDefaultIndexAtmContracts(): Promise<CaptureContract[]> {
+  const key: IndexKey = "1000index"
+  const cfg = INDEX[key]
+  try {
+    const [options, spot] = await Promise.all([listCffexOptions(cfg.prefix), underlyingSpot(cfg.underlying)])
+    const month = pickMonth(options, null)
+    if (!month || spot == null) return []
+    const atm = resolveAtm(month.list, spot, month.month, null, cfg.step)
+    if (!atm) return []
+    const expireDay = addDaysShanghai(todayShanghai(), Math.max(Math.round(atm.dte), 0))
+    const common = {
+      underlyingKey: key,
+      monthCode: atm.month,
+      strike: atm.strike,
+      expireDay,
+    }
+    return [
+      { ...common, contractId: atm.callDm, side: "call" as const, market: atm.callSc || EM_MARKET },
+      { ...common, contractId: atm.putDm, side: "put" as const, market: atm.putSc || EM_MARKET },
+    ]
+  } catch {
+    return []
+  }
+}
+
 let cffexCapturePlan: { at: number; contracts: CaptureContract[] } | null = null
 
 /** Every listed HO / IO / MO contract. Today's minutes come from futsseapi, not push2. */
@@ -923,11 +1023,12 @@ export async function fetchCffexCaptureMinutes(contracts: CaptureContract[]): Pr
   return batches.flat()
 }
 
-export async function fetchCffexSpotMinutes(days: number): Promise<StoredMinute[]> {
+export async function fetchCffexSpotMinutes(days: number, onlyKeys?: string[], recentBars?: number): Promise<StoredMinute[]> {
   const today = todayShanghai()
   const rows: StoredMinute[] = []
-  for (const key of Object.keys(INDEX) as IndexKey[]) {
-    const map = await underlyingMinutes(INDEX[key].underlying, days)
+  const keys = (onlyKeys?.length ? onlyKeys.filter((key): key is IndexKey => key in INDEX) : (Object.keys(INDEX) as IndexKey[]))
+  for (const key of keys) {
+    const map = await underlyingMinutes(INDEX[key].underlying, days, recentBars)
     for (const [stamp, price] of map) {
       const dated = stamp.includes(" ")
       const day = dated ? stamp.slice(0, 10) : today

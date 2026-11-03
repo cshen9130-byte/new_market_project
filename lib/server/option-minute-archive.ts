@@ -4,19 +4,19 @@ import {
   fetchEtfCaptureMinutes,
   fetchEtfSpotMinutes,
   ivBarsFromPair,
-  listEtfCaptureContracts,
+  listDefaultEtfAtmContracts,
 } from "@/lib/server/atm-iv-minute"
 import {
   fetchCffexCaptureMinutes,
   fetchCffexSpotMinutes,
-  listCffexCaptureContracts,
+  listDefaultIndexAtmContracts,
+  recordCffexAtmTip,
 } from "@/lib/server/cffex-atm-iv-minute"
 import { chinaWallToUnix } from "@/lib/server/sina-fetch"
 import { inSessionMinute, type CaptureContract, type StoredMinute } from "@/lib/server/option-minute-types"
 
 const KEEP_SESSIONS = 10
 const LOCK_KEY = 81421011
-const SWEEP_SIZE = 80
 const HISTORY_RETRY_MS = 30 * 60_000
 
 const LISTED: Record<string, string> = {
@@ -265,6 +265,32 @@ async function markJob(job: string, day: string, rowCount: number) {
   )
 }
 
+/** Last few underlying minutes when the stored spots are already current. A gap fetches the day. */
+async function recentSpotBars() {
+  try {
+    const res = await publicQuery(
+      `SELECT underlying_key, EXTRACT(EPOCH FROM MAX(bar_time))::bigint AS t
+       FROM raw_option_minute
+       WHERE contract_id = 'SPOT'
+         AND underlying_key IN ('50etf', '300etf', '500etf', '1000index')
+         AND bar_time > NOW() - INTERVAL '30 hours'
+       GROUP BY underlying_key`,
+    )
+    const rows = res.rows as Array<{ underlying_key: string; t: number | string }>
+    if (rows.length < 4) return undefined
+    const parts = shanghaiParts()
+    const hh = String(Math.floor(parts.minutes / 60)).padStart(2, "0")
+    const mm = String(parts.minutes % 60).padStart(2, "0")
+    const now = chinaWallToUnix(`${parts.day} ${hh}:${mm}:00`)
+    if (now == null) return undefined
+    const oldest = Math.min(...rows.map((row) => Number(row.t)))
+    if (!Number.isFinite(oldest) || now - oldest > 6 * 60) return undefined
+    return 8
+  } catch {
+    return undefined
+  }
+}
+
 async function ingestChunks(contracts: CaptureContract[], history: boolean, etf: boolean) {
   let written = 0
   const size = etf ? 12 : 24
@@ -315,44 +341,43 @@ async function runCapture() {
       let etfRows = 0
       let cffexRows = 0
       if (!etfDone) {
-        const contracts = await listEtfCaptureContracts()
+        const contracts = await listDefaultEtfAtmContracts()
         etfRows = await ingestChunks(contracts, true, true)
         etfRows += await upsertMinutes(await fetchEtfSpotMinutes(KEEP_SESSIONS))
-        if (contracts.length && etfRows > 20_000) await markJob("etf-history", today, etfRows)
+        if (contracts.length && etfRows > 500) await markJob("etf-history", today, etfRows)
       }
       if (!cffexDone) {
-        const contracts = await listCffexCaptureContracts()
+        const contracts = await listDefaultIndexAtmContracts()
         cffexRows = await ingestChunks(contracts, false, false)
-        cffexRows += await upsertMinutes(await fetchCffexSpotMinutes(KEEP_SESSIONS))
-        if (contracts.length && cffexRows > 5_000) await markJob("cffex-book", today, cffexRows)
+        cffexRows += await upsertMinutes(await fetchCffexSpotMinutes(KEEP_SESSIONS, ["1000index"]))
+        if (contracts.length && cffexRows > 100) await markJob("cffex-book", today, cffexRows)
       }
       await pruneOldSessions()
       console.log(`[option-minute] history etfRows=${etfRows} cffexRows=${cffexRows}`)
-      return
+      if (!session && !flush) return
     }
 
-    const etfBook = await listEtfCaptureContracts()
-    const cffexBook = await listCffexCaptureContracts()
-    const book = [...etfBook, ...cffexBook]
-    if (!book.length) return
-    const count = flush ? book.length : Math.min(SWEEP_SIZE, book.length)
-    const start = flush ? 0 : g.cursor % book.length
-    const slice: CaptureContract[] = []
-    for (let i = 0; i < count; i += 1) slice.push(book[(start + i) % book.length]!)
-    if (!flush) g.cursor = (start + count) % book.length
-    const etfSlice = slice.filter((row) => row.underlyingKey.endsWith("etf"))
-    const cffexSlice = slice.filter((row) => row.underlyingKey.endsWith("index"))
+    // Default charts only: 50/300/500 ETF ATM and 中证1000 ATM. Other strikes
+    // are fetched when someone opens them.
+    const etfAtm = await listDefaultEtfAtmContracts()
+    const indexAtm = await listDefaultIndexAtmContracts()
+    const spotBars = await recentSpotBars()
     const written =
-      (await ingestChunks(etfSlice, false, true)) +
-      (await ingestChunks(cffexSlice, false, false)) +
-      (await upsertMinutes(await fetchEtfSpotMinutes(1))) +
-      (await upsertMinutes(await fetchCffexSpotMinutes(1)))
-    if (flush || g.cursor === 0) await pruneOldSessions()
-    console.log(`[option-minute] sweep rows=${written} cursor=${g.cursor} flush=${flush}`)
+      (await ingestChunks(etfAtm, false, true)) +
+      (await ingestChunks(indexAtm, false, false)) +
+      (await upsertMinutes(await fetchEtfSpotMinutes(1, spotBars))) +
+      (await upsertMinutes(await fetchCffexSpotMinutes(1, ["1000index"], spotBars)))
+    if (session) {
+      await recordCffexAtmTip("1000index").catch((err) => {
+        console.error("[option-minute] 1000index tip", err instanceof Error ? err.message : err)
+      })
+    }
+    if (flush) await pruneOldSessions()
+    console.log(`[option-minute] default rows=${written} etf=${etfAtm.length} index=${indexAtm.length} flush=${flush}`)
   })
 }
 
-/** Start a capture if one is not already running. Safe to call from the page poll. */
+/** Start a capture of the four default charts if one is not already running. */
 export function kickOptionMinuteCapture(opts?: { flush?: boolean }) {
   const g = gate()
   if (opts?.flush) g.flush = true
@@ -479,11 +504,14 @@ export async function readArchivedIv(args: {
   month?: string | null
   strike?: number | null
   days: number
+  /** When set, rebuild only that Shanghai session and choose its own ATM strike. */
+  sessionDay?: string | null
 }): Promise<{ bars: OverlayPoint[]; contract: string; sessions: number } | null> {
   const days = Math.min(Math.max(Math.round(args.days) || 1, 1), 10)
   const monthArg = (args.month || "").trim().toUpperCase()
   const strikeArg = args.strike != null && args.strike > 0 ? args.strike : null
-  const cacheId = `${args.key}|${monthArg}|${strikeArg ?? ""}|${days}`
+  const sessionDay = (args.sessionDay || "").trim().slice(0, 10)
+  const cacheId = `${args.key}|${monthArg}|${strikeArg ?? ""}|${days}|${sessionDay}`
   const hit = readCache.get(cacheId)
   if (hit && Date.now() - hit.at < 15_000) return hit.value
 
@@ -500,8 +528,8 @@ export async function readArchivedIv(args: {
     if (!month) return cache(cacheId, null)
     const tipKey = `${args.key}|${month}|${strikeArg ?? ""}`
     const tipDue = Date.now() - (tipAt.get(tipKey) || 0) > 60_000
-    let refresh = inCaptureWindow() && tipDue
-    if (!refresh && tipDue && args.key.endsWith("index")) {
+    let refresh = !sessionDay && inCaptureWindow() && tipDue
+    if (!sessionDay && !refresh && tipDue && args.key.endsWith("index")) {
       const now = shanghaiParts()
       const lag = await publicQuery(
         `SELECT MAX(bar_time) AS last
@@ -528,7 +556,11 @@ export async function readArchivedIv(args: {
        ORDER BY bar_time`,
       [args.key, ids, since],
     )
-    const minutes = printed.rows as MinuteRow[]
+    const minutes = (printed.rows as MinuteRow[]).filter((row) => {
+      if (!sessionDay) return true
+      const at = row.bar_time instanceof Date ? row.bar_time : new Date(row.bar_time)
+      return wallOf(at).day === sessionDay
+    })
     const byId = new Map<string, MinuteRow[]>()
     for (const row of minutes) {
       const list = byId.get(row.contract_id) || []
@@ -610,6 +642,13 @@ export async function readArchivedIv(args: {
     console.error("[option-minute] read", err instanceof Error ? err.message : err)
     return cache(cacheId, null)
   }
+}
+
+/** Last ATM print of one stored session. The strike is that day's own spot, not today's. */
+export async function archivedSessionClose(key: string, day: string): Promise<number | null> {
+  const archived = await readArchivedIv({ key, days: 1, sessionDay: day })
+  const close = archived?.bars.at(-1)?.close ?? null
+  return close != null && close > 0 ? close : null
 }
 
 function cache(

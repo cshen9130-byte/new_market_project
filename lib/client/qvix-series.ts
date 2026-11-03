@@ -322,8 +322,7 @@ export function plotOnVisibleWindow<T extends { time: number; close: number | nu
 /** Plot insets shared by the stacked basis and implied-volatility charts. */
 export const STACKED_QUOTE_PLOT = { left: 52, right: 58 } as const
 
-/** Last close of the session before the latest one. Null when the series is a single session. */
-export function previousSessionClose(bars: Array<{ time: number; close: number | null }>): number | null {
+function previousSessionMark(bars: Array<{ time: number; close: number | null }>): { close: number; day: string } | null {
   let latestDay: string | null = null
   for (let i = bars.length - 1; i >= 0; i -= 1) {
     const close = bars[i]!.close
@@ -333,9 +332,35 @@ export function previousSessionClose(bars: Array<{ time: number; close: number |
       latestDay = day
       continue
     }
-    if (day !== latestDay) return close
+    if (day !== latestDay) return { close, day }
   }
   return null
+}
+
+/** Last close of the session before the latest one. Null when the series is a single session. */
+export function previousSessionClose(bars: Array<{ time: number; close: number | null }>): number | null {
+  return previousSessionMark(bars)?.close ?? null
+}
+
+/**
+ * Baseline for the intraday return. A prior day inside the plotted bars counts only when
+ * it is the previous trading day. An older day that leaked into the series is ignored.
+ */
+export function returnBaseline(
+  bars: Array<{ time: number; close: number | null }>,
+  fallback: number | null,
+): number | null {
+  const prior = previousSessionMark(bars)
+  if (!prior) return fallback
+  let latest: string | null = null
+  for (let i = bars.length - 1; i >= 0; i -= 1) {
+    const close = bars[i]!.close
+    if (close == null || !Number.isFinite(close)) continue
+    latest = shanghaiDayKey(bars[i]!.time)
+    break
+  }
+  if (latest && prior.day === previousTradingDay(latest)) return prior.close
+  return fallback
 }
 
 export type IvReturnScale = {

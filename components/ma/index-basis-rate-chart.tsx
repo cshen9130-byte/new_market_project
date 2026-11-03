@@ -12,9 +12,11 @@ import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import {
   annualizedBasisPct,
   basisPoints,
+  cffexRoleOfContract,
   daysForBasisBar,
   daysToCffexExpiry,
   isNearCffexExpiry,
+  type CffexContractRole,
 } from "@/lib/client/cffex-expiry"
 import {
   type CtpCandle,
@@ -22,7 +24,8 @@ import {
   type IndexProduct,
 } from "@/lib/client/ctp-market"
 import { INDEX_CHART_COLOR, type SpotSnapshot } from "@/lib/client/realtime-overlay"
-import { formatCandleTime, getTimeframe, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
+import { bucketTime, formatCandleTime, getTimeframe, isIntradayTimeframe, shanghaiWallUnix, type TimeframeId } from "@/lib/client/timeframes"
+import { useOwnContractBasis, useRollingBasisRate, type BasisRatePoint } from "@/hooks/use-rolling-basis"
 import { sessionOpenEchartsMarkLine } from "@/lib/client/session-opens"
 import { SyncedCrosshairLayer } from "@/components/ma/use-synced-crosshair"
 import { padIntradaySeries, plotOnVisibleWindow, quoteAxisEnd, STACKED_QUOTE_PLOT, type ChartVisibleWindow } from "@/lib/client/qvix-series"
@@ -72,6 +75,28 @@ function trimOpeningSpikes(points: { time: number; value: number }[]) {
   const mad = dev[Math.floor(dev.length / 2)] || 1
   const cap = Math.max(mad * 6, 8)
   return points.filter((p, i) => i >= 3 || Math.abs(p.value - median) <= cap)
+}
+
+function isContinuousSymbol(symbol: string) {
+  return /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
+}
+
+/** Weekly and monthly charts keep the last daily print in each bucket. */
+function toIntervalPoints(points: BasisRatePoint[], interval: TimeframeId) {
+  if (interval === "1d") return points
+  const map = new Map<number, BasisRatePoint>()
+  for (const point of points) map.set(bucketTime(point.time, interval), { time: bucketTime(point.time, interval), value: point.value })
+  return [...map.values()].sort((a, b) => a.time - b.time)
+}
+
+function withLivePoint(points: BasisRatePoint[], interval: TimeframeId, live: number | null) {
+  if (live == null) return points
+  const time = bucketTime(shanghaiWallUnix(), interval)
+  const next = points.slice()
+  const idx = next.findIndex((point) => point.time === time)
+  if (idx < 0) next.push({ time, value: live })
+  else next[idx] = { time, value: live }
+  return next.sort((a, b) => a.time - b.time)
 }
 
 function nicePercentAxis(rawMin: number, rawMax: number) {
@@ -126,9 +151,18 @@ export function IndexBasisRateChart({
   const up = lastBasis == null ? null : lastBasis >= 0
   const sessionOnly = isIntradayTimeframe(interval)
   const higherTf = interval === "1d" || interval === "1w" || interval === "1M"
+  const listedRole: CffexContractRole | null = symbol ? cffexRoleOfContract(symbol) : null
+  const seriesRole: CffexContractRole | null = listedRole ?? (symbol && isContinuousSymbol(symbol) ? "near" : null)
+  const rolling = useRollingBasisRate(higherTf ? product : null, interval)
+  const own = useOwnContractBasis(higherTf && symbol && !seriesRole ? symbol : null, interval)
 
   const series = useMemo(() => {
     if (!symbol) return []
+    if (higherTf) {
+      const source = seriesRole ? rolling.roles?.[seriesRole] : own.points
+      if (!source?.length) return []
+      return withLivePoint(toIntervalPoints(source, interval), interval, lastBasis)
+    }
     const sessionDay = sessionOnly && tfCandles.length ? shanghaiDayKey(tfCandles[tfCandles.length - 1].time) : null
     const spotTimes = [...spotBars]
       .filter((bar) => !sessionDay || shanghaiDayKey(bar.time) === sessionDay)
@@ -166,7 +200,7 @@ export function IndexBasisRateChart({
       }
     }
     return interval === "1m" ? trimOpeningSpikes(points) : points
-  }, [higherTf, interval, lastBasis, lastFut, lastSpot, sessionOnly, spotBars, symbol, tfCandles])
+  }, [higherTf, interval, lastBasis, lastFut, lastSpot, own.points, rolling.roles, seriesRole, sessionOnly, spotBars, symbol, tfCandles])
 
   const color = INDEX_CHART_COLOR[product]
   const chartRef = useRef<ReactECharts>(null)
@@ -296,7 +330,7 @@ export function IndexBasisRateChart({
 
   const pro = variant === "pro"
   const continuous = !!symbol && /0$/i.test(symbol) && !/\d{4}$/.test(symbol)
-  const waitText = klineError || spotError
+  const waitText = klineError || spotError || rolling.error || own.error
     || (symbol
       ? (spot || spotBars.length
         ? `等待现货与期货 ${getTimeframe(interval).label} 对齐…`

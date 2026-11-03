@@ -54,6 +54,18 @@ export function formatWindowInput(unix: number, interval: TimeframeId) {
   return `${date} ${hh}:${mm}`
 }
 
+/** Shanghai calendar day, `months` earlier, as the same UTC-field unix the charts use. */
+export function shanghaiMonthsAgoUnix(months: number, now = new Date()) {
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now)
+  const [year, month, day] = ymd.split("-").map(Number)
+  return Math.floor(Date.UTC(year, month - 1 - months, day) / 1000)
+}
+
 /** Accepts `2026.10.16`, `2026-10-16`, and an optional `HH:mm`. */
 export function parseWindowInput(text: string): WindowInput | null {
   const match = text.trim().match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?$/)

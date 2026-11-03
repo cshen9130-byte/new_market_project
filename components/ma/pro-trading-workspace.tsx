@@ -53,9 +53,25 @@ import { isNhciSymbol, looksLikeNhciInput, NHCI_NAME, NHCI_SYMBOL } from "@/lib/
 import { productOfSymbol, resolveSymbolInput } from "@/lib/client/pro-trading"
 import type { IvSnapshot, SpotSnapshot } from "@/lib/client/realtime-overlay"
 import { barsOnLastTradeDay, isIntradayTimeframe, type TimeframeId } from "@/lib/client/timeframes"
+import { shanghaiMonthsAgoUnix } from "@/lib/client/window-input"
 import { cn } from "@/lib/utils"
 
 export type ProTradingLayout = "market" | "paper"
+
+type DeskMode = "intraday" | "season"
+
+const DESK_MODES: Array<{ id: DeskMode; label: string; title: string }> = [
+  {
+    id: "intraday",
+    label: "日内",
+    title: "1分钟，近月合约，画今日交易时段。点一次回到这个盘面。",
+  },
+  {
+    id: "season",
+    label: "当季",
+    title: "日线，近季合约，窗口从三个月前的今天到最新，与火富牛股指期货升贴水率同一合约和周期。进入后仍可各自改周期和日期。",
+  },
+]
 
 type Props = {
   open: boolean
@@ -92,6 +108,9 @@ export function ProTradingWorkspace({
   const [tool, setTool] = useState("cross")
   const [cursorTime, setCursorTime] = useState<number | null>(null)
   const [interval, setInterval] = useState<TimeframeId>("1m")
+  const [deskMode, setDeskMode] = useState<DeskMode>("intraday")
+  const pendingDeskFit = useRef<DeskMode | null>(null)
+  const [deskFitNonce, setDeskFitNonce] = useState(0)
   const [basisInterval, setBasisInterval] = useState<TimeframeId>("1m")
   const [ivInterval, setIvInterval] = useState<TimeframeId>("1m")
   const [contractRole, setContractRole] = useState<CffexContractRole>(() =>
@@ -205,7 +224,7 @@ export function ProTradingWorkspace({
 
   const product = productOfSymbol(symbol)
   const live1m = candles[symbol] || []
-  const { candles: tfCandles, quote: klineQuote } = useSymbolKline(symbol || null, interval, live1m, quotes[symbol], {
+  const { candles: tfCandles, quote: klineQuote, loading: klineLoading } = useSymbolKline(symbol || null, interval, live1m, quotes[symbol], {
     history: true,
   })
   const derivedWindow = useMemo(
@@ -259,6 +278,49 @@ export function ProTradingWorkspace({
     return matched.slice(0, 16)
   }, [query, listedSymbols])
 
+  function requestDeskFit(next: DeskMode) {
+    pendingDeskFit.current = next
+    setDeskFitNonce((n) => n + 1)
+  }
+
+  function applyDeskMode(next: DeskMode) {
+    setDeskMode(next)
+    requestDeskFit(next)
+    const tf: TimeframeId = next === "season" ? "1d" : "1m"
+    setInterval(tf)
+    setBasisInterval(tf)
+    setIvInterval(tf)
+    if (!product || isNhciSymbol(symbol)) return
+    const role: CffexContractRole = next === "season" ? "quarter" : "near"
+    const picked = cffexContractForRole(product, role)
+    if (!picked) return
+    setContractRole(role)
+    setSymbol(picked)
+    setQuery(picked)
+    if (ivMonthPinned) setIvMonth(cffexOptionMonthForRole(product, role))
+  }
+
+  useEffect(() => {
+    const fit = pendingDeskFit.current
+    if (!fit || layout !== "market" || klineLoading) return
+    if (fit === "season") {
+      if (interval !== "1d") {
+        pendingDeskFit.current = null
+        return
+      }
+      if (!tfCandles.length) return
+      const fitted = klineRef.current?.showWindow(shanghaiMonthsAgoUnix(3), tfCandles[tfCandles.length - 1]!.time)
+      if (fitted) pendingDeskFit.current = null
+      return
+    }
+    if (interval !== "1m") {
+      pendingDeskFit.current = null
+      return
+    }
+    klineRef.current?.clearWindow()
+    pendingDeskFit.current = null
+  }, [interval, symbol, tfCandles, klineLoading, layout, deskFitNonce])
+
   function selectTimeframe(id: TimeframeId, target: "kline" | "basis" | "iv" = "kline") {
     const next = isNhciSymbol(symbol) && isIntradayTimeframe(id) ? "1d" : id
     if (tfLocked || target === "kline") {
@@ -311,6 +373,9 @@ export function ProTradingWorkspace({
     setContractRole(role)
     if (layout === "paper") focusChart(picked)
     else commit(picked)
+    // 当季 / 日内 stay on that preset when the product changes. A hand edit of
+    // the timeframe, dates, or scroll still sticks until the mode is clicked again.
+    if (layout === "market" && (deskMode === "season" || deskMode === "intraday")) requestDeskFit(deskMode)
   }
 
   function onContractRoleChange(role: CffexContractRole) {
@@ -401,6 +466,26 @@ export function ProTradingWorkspace({
           dark
           className="max-w-[420px]"
         />
+        <div className="flex shrink-0 items-center overflow-hidden rounded border border-[#2a2e39]">
+          {DESK_MODES.map((mode, index) => (
+            <button
+              key={mode.id}
+              type="button"
+              title={mode.title}
+              disabled={isNhciSymbol(symbol) || !product}
+              onClick={() => applyDeskMode(mode.id)}
+              className={cn(
+                "inline-flex h-7 items-center px-2 text-[11px] disabled:opacity-40",
+                index > 0 && "border-l border-[#2a2e39]",
+                deskMode === mode.id
+                  ? "bg-[#4c84ff] text-white"
+                  : "text-[#adb3bd] hover:bg-[#2a2e39] hover:text-white",
+              )}
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
         {layout === "market" ? (
           <button
             type="button"

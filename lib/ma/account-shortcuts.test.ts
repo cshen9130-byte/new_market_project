@@ -6,6 +6,7 @@ import {
   canonicalizeShortcutCombo,
   formatShortcutCombo,
   normalizeAccountShortcuts,
+  openAccountShortcutTab,
   shortcutComboFromEvent,
 } from "./account-shortcuts"
 
@@ -52,6 +53,21 @@ describe("account shortcuts", () => {
         { combo: "alt+o", href: "/ma/dashboard/options-market", label: "期权", newTab: true },
       ],
     )
+  })
+
+  it("opens Ctrl+Alt+T on the trading url without clearing opener", () => {
+    const calls: unknown[][] = []
+    const opened = openAccountShortcutTab("/ma/dashboard/realtime-quotes?view=pro", ((...args: unknown[]) => {
+      calls.push(args)
+      return {} as Window
+    }) as typeof window.open)
+    assert.equal(opened, true)
+    assert.deepEqual(calls, [["/ma/dashboard/realtime-quotes?view=pro", "_blank"]])
+  })
+
+  it("reports when the browser blocked the new tab", () => {
+    const opened = openAccountShortcutTab("/ma/dashboard/realtime-quotes?view=pro", (() => null) as typeof window.open)
+    assert.equal(opened, false)
   })
 
   it("reads Ctrl+Alt+T from a keyboard event and ignores plain letters", () => {

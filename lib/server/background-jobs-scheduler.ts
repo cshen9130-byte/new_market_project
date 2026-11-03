@@ -337,22 +337,42 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  // Weekday session: roll 1-minute option/spot prints into raw_option_minute (10 trading days).
-  cron.schedule("* 9-15 * * 1-5", () => {
-    void import("./option-minute-archive")
-      .then((mod) => mod.kickOptionMinuteCapture())
-      .catch((e) => console.error("[option-minute] scheduler error:", e))
-  }, { timezone: "Asia/Shanghai" })
-  cron.schedule("10 8 * * 1-5", () => {
-    void import("./option-minute-archive")
-      .then((mod) => mod.kickOptionMinuteCapture())
-      .catch((e) => console.error("[option-minute] history scheduler error:", e))
-  }, { timezone: "Asia/Shanghai" })
-  cron.schedule("6 15 * * 1-5", () => {
-    void import("./option-minute-archive")
-      .then((mod) => mod.kickOptionMinuteCapture({ flush: true }))
-      .catch((e) => console.error("[option-minute] close scheduler error:", e))
-  }, { timezone: "Asia/Shanghai" })
+  registerDefaultIvMinuteCapture()
 
   console.log("[background-jobs] cron schedules registered")
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __defaultIvCaptureRegistered: boolean | undefined
+}
+
+/** Keep the four default IV charts current. Other strikes stay on demand. */
+export function registerDefaultIvMinuteCapture() {
+  if (globalThis.__defaultIvCaptureRegistered) return
+  globalThis.__defaultIvCaptureRegistered = true
+  void import("node-cron")
+    .then((mod) => {
+      const cron = mod.default
+      cron.schedule("* 9-15 * * 1-5", () => {
+        void import("./option-minute-archive")
+          .then((archive) => archive.kickOptionMinuteCapture())
+          .catch((e) => console.error("[option-minute] scheduler error:", e))
+      }, { timezone: "Asia/Shanghai" })
+      cron.schedule("10 8 * * 1-5", () => {
+        void import("./option-minute-archive")
+          .then((archive) => archive.kickOptionMinuteCapture())
+          .catch((e) => console.error("[option-minute] history scheduler error:", e))
+      }, { timezone: "Asia/Shanghai" })
+      cron.schedule("6 15 * * 1-5", () => {
+        void import("./option-minute-archive")
+          .then((archive) => archive.kickOptionMinuteCapture({ flush: true }))
+          .catch((e) => console.error("[option-minute] close scheduler error:", e))
+      }, { timezone: "Asia/Shanghai" })
+      console.log("[option-minute] default IV capture scheduled")
+    })
+    .catch((e) => {
+      globalThis.__defaultIvCaptureRegistered = false
+      console.error("[option-minute] schedule failed:", e)
+    })
 }

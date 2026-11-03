@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import type ReactECharts from "echarts-for-react"
 
 import { crosshairIndex } from "@/lib/client/linked-crosshair"
@@ -50,6 +50,92 @@ function seriesValue(inst: EChartsInstance, index: number): number | null {
   return null
 }
 
+function nearestSeriesValue(inst: EChartsInstance, index: number): number | null {
+  const direct = seriesValue(inst, index)
+  if (direct != null) return direct
+  const option = inst.getOption() as { series?: Array<{ data?: unknown[] }> }
+  const length = option.series?.[0]?.data?.length ?? 0
+  for (let step = 1; step < length; step += 1) {
+    const left = seriesValue(inst, index - step)
+    if (left != null) return left
+    const right = seriesValue(inst, index + step)
+    if (right != null) return right
+  }
+  return null
+}
+
+function indexInGrid(x: number, rect: { x: number; width: number }, count: number): number {
+  if (count <= 0 || rect.width <= 0) return -1
+  const index = Math.floor((x - rect.x) / (rect.width / count))
+  return index >= 0 && index < count ? index : -1
+}
+
+/**
+ * A hit layer over the chart. ECharts drops its own crosshair on every live redraw,
+ * so the cross is drawn in the DOM and stays until the pointer leaves.
+ */
+export function ChartPointerCapture({
+  chartRef,
+  timesRef,
+  describeRef,
+  interval,
+  linkedTime,
+}: {
+  chartRef: RefObject<ReactECharts | null>
+  timesRef: RefObject<number[]>
+  describeRef?: RefObject<(index: number) => string>
+  interval: TimeframeId
+  linkedTime?: number | null
+}) {
+  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null)
+  const pinnedRef = useRef<number | null>(null)
+
+  const move = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const inst = chartInstance(chartRef)
+    const times = timesRef.current ?? []
+    if (!inst || times.length === 0) return
+    const box = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - box.left
+    const y = event.clientY - box.top
+    if (x < 0 || y < 0 || x > box.width || y > box.height) return
+    const rect = gridRect(inst)
+    const onPlot = x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
+    const index = indexInGrid(x, onPlot ? rect : { x: 0, width: box.width }, times.length)
+    if (index < 0 || pinnedRef.current === index) return
+    pinnedRef.current = index
+    setPinnedIndex(index)
+  }
+
+  const leave = () => {
+    if (pinnedRef.current == null) return
+    pinnedRef.current = null
+    setPinnedIndex(null)
+  }
+
+  const cursorTime = pinnedIndex != null
+    ? (timesRef.current?.[pinnedIndex] ?? null)
+    : (linkedTime ?? null)
+
+  return (
+    <div
+      className="absolute inset-0 z-20"
+      data-iv-crosshair-host="1"
+      onMouseMove={move}
+      onMouseLeave={leave}
+    >
+      <SyncedCrosshairLayer
+        chartRef={chartRef}
+        timesRef={timesRef}
+        describeRef={describeRef}
+        cursorTime={cursorTime}
+        pinnedIndex={pinnedIndex}
+        interval={interval}
+        active={cursorTime != null}
+      />
+    </div>
+  )
+}
+
 /**
  * The linked cross is a DOM line, not an ECharts axis pointer.
  * ECharts drops the pointer on a null daily slot and flashes it on every redraw.
@@ -59,6 +145,7 @@ export function SyncedCrosshairLayer({
   timesRef,
   describeRef,
   cursorTime,
+  pinnedIndex = null,
   interval,
   active,
 }: {
@@ -66,6 +153,7 @@ export function SyncedCrosshairLayer({
   timesRef: RefObject<number[]>
   describeRef?: RefObject<(index: number) => string>
   cursorTime: number | null | undefined
+  pinnedIndex?: number | null
   interval: TimeframeId
   active: boolean
 }) {
@@ -82,18 +170,27 @@ export function SyncedCrosshairLayer({
     }
     const inst = chartInstance(chartRef)
     if (!inst) return
-    const idx = crosshairIndex(timesRef.current ?? [], cursorTime, interval)
-    if (idx < 0) {
+    const times = timesRef.current ?? []
+    const idx = pinnedIndex != null && pinnedIndex >= 0
+      ? pinnedIndex
+      : crosshairIndex(times, cursorTime, interval)
+    if (idx < 0 || idx >= times.length) {
       if (markRef.current) {
         markRef.current = null
         setMark(null)
       }
       return
     }
-    const x = inst.convertToPixel({ xAxisIndex: 0 }, idx)
-    const value = seriesValue(inst, idx)
-    const y = value == null ? null : inst.convertToPixel({ yAxisIndex: 0 }, value)
     const rect = gridRect(inst)
+    const xRaw = inst.convertToPixel({ xAxisIndex: 0 }, idx)
+    const xPixel = Array.isArray(xRaw) ? xRaw[0] : xRaw
+    const band = times.length > 0 ? rect.width / times.length : 0
+    const x = typeof xPixel === "number" && Number.isFinite(xPixel)
+      ? xPixel
+      : rect.x + (idx + 0.5) * band
+    const value = nearestSeriesValue(inst, idx)
+    const yRaw = value == null ? null : inst.convertToPixel({ yAxisIndex: 0 }, value)
+    const y = Array.isArray(yRaw) ? yRaw[0] : yRaw
     if (typeof x !== "number" || !Number.isFinite(x)) return
     const next: Mark = {
       x,
@@ -119,7 +216,7 @@ export function SyncedCrosshairLayer({
     }
     markRef.current = next
     setMark(next)
-  }, [active, chartRef, cursorTime, describeRef, interval, timesRef])
+  }, [active, chartRef, cursorTime, describeRef, interval, pinnedIndex, timesRef])
 
   useLayoutEffect(() => {
     place()
@@ -151,14 +248,14 @@ export function SyncedCrosshairLayer({
   if (!mark) return null
   const labelOnLeft = mark.x > mark.left + mark.width * 0.62
   return (
-    <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
+    <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden" data-iv-crosshair="1">
       <div
         style={{
           position: "absolute",
           left: mark.x,
           top: mark.top,
           height: mark.height,
-          borderLeft: "1px dashed #d1d4dc",
+          borderLeft: "1px dashed #64748b",
         }}
       />
       {mark.y != null ? (
@@ -168,7 +265,21 @@ export function SyncedCrosshairLayer({
             top: mark.y,
             left: mark.left,
             width: mark.width,
-            borderTop: "1px dashed #d1d4dc",
+            borderTop: "1px dashed #64748b",
+          }}
+        />
+      ) : null}
+      {mark.y != null ? (
+        <div
+          style={{
+            position: "absolute",
+            left: mark.x - 3,
+            top: mark.y - 3,
+            width: 6,
+            height: 6,
+            borderRadius: 999,
+            background: "#0f172a",
+            border: "1px solid #e2e8f0",
           }}
         />
       ) : null}

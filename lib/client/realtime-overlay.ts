@@ -46,7 +46,7 @@ export type IvSnapshot = {
   value: number | null
   change: number | null
   pct: number | null
-  /** Prior-session QVIX close. The intraday chart's 0% line. */
+  /** Previous session close of the plotted series. The intraday chart's 0% line. */
   prevClose?: number | null
   source: string | null
   /** Call/put pair behind an ATM rebuild, or the near-month ATM pair for a QVIX index. */
@@ -170,10 +170,18 @@ export function stabilizeOverlay(
           (nextIv.source.startsWith("archive:") ||
             nextIv.source.startsWith("qvix-sina:") ||
             nextIv.source.startsWith("sina-atm:"))
-        if (prevIv.source?.startsWith("optbbs:") && nextIsStoredSina) {
+        const nextIsLiveTape =
+          !!nextIv.source &&
+          (nextIv.source.startsWith("qvix-sina:") ||
+            nextIv.source.startsWith("sina-atm:") ||
+            nextIv.source.startsWith("qvix-cffex:") ||
+            nextIv.source.startsWith("em-atm:"))
+        if (prevIv.source?.startsWith("optbbs:") && (nextIsStoredSina || nextIsLiveTape)) {
           iv[product] = nextIv
         } else if (ivSourceFamily(prevIv.source) !== ivSourceFamily(nextIv.source)) {
-          if (prevIv.source?.startsWith("archive:") && !nextIv.source?.startsWith("archive:")) {
+          // A stored copy may hand back to the live tape of the same series.
+          // It must not hand the chart to 期权论坛.
+          if (prevIv.source?.startsWith("archive:") && nextIsLiveTape) {
             iv[product] = nextIv
           } else {
             iv[product] = prevIv

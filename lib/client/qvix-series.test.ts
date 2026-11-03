@@ -5,7 +5,7 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
 import { barsOnLastTradeDay } from "./timeframes"
-import { chartWindowForSeries, intradayAxisEnd, ivReturnScale, omitIsolatedNulls, padIntradayLookback, padIntradaySeries, plotOnVisibleWindow, previousSessionClose, quoteAxisEnd, qvixBarsForTimeframe, sliceOverlayByLookbackDays, sliceSeriesToWindow } from "./qvix-series"
+import { chartWindowForSeries, intradayAxisEnd, ivReturnScale, omitIsolatedNulls, padIntradayLookback, padIntradaySeries, plotOnVisibleWindow, previousSessionClose, quoteAxisEnd, qvixBarsForTimeframe, returnBaseline, sliceOverlayByLookbackDays, sliceSeriesToWindow } from "./qvix-series"
 
 function unix(y: number, m: number, d: number, h = 0, min = 0) {
   return Math.floor(Date.UTC(y, m - 1, d, h, min) / 1000)
@@ -177,6 +177,21 @@ describe("previous session close", () => {
       { time: unix(2026, 11, 2, 14, 30), close: 38.3 },
     ]
     assert.equal(previousSessionClose(bars), null)
+  })
+
+  it("keeps yesterday's print and ignores an older day that is not the previous session", () => {
+    const mondayAndTuesday = [
+      { time: unix(2026, 11, 2, 15, 0), close: 21.32 },
+      { time: unix(2026, 11, 3, 10, 30), close: 21.26 },
+    ]
+    assert.equal(returnBaseline(mondayAndTuesday, 21.79), 21.32)
+    const fridayAndTuesday = [
+      { time: unix(2026, 10, 30, 15, 0), close: 40.31 },
+      { time: unix(2026, 11, 3, 10, 30), close: 38.63 },
+    ]
+    assert.equal(returnBaseline(fridayAndTuesday, 38.2), 38.2)
+    const todayOnly = [{ time: unix(2026, 11, 3, 10, 30), close: 15.36 }]
+    assert.equal(returnBaseline(todayOnly, 15.49), 15.49)
   })
 })
 

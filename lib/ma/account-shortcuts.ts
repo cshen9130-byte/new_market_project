@@ -121,6 +121,18 @@ export function isSafeShortcutHref(href: string): boolean {
   return true
 }
 
+/**
+ * Open a dashboard shortcut in a new tab.
+ *
+ * Pass the destination straight to `window.open`. Do not follow this with
+ * `opened.opener = null`: Chrome creates the tab at about:blank, then drops
+ * the real navigation, and the tab stays blank with the spinner running.
+ * Returns false only when the browser blocked the new tab.
+ */
+export function openAccountShortcutTab(href: string, open: typeof window.open = window.open.bind(window)): boolean {
+  return open(href, "_blank") != null
+}
+
 export function createAccountShortcutId(): string {
   const stamp = Date.now().toString(36)
   const rand = Math.random().toString(36).slice(2, 6)
