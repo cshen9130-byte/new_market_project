@@ -31,6 +31,13 @@ function wallDay(unix: number) {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
 }
 
+/** A full minute tape, or the first prints of today's session. A short yesterday tape is not enough. */
+function takeMinute(bars: OverlayPoint[]) {
+  if (bars.length >= 8) return true
+  const last = bars.at(-1)
+  return !!last && wallDay(last.time) === todayShanghai()
+}
+
 function todayShanghai() {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
@@ -598,17 +605,17 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
 
   // Live trading, including lunch: Sina ETF for the first three, CFFEX for 中证1000.
   // 期权论坛 is only reached when this primary tape is missing.
-  if (bars.length < 8 && !meta.key.endsWith("index")) {
+  if (!takeMinute(bars) && !meta.key.endsWith("index")) {
     const etf = await fetchEtfAtmIvMinutes(meta.key)
-    if (etf && etf.bars.length >= 8) {
+    if (etf && takeMinute(etf.bars)) {
       bars = etf.bars
       contract = etf.contract || null
       source = labelAtmExplicitly() ? `sina-atm:${meta.key}` : `qvix-sina:${meta.key}`
     }
   }
-  if (bars.length < 8 && meta.key.endsWith("index")) {
+  if (!takeMinute(bars) && meta.key.endsWith("index")) {
     const live = await fetchCffexAtmIvMinutes(meta.key)
-    if (live && live.bars.length >= 8) {
+    if (live && takeMinute(live.bars)) {
       bars = live.bars
       contract = live.contract || null
       source = labelAtmExplicitly() ? `em-atm:${meta.key}` : `qvix-cffex:${meta.key}`
@@ -617,7 +624,7 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
 
   // Stick to the previously established minute source so flaky optbbs vs ATM
   // rebuild do not alternate chart shapes every poll.
-  if (bars.length < 8 && preferFamily && preferFamily !== "none" && preferFamily !== "optbbs") {
+  if (!takeMinute(bars) && preferFamily && preferFamily !== "none" && preferFamily !== "optbbs") {
     const sticky = await loadIvFromFamily(product, preferFamily)
     if (sticky && sticky.bars.length >= 8) {
       bars = sticky.bars
@@ -626,7 +633,7 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
     }
   }
 
-  if (bars.length < 8 && cashDayUnderway()) {
+  if (!takeMinute(bars) && cashDayUnderway()) {
     try {
       const forum = await fetchOptbbsMin(meta.key)
       if (forum.length >= 8) {
@@ -637,7 +644,7 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
       // primary tape stays empty; daily fallbacks below still run
     }
   }
-  if (bars.length < 8) {
+  if (!takeMinute(bars)) {
     try {
       bars = await fetchSinaQvixMin(SINA_QVIX_SYMBOL[meta.key] || "50ETF")
       if (bars.length) source = "sina"
@@ -648,22 +655,22 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
   // Minute reconstruction (QVIX == near-month ATM IV). Official optbbs index CSVs are often #NAME?.
   // Keep QVIX branding by default; set QVIX_LABEL_ATM=1 for explicit em-atm/sina-atm demotion.
   // Set QVIX_ALLOW_ATM_FALLBACK=0 to disable reconstruction entirely.
-  if (bars.length < 8 && allowAtmFallback()) {
+  if (!takeMinute(bars) && allowAtmFallback()) {
     const atmKeys = [meta.key]
     const explicit = labelAtmExplicitly()
     for (const code of atmKeys) {
       const live = await fetchEtfAtmIvMinutes(code)
-      if (live && live.bars.length >= 8) {
+      if (live && takeMinute(live.bars)) {
         bars = live.bars
         contract = live.contract || null
         source = explicit ? `sina-atm:${code}` : `qvix-sina:${code}`
         break
       }
     }
-    if (bars.length < 8) {
+    if (!takeMinute(bars)) {
       for (const code of atmKeys) {
         const live = await fetchCffexAtmIvMinutes(code)
-        if (live && live.bars.length >= 8) {
+        if (live && takeMinute(live.bars)) {
           bars = live.bars
           contract = live.contract || null
           source = explicit ? `em-atm:${code}` : `qvix-cffex:${code}`
@@ -671,7 +678,7 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
         }
       }
     }
-    if (bars.length < 8) {
+    if (!takeMinute(bars)) {
       for (const code of atmKeys) {
         const archived = await readArchivedIv({ key: code, days: 1 })
         if (archived && archived.bars.length >= 8) {
@@ -683,10 +690,10 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
       }
     }
   }
-  if (bars.length >= 8) bars = trimLeadingIvOutliers(bars)
+  if (takeMinute(bars)) bars = trimLeadingIvOutliers(bars)
 
   // Daily real QVIX from optbbs k.csv (when minute feeds are blank).
-  if (bars.length < 8) {
+  if (!takeMinute(bars)) {
     for (const code of codes) {
       const daily = await fetchOptbbsKDaily(code)
       if (daily.length >= 8) {
@@ -696,7 +703,7 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
       }
     }
   }
-  if (bars.length < 8) {
+  if (!takeMinute(bars)) {
     for (const code of codes) {
       const daily = await fetchQvixDailyFromDb(code)
       if (daily.length >= 2) {
@@ -707,7 +714,7 @@ async function loadIv(product: IndexProduct, preferFamily?: string | null): Prom
     }
   }
 
-  if (bars.length < 2) {
+  if (!takeMinute(bars) && bars.length < 2) {
     for (const code of codes) {
       const pre = await fetchOptbbsPre(code)
       if (pre == null) continue
@@ -802,7 +809,7 @@ function isMinuteIv(snap: IvSnapshot) {
       snap.source.startsWith("sina-atm:") ||
       snap.source.startsWith("em-atm:") ||
       snap.source.startsWith("archive:")) &&
-    snap.bars.length >= 8
+    takeMinute(snap.bars)
   )
 }
 

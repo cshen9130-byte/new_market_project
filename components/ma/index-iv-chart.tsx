@@ -309,7 +309,9 @@ export function IndexIvChart({
     const sparse = ivNumeric.length < 8
     const lo = numeric.length ? Math.min(...numeric) : 0
     const hi = numeric.length ? Math.max(...numeric) : 1
-    const returnScale = !compareGk && mode === "intraday" && prevClose != null ? ivReturnScale(lo, hi, prevClose) : null
+    const returnScale = !compareGk && mode === "intraday" && prevClose != null && ivNumeric.length > 0
+      ? ivReturnScale(lo, hi, prevClose)
+      : null
     const { min, max, interval: yInterval } = returnScale
       ? { min: returnScale.leftMin, max: returnScale.leftMax, interval: returnScale.leftInterval }
       : niceRange(lo, hi)

@@ -6,7 +6,23 @@ import { FileDown, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface EquityPoint { date: string; cumPnl: number; margin?: number; equity?: number }
-interface EquitySeries { account: string; data: EquityPoint[]; nominalCapital?: number | null }
+interface EquitySeries {
+  account: string
+  label?: string | null
+  source?: "mom" | "account"
+  data: EquityPoint[]
+  nominalCapital?: number | null
+}
+
+function seriesName(s: { account: string; label?: string | null }) {
+  return s.label?.trim() || s.account
+}
+
+function findSeries(list: EquitySeries[], q: string): EquitySeries | undefined {
+  const exact = list.find(s => s.account.toLowerCase() === q || (s.label ?? "").toLowerCase() === q)
+  if (exact) return exact
+  return list.find(s => s.account.toLowerCase().includes(q) || (s.label ?? "").toLowerCase().includes(q))
+}
 
 function isoToday() { return new Date().toISOString().slice(0, 10) }
 function isoMonthOffset(m: number) {
@@ -219,10 +235,23 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       const params = new URLSearchParams()
       if (f) params.set("from", f)
       if (t) params.set("to", t)
-      const res = await fetch(`/ma/api/mom-analysis/equity-curve?${params}`, { cache: "no-store" })
-      const json = await res.json()
-      if (!res.ok || !json.ok) throw new Error(json.error || "请求失败")
-      setAllSeries(json.series ?? [])
+      const qs = params.toString()
+      const [momRes, accountRes] = await Promise.all([
+        fetch(`/ma/api/mom-analysis/equity-curve?${qs}`, { cache: "no-store" }),
+        fetch(`/ma/api/account-risk/equity-curve?${qs}`, { cache: "no-store" }),
+      ])
+      const momJson = await momRes.json()
+      if (!momRes.ok || !momJson.ok) throw new Error(momJson.error || "请求失败")
+      const momSeries: EquitySeries[] = (momJson.series ?? []).map((s: EquitySeries) => ({ ...s, source: "mom" as const }))
+      let accountSeries: EquitySeries[] = []
+      if (accountRes.ok) {
+        const accountJson = await accountRes.json().catch(() => null)
+        if (accountJson?.ok) {
+          const taken = new Set(momSeries.map(s => s.account.toLowerCase()))
+          accountSeries = (accountJson.series ?? []).filter((s: EquitySeries) => !taken.has(String(s.account).toLowerCase()))
+        }
+      }
+      setAllSeries([...momSeries, ...accountSeries])
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败")
     } finally {
@@ -259,17 +288,16 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const selectAccountBySearch = () => {
     const q = accountSearch.trim().toLowerCase()
     if (!q) return
-    if (q === "全部") {
+    if (q === "全部" || q === "全部盘手") {
       setSelectedAccount("全部")
       return
     }
-    const exact = sortedAccounts.find(s => s.account.toLowerCase() === q)
-    if (exact) {
-      setSelectedAccount(exact.account)
+    if (q === "全部单账户" || q === "单账户") {
+      setSelectedAccount("全部单账户")
       return
     }
-    const partial = sortedAccounts.find(s => s.account.toLowerCase().includes(q))
-    if (partial) setSelectedAccount(partial.account)
+    const hit = findSeries(sortedAccounts, q)
+    if (hit) setSelectedAccount(hit.account)
   }
 
   const selectCompareBySearch = () => {
@@ -278,17 +306,13 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       setCompareAccount("")
       return
     }
-    const exact = sortedAccounts.find(s => s.account.toLowerCase() === q)
-    if (exact) {
-      setCompareAccount(exact.account)
-      return
-    }
-    const partial = sortedAccounts.find(s => s.account.toLowerCase().includes(q))
-    if (partial) setCompareAccount(partial.account)
+    const hit = findSeries(sortedAccounts, q)
+    if (hit) setCompareAccount(hit.account)
   }
 
   const downloadCsv = () => {
-    const series = selectedAccount === "全部" ? displaySeries : displaySeries.filter(s => s.account === selectedAccount)
+    const aggregate = selectedAccount === "全部" || selectedAccount === "全部单账户"
+    const series = aggregate ? displaySeries : displaySeries.filter(s => s.account === selectedAccount)
     if (series.length === 0) return
 
     const rows: string[] = []
@@ -307,7 +331,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       }
     } else {
       // Multiple accounts: one return_rate_pct column per account
-      const accountNames = series.map(s => s.account)
+      const accountNames = series.map(s => seriesName(s))
       rows.push(`date,${accountNames.map(a => `${a.toUpperCase()}_return_pct`).join(",")}`)
       // Collect all dates
       const dateSet = new Set<string>()
@@ -329,7 +353,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    const label = selectedAccount === "全部" ? "全部账户" : selectedAccount.toUpperCase()
+    const label = selectedAccount === "全部" ? "全部盘手" : selectedAccount === "全部单账户" ? "全部单账户" : seriesName(allSeries.find(s => s.account === selectedAccount) ?? { account: selectedAccount })
     a.download = `${label}_收益率曲线_${from}_${to}.csv`
     document.body.appendChild(a)
     a.click()
@@ -338,17 +362,21 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   }
 
   const downloadProfile = async () => {
-    if (!selectedAccount || selectedAccount === "全部") {
+    if (!selectedAccount || selectedAccount === "全部" || selectedAccount === "全部单账户") {
       setProfileError("请先选择一个账户")
       return
     }
     setProfiling(true)
     setProfileError(null)
     try {
+      const picked = allSeries.find(s => s.account === selectedAccount)
       const params = new URLSearchParams({ account: selectedAccount })
       if (from) params.set("from", from)
       if (to) params.set("to", to)
-      const res = await fetch(`/ma/api/mom-analysis/trader-profile?${params}`)
+      const endpoint = picked?.source === "account"
+        ? "/ma/api/account-risk/trader-profile"
+        : "/ma/api/mom-analysis/trader-profile"
+      const res = await fetch(`${endpoint}?${params}`)
       if (!res.ok) {
         const json = await res.json().catch(() => ({} as { error?: string; detail?: string }))
         throw new Error(json.error || json.detail || `生成失败（${res.status}）`)
@@ -357,7 +385,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = `${selectedAccount.toUpperCase()}_盘手侧写.docx`
+      a.download = `${seriesName(picked ?? { account: selectedAccount })}_盘手侧写.docx`
       document.body.appendChild(a)
       a.click()
       a.remove()
@@ -369,11 +397,14 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     }
   }
 
-  const showAll = selectedAccount === "全部"
+  const showAll = selectedAccount === "全部" || selectedAccount === "全部单账户"
+  const aggregatePool = selectedAccount === "全部单账户"
+    ? allSeries.filter(s => s.source === "account")
+    : allSeries.filter(s => s.source !== "account")
   const primarySeries = allSeries.find(s => s.account === selectedAccount)
   const compareSeries = allSeries.find(s => s.account === compareAccount)
   const visibleSeries = showAll
-    ? allSeries
+    ? aggregatePool
     : [
         ...(primarySeries ? [primarySeries] : []),
         ...(compareSeries && compareSeries.account !== selectedAccount ? [compareSeries] : []),
@@ -445,7 +476,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const volSeries = displaySeries.map((s, i) => {
     const vol = computeVolatility(s.data, resolveStartCapital(s, capitalMode))
     return {
-      name: s.account,
+      name: seriesName(s),
       type: "line" as const,
       smooth: false,
       symbol: "none",
@@ -465,7 +496,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   })
 
   const marginYieldSeries = displaySeries.map((s, i) => ({
-    name: s.account,
+    name: seriesName(s),
     type: "line" as const,
     smooth: false,
     symbol: "none",
@@ -485,7 +516,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   }))
 
   const marginUtilSeries = displaySeries.map((s, i) => ({
-    name: s.account,
+    name: seriesName(s),
     type: "line" as const,
     smooth: false,
     symbol: "none",
@@ -505,7 +536,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   }))
 
   const ddSeries = displaySeries.map((s, i) => ({
-    name: s.account,
+    name: seriesName(s),
     type: "line" as const,
     smooth: false,
     symbol: "none",
@@ -687,7 +718,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     ],
     series: [
       ...displaySeries.map((s, i) => ({
-        name: s.account,
+        name: seriesName(s),
         type: "line",
         smooth: false,
         symbol: "none",
@@ -792,18 +823,30 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
               <select
                 value={selectedAccount}
                 onChange={e => setSelectedAccount(e.target.value)}
-                className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24"
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs w-44 max-w-[18rem]"
               >
-                <option value="全部">全部</option>
-                {sortedAccounts.map(s => (
-                  <option key={s.account} value={s.account}>{s.account.toUpperCase()}</option>
-                ))}
+                <option value="全部">全部盘手</option>
+                {sortedAccounts.some(s => s.source === "account") && (
+                  <option value="全部单账户">全部单账户</option>
+                )}
+                <optgroup label="盘手">
+                  {sortedAccounts.filter(s => s.source !== "account").map(s => (
+                    <option key={s.account} value={s.account}>{s.account.toUpperCase()}</option>
+                  ))}
+                </optgroup>
+                {sortedAccounts.some(s => s.source === "account") && (
+                  <optgroup label="单账户">
+                    {sortedAccounts.filter(s => s.source === "account").map(s => (
+                      <option key={s.account} value={s.account}>{seriesName(s)}</option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
               <button
                 type="button"
                 onClick={downloadProfile}
-                disabled={profiling || selectedAccount === "全部"}
-                title={selectedAccount === "全部" ? "请先选择单个账户" : "下载当前账户的盘手侧写 Word 报告"}
+                disabled={profiling || selectedAccount === "全部" || selectedAccount === "全部单账户"}
+                title={selectedAccount === "全部" || selectedAccount === "全部单账户" ? "请先选择单个账户" : "下载当前账户的盘手侧写 Word 报告"}
                 className="inline-flex items-center gap-1 rounded border border-input bg-background px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
               >
                 <FileDown className={`h-3.5 w-3.5 ${profiling ? "animate-pulse" : ""}`} />

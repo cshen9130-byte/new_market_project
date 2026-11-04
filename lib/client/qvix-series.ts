@@ -112,6 +112,15 @@ function wallUnix(day: string, hhmm: string) {
   return Math.floor(Date.UTC(year, month - 1, date, hour, minute, 0) / 1000)
 }
 
+/** Stay on the session the bars actually cover. A clock on the next morning must not draw an empty grid. */
+function axisEnd(bars: Array<{ time: number }>, endAt?: number) {
+  const last = bars[bars.length - 1]!.time
+  if (endAt == null) return last
+  const endDay = shanghaiDayKey(endAt)
+  if (endDay === shanghaiDayKey(last)) return endAt
+  return bars.some((bar) => shanghaiDayKey(bar.time) === endDay) ? endAt : last
+}
+
 /**
  * Shanghai session minute the 1-minute charts should share.
  * Every chart ends on this clock, so 13:00 lands on the same slot.
@@ -156,7 +165,7 @@ export function padIntradayLookback(
   endAt?: number,
 ): Array<{ time: number; close: number | null }> {
   if (days < 1 || bars.length < 1) return bars
-  const end = endAt != null ? endAt : bars[bars.length - 1]!.time
+  const end = axisEnd(bars, endAt)
   const sessions = lookbackSessions(shanghaiDayKey(end), days)
   const byTime = new Map(bars.map((bar) => [bar.time, bar.close]))
   const out: Array<{ time: number; close: number | null }> = []
@@ -209,7 +218,7 @@ export function padIntradaySeries(
   const step = getTimeframe(interval).seconds
   if (!isIntradayTimeframe(interval) || step <= 60) return padIntradayLookback(bars, days, endAt)
   if (days < 1 || bars.length < 1) return bars
-  const end = endAt != null ? endAt : bars[bars.length - 1]!.time
+  const end = axisEnd(bars, endAt)
   const sessions = lookbackSessions(shanghaiDayKey(end), days)
   const byTime = new Map<number, number>()
   for (const bar of bars) {

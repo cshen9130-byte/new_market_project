@@ -142,6 +142,19 @@ describe("padIntradayLookback", () => {
     assert.equal(b.at(-1)?.close, null)
     assert.equal(a.at(-1)?.close, 21.4)
   })
+
+  it("keeps yesterday's session when the clock has already moved to this morning", () => {
+    const bars = [
+      { time: unix(2026, 11, 3, 9, 30), close: 38.1 },
+      { time: unix(2026, 11, 3, 15, 0), close: 38.4 },
+    ]
+    const out = padIntradayLookback(bars, 1, unix(2026, 11, 4, 9, 34))
+    assert.equal(out[0]?.time, unix(2026, 11, 3, 9, 30))
+    assert.equal(out[0]?.close, 38.1)
+    assert.equal(out.at(-1)?.time, unix(2026, 11, 3, 15, 0))
+    assert.equal(out.at(-1)?.close, 38.4)
+    assert.equal(out.some((bar) => new Date(bar.time * 1000).getUTCDate() === 4), false)
+  })
 })
 
 describe("omitIsolatedNulls", () => {

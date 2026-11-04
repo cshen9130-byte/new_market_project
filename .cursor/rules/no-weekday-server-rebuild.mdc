@@ -1,0 +1,26 @@
+---
+description: Do not rebuild or restart the production website on weekdays 09:00–17:00 Asia/Shanghai unless the user explicitly says to. A rebuild takes the live site offline.
+alwaysApply: true
+---
+
+# No production rebuild during weekday business hours
+
+People are using the website on weekdays from **09:00 to 17:00 Asia/Shanghai** (Beijing time). A production rebuild builds the app and restarts PM2, which takes the site offline. Do not do that during this window unless the user explicitly tells you to rebuild or deploy **in the current request**.
+
+## Blocked during Mon–Fri 09:00–17:00 Asia/Shanghai
+
+Do not run these on the production server (Aliyun, `/root/new_market_project`), over SSH, or any other remote host that serves the live site:
+
+- `scripts/deploy/pull-and-restart.sh`
+- `pnpm run build`, `pnpm run build:lowmem`, or `next build`
+- `pm2 delete`, `pm2 restart`, `pm2 reload`, or `pm2 start` for `new_market_project`, `new_market_project_worker`, or `ctp_market`
+- Any other command whose effect is to rebuild or restart the live web process
+
+"Fix this", "ship it", or "update production" is not permission to rebuild inside the window. Finish the code locally, then say the production rebuild is waiting until after 17:00 or until they explicitly say to rebuild now.
+
+## Allowed at any time
+
+- Edit code, run tests, and run `pnpm run build` on the local machine.
+- Read production logs, query the database, or run scripts that do not rebuild or restart the web process.
+- Rebuild or restart production on weekends, before 09:00, or at or after 17:00 on weekdays.
+- Rebuild or restart production inside the window only when the user clearly says to, for example "rebuild now" or "deploy even though people are using it".

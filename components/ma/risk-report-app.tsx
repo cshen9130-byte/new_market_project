@@ -9,6 +9,7 @@ import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { getActiveCfmmcAccount, getActiveMomSubAccount, setActiveMomSubAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
 import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, IDLE_MOM_SUB_SCOPE, MomSubAccountSwitcher, useCfmmcAccountScope, useMomSubAccountScope, type CfmmcAccountScope, type MomSubAccountScope } from "@/components/ma/account-risk-account-switcher"
+import { AccountRiskProfileButton } from "@/components/ma/account-risk-profile-button"
 import { HelpBriefingMomSignals } from "@/components/ma/quant-vs-subjective-help"
 
 const ProductNavChart           = dynamic(() => import("@/components/ma/product-nav-chart"),            { ssr: false })
@@ -9247,6 +9248,7 @@ html[data-mom-embed="1"] #mom-briefing-printable {
                 onChange={momScope.onChange}
                 compact
               />
+              <AccountRiskProfileButton selection={cfmmcScope.selected} />
             </div>
           )}
         </div>

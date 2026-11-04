@@ -884,7 +884,8 @@ export async function fetchCffexAtmIvMinutes(
     }
     const rebuilt = buildBars(callMin.points, putMin.points, spotMin, spot0, atm.strike, expireDay, !pinned)
     const bars = days === 1 ? mergeSettledBars(hit?.bars, rebuilt) : rebuilt
-    const minBars = pinned ? 1 : 8
+    const opening = days === 1 && date === today && bars.length >= 1
+    const minBars = pinned || opening ? 1 : 8
     if (bars.length < minBars) {
       return hit?.bars.length
         ? publishCffexBars(key, days, hit.atm ?? atm, hit.bars, hit.atm ? atmContractLabel(hit.atm) : atmContractLabel(atm))

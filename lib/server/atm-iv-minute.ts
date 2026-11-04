@@ -581,7 +581,8 @@ export async function fetchEtfAtmIvMinutes(key: string, ndays = 1): Promise<AtmM
       false,
     )
     const bars = strict.length >= 8 && strict.length >= relaxed.length * 0.6 ? strict : relaxed
-    if (bars.length < 8) return hit?.bars.length ? { bars: hit.bars, contract: hit.contract || resolved.contract } : null
+    // The open only has a few prints. Those are the session; dropping them leaves the card blank.
+    if (bars.length < 1) return hit?.bars.length ? { bars: hit.bars, contract: hit.contract || resolved.contract } : null
     cache.set(cacheKey, { at: Date.now(), bars, contract: resolved.contract, strike: resolved.best.strike })
     return { bars, contract: resolved.contract }
   } catch {

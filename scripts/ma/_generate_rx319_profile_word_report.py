@@ -168,8 +168,38 @@ def to_num(v) -> float:
 def product_code(contract: str | None) -> str:
     if not contract:
         return ""
+    parsed = parse_option_contract(contract)
+    if parsed:
+        return parsed["product"]
     m = re.match(r"^[A-Za-z]+", str(contract).strip())
     return m.group(0).upper() if m else ""
+
+
+def parse_option_contract(contract: str | None) -> dict | None:
+    """cu2611P100000 / lh2611-C-11800 / CF701MSP14400 / c2701-MS-C-2380. Futures like lh2701 return None."""
+    s = str(contract or "").strip()
+    m = re.match(r"^([A-Za-z]+?)(\d{3,4})(.*)$", s)
+    if not m or not m.group(3):
+        return None
+    rm = re.search(r"([CPcp])[-]?(\d+)$", m.group(3))
+    if not rm:
+        return None
+    return {
+        "product": m.group(1).upper(),
+        "month": m.group(2),
+        "cp": rm.group(1).upper(),
+        "strike": float(rm.group(2)),
+    }
+
+
+def is_option_contract(contract: str | None) -> bool:
+    return parse_option_contract(contract) is not None
+
+
+def drop_option_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "contract" not in df.columns:
+        return df
+    return df.loc[~df["contract"].map(is_option_contract)].copy()
 
 
 def pname(code: str) -> str:
@@ -552,6 +582,59 @@ def load_raw(conn, account: str, from_date: str | None = None, to_date: str | No
     )
     pos["dt"] = pd.to_datetime(pos["dt"]) if not pos.empty else pos
 
+    try:
+        opt_trades = read_sql(
+            conn,
+            f"""
+            SELECT "交易日期"::date AS dt,
+                   "合约" AS contract,
+                   "成交时间" AS ttime,
+                   "买/卖" AS bs,
+                   "开/平" AS oc,
+                   {num_sql("手数")} AS lots,
+                   {num_sql("成交价")} AS price,
+                   {num_sql("成交额")} AS turnover,
+                   {num_sql("手续费")} AS fee,
+                   {num_sql("平仓盈亏")} AS close_pnl,
+                   {num_sql("权利金收支")} AS premium,
+                   COALESCE("投机/套保", '') AS hedge_flag,
+                   COALESCE("交易所", '') AS exchange
+            FROM mom_options_trade_details
+            WHERE LOWER(TRIM("账户")) = %s{date_sql}
+            """,
+            acc_date,
+        )
+    except Exception:
+        opt_trades = pd.DataFrame()
+    if not opt_trades.empty:
+        opt_trades["dt"] = pd.to_datetime(opt_trades["dt"])
+
+    try:
+        opt_pos = read_sql(
+            conn,
+            f"""
+            SELECT "交易日期"::date AS dt,
+                   "合约" AS contract,
+                   {num_sql("买持仓")} AS long_lots,
+                   {num_sql("卖持仓")} AS short_lots,
+                   {num_sql("买入价")} AS buy_px,
+                   {num_sql("卖出价")} AS sell_px,
+                   {num_sql("昨结算价")} AS prev_settl,
+                   {num_sql("今结算价")} AS settl,
+                   {num_sql("持仓盈亏")} AS mtm,
+                   {num_sql("保证金")} AS margin,
+                   {num_sql("期权市値")} AS opt_mv,
+                   COALESCE("投机/套保", '') AS hedge_flag
+            FROM mom_options_position_details
+            WHERE LOWER(TRIM("账户")) = %s{date_sql}
+            """,
+            acc_date,
+        )
+    except Exception:
+        opt_pos = pd.DataFrame()
+    if not opt_pos.empty:
+        opt_pos["dt"] = pd.to_datetime(opt_pos["dt"])
+
     nhci = read_sql(
         conn,
         """
@@ -562,6 +645,187 @@ def load_raw(conn, account: str, from_date: str | None = None, to_date: str | No
         ORDER BY 1
         """,
     )
+    if not nhci.empty:
+        nhci["dt"] = pd.to_datetime(nhci["dt"])
+
+    return {
+        "advisor": advisor,
+        "daily": daily,
+        "trades": trades,
+        "closes": closes,
+        "pos": pos,
+        "nhci": nhci,
+        "opt_trades": opt_trades,
+        "opt_pos": opt_pos,
+    }
+
+
+def short_fund_name(raw) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    after = re.sub(
+        r"^.+?(?:私募基金管理有限公司|基金管理有限公司|资产管理有限公司|股份有限公司|有限责任公司|有限公司)",
+        "",
+        s,
+        count=1,
+    ).strip()
+    m = re.match(r"([\u4e00-\u9fffA-Za-z0-9]{2,16}号)", after)
+    if m:
+        return m.group(1)
+    if after and len(after) <= 12 and after != s:
+        return after
+    return s if len(s) <= 12 else s
+
+
+def load_cfmmc(conn, account: str, from_date: str | None = None, to_date: str | None = None) -> dict:
+    """单账户结算，读 public.cfmmc_*。日收益分母是上日客户权益，当日盈亏是权益路径净额。"""
+    acc = account.lower().strip()
+    date_sql = ""
+    date_params: list = []
+    if from_date:
+        date_sql += " AND trade_date >= %s"
+        date_params.append(from_date)
+    if to_date:
+        date_sql += " AND trade_date <= %s"
+        date_params.append(to_date)
+    acc_date = tuple([acc, *date_params])
+
+    advisor = read_sql(
+        conn,
+        """
+        SELECT LOWER(TRIM(account_no)) AS account,
+               client_name AS advisor_name,
+               ''::text AS sector,
+               ''::text AS background,
+               ''::text AS style,
+               ''::text AS cycle,
+               ''::text AS is_arbitrage,
+               ''::text AS main_strength,
+               company_name AS company,
+               ''::text AS product_preference,
+               CASE WHEN client_equity > 0 THEN client_equity / 10000.0 ELSE NULL END AS equity_wan
+        FROM public.cfmmc_daily_summary
+        WHERE LOWER(TRIM(account_no)) = %s
+          AND NULLIF(BTRIM(COALESCE(client_name, '')), '') IS NOT NULL
+        ORDER BY trade_date DESC
+        LIMIT 1
+        """,
+        (acc,),
+    )
+    if not advisor.empty:
+        advisor.at[advisor.index[0], "advisor_name"] = short_fund_name(advisor.iloc[0]["advisor_name"])
+
+    daily = read_sql(
+        conn,
+        f"""
+        WITH base AS (
+          SELECT trade_date,
+                 COALESCE(daily_pnl, 0) AS pnl,
+                 COALESCE(LAG(client_equity) OVER (ORDER BY trade_date), 0) AS prev_bal,
+                 COALESCE(client_equity, 0) AS equity,
+                 COALESCE(commission, 0) AS fee,
+                 COALESCE(margin_occupied, 0) AS margin,
+                 COALESCE(realized_pl, 0) AS close_pnl,
+                 COALESCE(mtm_pl, 0) AS pos_pnl,
+                 COALESCE(deposit_wd, 0) AS flow,
+                 COALESCE(available, 0) AS available,
+                 CASE WHEN risk_ratio IS NOT NULL
+                      THEN round(risk_ratio * 100, 4)::text || '%%'
+                      ELSE '' END AS risk_raw
+          FROM public.cfmmc_daily_summary
+          WHERE LOWER(TRIM(account_no)) = %s
+        )
+        SELECT trade_date::date AS dt, pnl, prev_bal, equity, fee, margin,
+               close_pnl, pos_pnl, flow, available, risk_raw
+        FROM base
+        WHERE TRUE{date_sql}
+        ORDER BY 1
+        """,
+        acc_date,
+    )
+    if daily.empty:
+        raise SystemExit(f"NO_DATA: 账户 {acc} 在所选区间没有日报")
+    daily["dt"] = pd.to_datetime(daily["dt"])
+
+    trades = read_sql(
+        conn,
+        f"""
+        SELECT trade_date::date AS dt,
+               instrument AS contract,
+               trade_time AS ttime,
+               bs,
+               oc,
+               COALESCE(lots, 0) AS lots,
+               COALESCE(price, 0) AS price,
+               COALESCE(turnover, 0) AS turnover,
+               COALESCE(commission, 0) AS fee,
+               COALESCE(realized_pl, 0) AS close_pnl,
+               COALESCE(sh, '') AS hedge_flag,
+               ''::text AS exchange
+        FROM public.cfmmc_trades
+        WHERE LOWER(TRIM(account_no)) = %s{date_sql}
+        """,
+        acc_date,
+    )
+    if not trades.empty:
+        trades["dt"] = pd.to_datetime(trades["dt"])
+
+    closes = read_sql(
+        conn,
+        f"""
+        SELECT trade_date::date AS dt,
+               instrument AS contract,
+               bs,
+               COALESCE(lots, 0) AS lots,
+               COALESCE(price, 0) AS price,
+               COALESCE(open_price, 0) AS open_price,
+               COALESCE(realized_pl, 0) AS close_pnl,
+               COALESCE(realized_pl, 0) AS match_pnl,
+               actual_date AS open_date_raw
+        FROM public.cfmmc_closes
+        WHERE LOWER(TRIM(account_no)) = %s{date_sql}
+        """,
+        acc_date,
+    )
+    if not closes.empty:
+        closes["dt"] = pd.to_datetime(closes["dt"])
+
+    pos = read_sql(
+        conn,
+        f"""
+        SELECT trade_date::date AS dt,
+               instrument AS contract,
+               COALESCE(buy_lots, CASE WHEN bs = '买' THEN lots ELSE 0 END, 0) AS long_lots,
+               COALESCE(sell_lots, CASE WHEN bs = '卖' THEN lots ELSE 0 END, 0) AS short_lots,
+               COALESCE(buy_price, CASE WHEN bs = '买' THEN open_price ELSE 0 END, 0) AS buy_px,
+               COALESCE(sell_price, CASE WHEN bs = '卖' THEN open_price ELSE 0 END, 0) AS sell_px,
+               COALESCE(prev_settle, 0) AS prev_settl,
+               COALESCE(settl_price, 0) AS settl,
+               COALESCE(floating_pl, 0) AS mtm,
+               COALESCE(allocated_margin, 0) AS margin,
+               COALESCE(notional_mv, 0) AS mv,
+               COALESCE(sh, '') AS hedge_flag
+        FROM public.cfmmc_positions
+        WHERE LOWER(TRIM(account_no)) = %s{date_sql}
+        """,
+        acc_date,
+    )
+    pos["dt"] = pd.to_datetime(pos["dt"]) if not pos.empty else pos
+
+    try:
+        nhci = read_sql(
+            conn,
+            """
+            SELECT trade_date::date AS dt, CAST(close AS float8) AS close,
+                   CAST(pct_change AS float8) AS pct
+            FROM public.raw_nanhua_indices_daily
+            WHERE code = 'NHCI.NH'
+            ORDER BY 1
+            """,
+        )
+    except Exception:
+        nhci = pd.DataFrame(columns=["dt", "close", "pct"])
     if not nhci.empty:
         nhci["dt"] = pd.to_datetime(nhci["dt"])
 
@@ -604,13 +868,122 @@ def wr_payoff(pnls: np.ndarray) -> dict:
     }
 
 
+def summarize_options(opt_trades: pd.DataFrame, opt_pos: pd.DataFrame, fut_trades: pd.DataFrame) -> dict | None:
+    if opt_trades is None or opt_trades.empty or "contract" not in opt_trades.columns:
+        return None
+    t = opt_trades.copy()
+    parsed = t["contract"].map(parse_option_contract)
+    t = t.loc[parsed.notna()].copy()
+    if t.empty:
+        return None
+    info = pd.DataFrame(list(parsed.loc[t.index]))
+    info.index = t.index
+    t["product"] = info["product"]
+    t["cp"] = info["cp"]
+    t["is_sell"] = t["bs"].fillna("").str.contains("卖")
+    t["is_buy"] = t["bs"].fillna("").str.contains("买")
+    t["is_open"] = t["oc"].fillna("").str.contains("开")
+    t["is_close"] = t["oc"].fillna("").str.contains("平")
+    t["is_pingjin"] = t["oc"].fillna("") == "平今"
+    if "premium" not in t.columns:
+        t["premium"] = 0.0
+
+    sell_open = t[t["is_sell"] & t["is_open"]]
+    buy_open = t[t["is_buy"] & t["is_open"]]
+    opens = t[t["is_open"]].copy()
+    opens["side"] = np.where(opens["is_sell"], "S", "L") + opens["cp"].astype(str)
+    pivot = opens.pivot_table(index=["dt", "product"], columns="side", values="lots", aggfunc="sum", fill_value=0)
+    for col in ("SC", "SP", "LC", "LP"):
+        if col not in pivot.columns:
+            pivot[col] = 0.0
+    n_ud = int(len(pivot))
+    strangle_share = float(((pivot["SC"] > 0) & (pivot["SP"] > 0)).mean()) if n_ud else 0.0
+    wing_share = float((((pivot["SC"] > 0) & (pivot["LC"] > 0)) | ((pivot["SP"] > 0) & (pivot["LP"] > 0))).mean()) if n_ud else 0.0
+
+    hours = t["ttime"].map(parse_hour) if "ttime" in t.columns else pd.Series(dtype=float)
+    night_n = int(sum(1 for h in hours if isinstance(h, (int, np.integer)) and (int(h) >= 21 or int(h) < 3)))
+
+    end_short = end_long = end_margin = end_mv = 0.0
+    end_contracts = 0
+    end_date = ""
+    end_by_prod = pd.Series(dtype=float)
+    end_short_by_prod = pd.Series(dtype=float)
+    if opt_pos is not None and not opt_pos.empty and "contract" in opt_pos.columns:
+        p = opt_pos.loc[opt_pos["contract"].map(is_option_contract)].copy()
+        if not p.empty:
+            last = p["dt"].max()
+            end = p.loc[p["dt"] == last]
+            end_date = pd.Timestamp(last).strftime("%Y-%m-%d")
+            end_short = float(end["short_lots"].sum())
+            end_long = float(end["long_lots"].sum())
+            end_margin = float(end["margin"].sum())
+            end_mv = float(end["opt_mv"].sum()) if "opt_mv" in end.columns else 0.0
+            end_contracts = int(end["contract"].nunique())
+            end["product"] = end["contract"].map(lambda c: (parse_option_contract(c) or {}).get("product", ""))
+            end_by_prod = end.groupby("product")["margin"].sum()
+            end_short_by_prod = end.groupby("product")["short_lots"].sum()
+
+    sell_lots = sell_open.groupby("product")["lots"].sum().sort_values(ascending=False)
+    top_rows = []
+    for prod, lots in sell_lots.head(8).items():
+        top_rows.append({
+            "product": prod,
+            "name": pname(prod),
+            "sell_open_lots": float(lots),
+            "end_short_lots": float(end_short_by_prod.get(prod, 0.0)),
+            "end_margin": float(end_by_prod.get(prod, 0.0)),
+        })
+
+    fut_n = int(len(fut_trades)) if fut_trades is not None else 0
+    fut_products = []
+    if fut_trades is not None and not fut_trades.empty and "contract" in fut_trades.columns:
+        fut_products = sorted({product_code(c) for c in fut_trades["contract"] if product_code(c)})
+    sell_open_lots = float(sell_open["lots"].sum())
+    buy_open_lots = float(buy_open["lots"].sum())
+    dominant = len(t) >= 30 and sell_open_lots > buy_open_lots * 1.5 and len(t) > max(fut_n, 1) * 3
+    return {
+        "n_trades": int(len(t)),
+        "lots": float(t["lots"].sum()),
+        "n_underlyings": int(t["product"].nunique()),
+        "n_contracts": int(t["contract"].nunique()),
+        "sell_open_lots": sell_open_lots,
+        "buy_open_lots": buy_open_lots,
+        "sell_open_n": int(len(sell_open)),
+        "buy_open_n": int(len(buy_open)),
+        "premium_sell_open": float(sell_open["premium"].sum()),
+        "premium_buy_open": float(buy_open["premium"].sum()),
+        "premium_net": float(t["premium"].sum()),
+        "fee": float(t["fee"].sum()) if "fee" in t.columns else 0.0,
+        "short_call_lots": float(sell_open.loc[sell_open["cp"] == "C", "lots"].sum()),
+        "short_put_lots": float(sell_open.loc[sell_open["cp"] == "P", "lots"].sum()),
+        "strangle_share": strangle_share,
+        "wing_share": wing_share,
+        "n_underlying_days": n_ud,
+        "open_lots": float(t.loc[t["is_open"], "lots"].sum()),
+        "close_lots": float(t.loc[t["is_close"], "lots"].sum()),
+        "pingjin_ratio": float(t["is_pingjin"].mean()) if len(t) else 0.0,
+        "night_share": safe_div(night_n, len(t)),
+        "end_short_lots": end_short,
+        "end_long_lots": end_long,
+        "end_margin": end_margin,
+        "end_mv": end_mv,
+        "end_contracts": end_contracts,
+        "end_date": end_date,
+        "top_rows": top_rows,
+        "fut_trades": fut_n,
+        "fut_products": fut_products,
+        "dominant": bool(dominant),
+    }
+
+
 def analyze(raw: dict, account: str) -> dict:
     daily = raw["daily"].copy()
-    trades = raw["trades"].copy()
-    closes = raw["closes"].copy()
-    pos = raw["pos"].copy()
+    trades = drop_option_rows(raw["trades"].copy())
+    closes = drop_option_rows(raw["closes"].copy())
+    pos = drop_option_rows(raw["pos"].copy())
     nhci = raw["nhci"].copy()
     meta = {} if raw["advisor"].empty else raw["advisor"].iloc[0].to_dict()
+    options = summarize_options(raw.get("opt_trades"), raw.get("opt_pos"), trades)
 
     daily = daily.sort_values("dt")
     trades["product"] = trades["contract"].map(product_code)
@@ -997,8 +1370,12 @@ def analyze(raw: dict, account: str) -> dict:
     mo_stats = daily.groupby("ym").agg(pnl=("pnl", "sum"), ret=("ret", lambda s: float(np.prod(1 + s) - 1)), wr=("win", "mean"), n=("pnl", "size"), mdd_proxy=("ret", "sum")).reset_index()
 
     # size stability (lot CV already known ~0.8)
-    lot_cv = safe_div(float(trades["lots"].std()), float(trades["lots"].mean()))
-    avg_lot = float(trades["lots"].mean())
+    if len(trades):
+        lot_cv = safe_div(float(trades["lots"].std()), float(trades["lots"].mean()))
+        avg_lot = float(trades["lots"].mean()) if pd.notna(trades["lots"].mean()) else 0.0
+    else:
+        lot_cv = 0.0
+        avg_lot = 0.0
 
     # rolling 20d
     daily["roll_wr"] = daily["win"].rolling(20).mean()
@@ -1193,6 +1570,7 @@ def analyze(raw: dict, account: str) -> dict:
         "bot_prod": bot_prod.to_dict("records"),
         "top_sec": top_sec.to_dict("records"),
         "bot_sec": bot_sec.to_dict("records"),
+        "options": options or {},
     }
     return profile, daily, trades, closes, pos, prod_sum, sec_sum, hedge_daily, nh, after_df
 
@@ -1448,6 +1826,9 @@ def chart_ls(profile) -> Path:
 
 def playbook_of(p: dict) -> tuple[str, str]:
     """Strategy name and execution habit, from the account's own traces."""
+    opt = p.get("options") or {}
+    if opt.get("dominant"):
+        return "卖权 / 短波动", "卖出期权收权利金，少量买翼，隔夜持有"
     broad = p["avg_pos_prod"] >= 15
     overnight = p["pingjin_ratio"] < 0.08
     hedged = p["avg_hedge"] >= 0.45
@@ -1476,6 +1857,59 @@ def playbook_of(p: dict) -> tuple[str, str]:
     return name, method
 
 
+def write_options_chapter(doc: Document, acc: str, p: dict, opt: dict) -> None:
+    heading(doc, "期权账本：卖波动、价差和保证金", 1)
+    fut = "、".join(opt.get("fut_products") or []) or "无"
+    both = "同日既卖认购又卖认沽" if opt["strangle_share"] >= 0.35 else "以卖出单边虚值为主"
+    wing = "会在一部分标的上同时买同向的翼，做成价差" if opt["wing_share"] >= 0.15 else "同向买翼很少，短腿大多是裸卖"
+    para(
+        doc,
+        f"{acc} 的期权成交 {opt['n_trades']:,} 笔、{opt['lots']:.0f} 手，覆盖 {opt['n_underlyings']} 个标的、{opt['n_contracts']} 个合约。"
+        f"卖开 {opt['sell_open_lots']:.0f} 手，其中认购 {opt['short_call_lots']:.0f} 手、认沽 {opt['short_put_lots']:.0f} 手；"
+        f"买开只有 {opt['buy_open_lots']:.0f} 手。"
+        f"卖开权利金 {fmt_money(opt['premium_sell_open'])}，买开权利金 {fmt_money(opt['premium_buy_open'], True)}，"
+        f"全期净权利金 {fmt_money(opt['premium_net'], True)}。"
+        f"同期账户累计盈亏只有 {fmt_money(p['total_pnl'], True)}：权利金大部分被期权盯市吐回去了，不能把净权利金当成已实现利润。",
+    )
+    para(
+        doc,
+        f"结构：{opt['n_underlying_days']} 个标的-日里，{fmt_pct(opt['strangle_share'], 0)} {both}；{fmt_pct(opt['wing_share'], 0)} {wing}。"
+        f"开仓 {opt['open_lots']:.0f} 手、平仓 {opt['close_lots']:.0f} 手，平今占比 {fmt_pct(opt['pingjin_ratio'], 1)}，仓要过结算。"
+        f"夜盘成交占 {fmt_pct(opt['night_share'], 0)}。"
+        f"期货腿只有 {opt['fut_trades']} 笔，合约是 {fut}。这几笔期货解释不了账户里的期权保证金，也不是这份侧写的主策略。",
+    )
+    para(
+        doc,
+        f"期末 {opt['end_date'] or '—'}：空头 {opt['end_short_lots']:.0f} 手，多头 {opt['end_long_lots']:.0f} 手，"
+        f"{opt['end_contracts']} 个合约，期权保证金 {fmt_money(opt['end_margin'])}，期权市值 {fmt_money(opt['end_mv'])}，"
+        f"最新权益 {fmt_money(p['latest_equity'])}。"
+        "短伽马的风险是标的跳空穿过短腿，不是日胜率。买翼手数远小于卖开手数时，缺口直接打在权益上。",
+    )
+    kpi = [
+        ["期权成交", f"{opt['n_trades']:,} 笔 / {opt['lots']:.0f} 手", "标的 / 合约", f"{opt['n_underlyings']} / {opt['n_contracts']}"],
+        ["卖开", f"{opt['sell_open_lots']:.0f} 手", "卖开权利金", fmt_money(opt["premium_sell_open"])],
+        ["买开", f"{opt['buy_open_lots']:.0f} 手", "买开权利金", fmt_money(opt["premium_buy_open"], True)],
+        ["认购卖开", f"{opt['short_call_lots']:.0f} 手", "认沽卖开", f"{opt['short_put_lots']:.0f} 手"],
+        ["双卖标的-日", fmt_pct(opt["strangle_share"], 0), "同向买翼标的-日", fmt_pct(opt["wing_share"], 0)],
+        ["期末空头 / 多头", f"{opt['end_short_lots']:.0f} / {opt['end_long_lots']:.0f}", "期末保证金", fmt_money(opt["end_margin"])],
+        ["期末期权市值", fmt_money(opt["end_mv"]), "期货腿", f"{opt['fut_trades']} 笔（{fut}）"],
+    ]
+    add_table(doc, ["指标", "数值", "指标", "数值"], kpi)
+    caption(doc, "表  期权结构。权利金取成交「权利金收支」：卖出为正、买入为负。双卖 = 同一天同一标的既有认购卖开又有认沽卖开。")
+
+    top_rows = []
+    for r in opt.get("top_rows") or []:
+        top_rows.append([
+            r["name"],
+            f"{r['sell_open_lots']:.0f}",
+            f"{r['end_short_lots']:.0f}",
+            fmt_money(r["end_margin"]),
+        ])
+    if top_rows:
+        add_table(doc, ["标的", "卖开手数", "期末空头", "期末保证金"], top_rows)
+        caption(doc, "表  卖开手数最多的标的。期末保证金是仍压在账上的短腿，不是已实现盈亏。")
+
+
 def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_path: Path | None = None, doc: Document | None = None, chapter: bool = False) -> Document:
     dwr, cst = p["daily_wr"], p["close_stats"]
     nh = p.get("nh_stats") or {}
@@ -1492,7 +1926,14 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
     monday_worst = bool(wd_pnl) and wd_pnl.get("周一", 0) == min(wd_pnl.values()) and wd_pnl.get("周一", 0) < 0
     index_split = ("IM" in top_codes or "IC" in top_codes) and ("IF" in bot_codes or "IH" in bot_codes)
     metal_split = "AG" in top_codes and "AU" in bot_codes
-    if p["avg_pos_prod"] >= 18 and p["pingjin_ratio"] < 0.05:
+    opt = p.get("options") or {}
+    if opt.get("dominant"):
+        kind_lead = f"{acc} 的主账本是期权，期货只是一条很细的腿。"
+        kind_tail = (
+            f"期权成交 {opt['n_trades']:,} 笔，期货成交 {p['n_trades']:,} 笔。"
+            "把他写成期货趋势或截面 CTA，会把卖权结构看成方向敞口。"
+        )
+    elif p["avg_pos_prod"] >= 18 and p["pingjin_ratio"] < 0.05:
         kind_lead = f"{acc} 不是产业盘手，也不是日内超短。"
         kind_tail = "这是全市场铺仓、小单、隔夜持有的系统化 CTA，而不是看几个品种做波段的主观交易员。"
     elif p["pingjin_ratio"] >= 0.25:
@@ -1540,12 +1981,22 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
     heading.offset = 1 if chapter else 0
 
     heading(doc, "一、一页侧写", 1)
-    para(
-        doc,
-        f"{kind_lead}现场留下的指纹是：日均同时持仓约 {p['avg_pos_prod']:.0f} 个品种、{p['avg_pos_ct']:.0f} 个合约，"
-        f"覆盖 {p['n_products']} 个期货品种、{p['n_sectors']} 个板块；日均 {p['trades_per_day']:.0f} 笔，但平今只有 {fmt_pct(p['pingjin_ratio'], 1)}。"
-        f"平均每笔 {p['avg_lot']:.2f} 手。{kind_tail}",
-    )
+    if opt.get("dominant"):
+        para(
+            doc,
+            f"{kind_lead}期权侧的指纹是：{opt['n_underlyings']} 个标的、{opt['n_contracts']} 个合约，"
+            f"卖开 {opt['sell_open_lots']:.0f} 手、买开 {opt['buy_open_lots']:.0f} 手，"
+            f"净权利金 {fmt_money(opt['premium_net'], True)}。"
+            f"期末（{opt['end_date'] or '—'}）空头 {opt['end_short_lots']:.0f} 手、多头 {opt['end_long_lots']:.0f} 手，"
+            f"期权保证金 {fmt_money(opt['end_margin'])}。{kind_tail}",
+        )
+    else:
+        para(
+            doc,
+            f"{kind_lead}现场留下的指纹是：日均同时持仓约 {p['avg_pos_prod']:.0f} 个品种、{p['avg_pos_ct']:.0f} 个合约，"
+            f"覆盖 {p['n_products']} 个期货品种、{p['n_sectors']} 个板块；日均 {p['trades_per_day']:.0f} 笔，但平今只有 {fmt_pct(p['pingjin_ratio'], 1)}。"
+            f"平均每笔 {p['avg_lot']:.2f} 手。{kind_tail}",
+        )
     para(
         doc,
         f"标签写的是「{p['sector_label']} / {p['style']}」，行为对得上：空头保证金占比约 {fmt_pct(p['avg_short_share'], 0)}，"
@@ -1584,7 +2035,14 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
         f"时钟：{fmt_pct(p['night_open_burst'], 1)} 的成交落在 21:00–21:05，{fmt_pct(p['day_open_burst'], 1)} 落在 09:00–09:05。这是开盘集合竞价/开盘价附近的批量单，不是盘中盯盘点价。",
         f"截面结构：同一品种多空同时存在（日历价差）的品种-日占 {fmt_pct(p['calendar_share'], 1)}；同一合约锁仓仅 {fmt_pct(p['lock_share'], 2)}；同一板块多空对开占 {fmt_pct(p['sector_xs_share'], 0)}。主结构是板块内多空对开，不是锁仓，也不是纯单边。",
         f"动量：持仓方向与昨日近5日品种动量同向 {fmt_pct(p['mom5_hit'], 1)}（n={p['mom_n5']:,}），近20日 {fmt_pct(p['mom20_hit'], 1)}。{p['mom_label']}。",
-        f"期权成交为 0。这不是波动率套利或备兑，是期货多空。投机/套保字段以投机为主，不是套保账户。",
+        (
+            f"期权成交 {opt['n_trades']:,} 笔、合计 {opt['lots']:.0f} 手；期货成交 {p['n_trades']:,} 笔。"
+            f"卖开 {opt['sell_open_lots']:.0f} 手收取权利金 {fmt_money(opt['premium_sell_open'])}，"
+            f"买开 {opt['buy_open_lots']:.0f} 手付出 {fmt_money(abs(opt['premium_buy_open']))}。"
+            + ("这是卖权账，不是期货多空。期货章节只描述那条细腿。" if opt.get("dominant") else "期权相对期货是附属腿。")
+            if opt.get("n_trades")
+            else "期权成交为 0。这不是波动率套利或备兑，是期货多空。投机/套保字段以投机为主，不是套保账户。"
+        ),
     ]
     for b in bullets:
         bp = doc.add_paragraph(style="List Bullet")
@@ -1593,8 +2051,12 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
     para(
         doc,
         f"综合判定：{p['cycle_label']} {p['mom_label']} 日均同时持仓约 {p['avg_pos_prod']:.0f} 个品种，对冲度 {fmt_pct(p['avg_hedge'], 0)}。"
-        "执行层看开盘批量与否、单笔手数和小品种权重，而不是听标签。",
+        "执行层看开盘批量与否、单笔手数和小品种权重，而不是听标签。"
+        + ("上面这几条只覆盖期货腿。卖权结构在下一节。" if opt.get("dominant") else ""),
     )
+
+    if opt.get("n_trades"):
+        write_options_chapter(doc, acc, p, opt)
 
     heading(doc, "三、业绩与风险：他怎么处理风险", 1)
     para(
@@ -1649,7 +2111,8 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
     heading(doc, "四、狩猎场：哪类市场适合他，哪类不适合", 1)
     para(
         doc,
-        "侧写的第二问：他在什么场子里得手，在什么场子里失手。品种盈亏 = 成交「平仓盈亏」+ 持仓「持仓盈亏」，再扣品种手续费只作参考。"
+        ("这一章只统计期货腿的平仓盈亏和期货持仓盯市。期权权利金、期权保证金和期权市值不在下面的品种表里。" if opt.get("dominant") else "")
+        + "侧写的第二问：他在什么场子里得手，在什么场子里失手。品种盈亏 = 成交「平仓盈亏」+ 持仓「持仓盈亏」，再扣品种手续费只作参考。"
         "适合他的市场：有夜盘、流动性好、能做多空、截面差异大的工业品与能化；不适合他的：流动性差、季节性噪声大、或他没有优势因子的品种。",
     )
     add_chart(doc, charts.get("sector"))
@@ -1899,7 +2362,14 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
     para(doc, "把前面的痕迹收成能力清单。这是配置和对他做预期管理时真正该用的部分。", space_after=6)
 
     heading(doc, "擅长", 2)
-    goods = [
+    goods = []
+    if opt.get("dominant"):
+        goods.append(
+            f"卖权收租：{opt['n_underlyings']} 个标的上卖开 {opt['sell_open_lots']:.0f} 手，"
+            f"净权利金 {fmt_money(opt['premium_net'], True)}，买翼只有 {opt['buy_open_lots']:.0f} 手。"
+            f"同日卖出认购又卖出认沽的标的-日占 {fmt_pct(opt['strangle_share'], 0)}。"
+        )
+    goods += [
         f"把风险铺开：{p['n_products']} 个品种、日均 {p['avg_pos_prod']:.0f} 个名字在账上，单品种打爆账户的概率被结构压下去。",
         f"把杠杆钉住：占用围绕 {fmt_pct(p['avg_margin_ratio'], 1)}，回撤 {fmt_pct(p['mdd'], 2)}，波动 {fmt_pct(p['vol'], 1)}。作为 MOM 底仓，他提供的是低相关、浅回撤，不是高弹性。",
         "执行纪律：开盘批量、亏钱不加杠杆去翻本、赢单亏单持仓对称——情绪开关几乎关着。",
@@ -1914,7 +2384,14 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
         add_text(bp, b, size=11, color=TEXT)
 
     heading(doc, "不擅长 / 需要打折的预期", 2)
-    bads = [
+    bads = []
+    if opt.get("dominant"):
+        bads.append(
+            f"卖权的尾部不在夏普里。期末空头 {opt['end_short_lots']:.0f} 手对多头 {opt['end_long_lots']:.0f} 手，"
+            f"期权保证金 {fmt_money(opt['end_margin'])}，期权市值 {fmt_money(opt['end_mv'])}。"
+            "标的跳空穿过短腿时，权利金会一次性吐回去；买翼太少，挡不住缺口。"
+        )
+    bads += [
         f"{perf_blurb}{p['n_days']} 个交易日累计 {fmt_pct(p['period_ret'], 2, True)}、夏普 {p['sharpe']:.2f}。把它当每年稳定缴税会失望。",
         f"短板板块 {bot_sec_n or '—'}。主要失血品种：{bot_names or '—'}。"
         + ("同一板块也能打脸：白银赚、黄金亏。" if metal_split else "")
@@ -1933,7 +2410,11 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
         doc,
         f"若把 {acc} 放进 MOM：先看他是低波动截面袖子还是进攻引擎。这段样本波动 {fmt_pct(p['vol'], 1)}、回撤 {fmt_pct(p['mdd'], 2)}、夏普 {p['sharpe']:.2f}。"
         f"与南华商品指数日收益相关 {nh.get('corr', 0):.2f}，空头保证金占 {fmt_pct(p['avg_short_share'], 0)}。"
-        "投后看：保证金占用有没有突然抬升、对冲度有没有塌成单边、短板板块亏损有没有从摩擦变成主亏。",
+        "投后看：保证金占用有没有突然抬升、对冲度有没有塌成单边、短板板块亏损有没有从摩擦变成主亏。"
+        + (
+            "卖权账户还要看短腿保证金是否突然抬升、买翼是否还在、同一标的是否从双卖变成单边裸卖。"
+            if opt.get("dominant") else ""
+        ),
     )
 
     wd_rows = [[r["name"], str(int(r["n"])), fmt_money(r["pnl"], True), fmt_money(r["avg"], True), fmt_pct(r["wr"], 0)] for r in p["wd_rows"]]
@@ -1942,7 +2423,8 @@ def write_report(p: dict, charts: dict, output_path: Path | None = None, ascii_p
     caption(doc, "表11  星期效应。若某一天显著更差，多半是隔夜跳空集中在那天结算。")
 
     notes = [
-        f"数据：mom_daily_reports、mom_futures_trade_details（{p['n_trades']:,} 笔）、mom_close_details（{p['n_closes']:,} 笔）、mom_position_details、raw_nanhua_indices_daily。账户 {p['account']}。",
+        p.get("data_note")
+        or f"数据：mom_daily_reports、mom_futures_trade_details（{p['n_trades']:,} 笔）、mom_close_details（{p['n_closes']:,} 笔）、mom_position_details、raw_nanhua_indices_daily。账户 {p['account']}。",
         "品种盈亏 = 当日该品种成交平仓盈亏 + 持仓盯市盈亏。与日报「当日盈亏」在手续费、期权、出入金上可能有残差。",
         "持仓天数用平仓明细开仓日期。开仓日期在库中为科学计数法 YYYYMMDD，已还原。交易日持仓按账户日报日历对齐。",
         "对冲度用多头保证金与空头保证金，而不是手数（手数跨品种不可比）。",
@@ -1977,6 +2459,7 @@ def parse_args():
     import argparse
     ap = argparse.ArgumentParser(description="Generate a trader-profile Word report for one MOM account")
     ap.add_argument("--account", default=os.environ.get("PROFILE_ACCOUNT", "rx319"))
+    ap.add_argument("--source", default=os.environ.get("PROFILE_SOURCE") or "mom", choices=["mom", "cfmmc"])
     ap.add_argument("--from-date", default=os.environ.get("PROFILE_FROM") or None)
     ap.add_argument("--to-date", default=os.environ.get("PROFILE_TO") or None)
     ap.add_argument("--output", default=os.environ.get("PROFILE_OUTPUT") or None)
@@ -1989,6 +2472,7 @@ def main() -> None:
     args = parse_args()
     account = str(args.account or "rx319").lower().strip()
     ACCOUNT = account
+    source = str(args.source or "mom").strip().lower()
     from_date = str(args.from_date).strip() if args.from_date else None
     to_date = str(args.to_date).strip() if args.to_date else None
     if from_date == "":
@@ -2006,13 +2490,19 @@ def main() -> None:
     configure_matplotlib()
     conn = get_conn()
     try:
-        print("loading…", account, from_date, to_date)
-        raw = load_raw(conn, account, from_date, to_date)
+        print("loading…", source, account, from_date, to_date)
+        raw = load_cfmmc(conn, account, from_date, to_date) if source == "cfmmc" else load_raw(conn, account, from_date, to_date)
     finally:
         conn.close()
 
     print("analyzing…")
     profile, daily, trades, closes, pos, prod_sum, sec_sum, hedge_daily, nh, after_df = analyze(raw, account)
+    if source == "cfmmc":
+        profile["data_note"] = (
+            f"数据：单账户结算 cfmmc_daily_summary、cfmmc_trades（{profile['n_trades']:,} 笔）、"
+            f"cfmmc_closes（{profile['n_closes']:,} 笔）、cfmmc_positions、raw_nanhua_indices_daily。"
+            f"日收益 = 权益路径当日盈亏 / 上日客户权益。账户 {profile['account']}。"
+        )
     DATA_PATH.write_text(json.dumps(json_ready(profile), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print("wrote", DATA_PATH)
     print(
