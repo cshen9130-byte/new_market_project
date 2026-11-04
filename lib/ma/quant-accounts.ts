@@ -1,5 +1,25 @@
-/** Account numbers treated as quantitative (CTA / systematic) trading sleeves. */
-export const QUANT_ACCOUNT_IDS = [319, 324, 334, 339, 346, 350, 356] as const
+/** MOM sleeves treated as quantitative (CTA / systematic). Also used by 量化vs主观. */
+export const QUANT_ACCOUNT_IDS = [319, 324, 334, 339, 346, 350, 356, 387] as const
+
+export type QuantStrategySource = "mom" | "cfmmc"
+
+export type QuantStrategyAccount = {
+  id: string
+  label: string
+  source: QuantStrategySource
+}
+
+/**
+ * Accounts shown on 量化策略分析.
+ * MOM sleeves read public.mom_*. Broker books read public.cfmmc_* only.
+ */
+export const QUANT_STRATEGY_ACCOUNTS: readonly QuantStrategyAccount[] = [
+  ...QUANT_ACCOUNT_IDS.map((id) => ({ id: String(id), label: `rx${id}`, source: "mom" as const })),
+  { id: "10800677", label: "正信期货", source: "cfmmc" },
+  { id: "85121150", label: "国泰君安期货", source: "cfmmc" },
+]
+
+const QUANT_STRATEGY_BY_ID = new Map(QUANT_STRATEGY_ACCOUNTS.map((a) => [a.id, a]))
 
 const QUANT_ID_SET = new Set(QUANT_ACCOUNT_IDS.map(String))
 
@@ -36,6 +56,26 @@ export function isQuantAccountIn(account: string, quantIds: Iterable<string | nu
 export function isQuantAccount(account: string): boolean {
   const id = accountNumericId(account)
   return id.length > 0 && QUANT_ID_SET.has(id)
+}
+
+export function quantStrategyAccount(account: string): QuantStrategyAccount | undefined {
+  const id = accountNumericId(account)
+  return id ? QUANT_STRATEGY_BY_ID.get(id) : undefined
+}
+
+/** Chip / chart name. MOM sleeves stay `rx319`; broker books use the futures company. */
+export function quantStrategyLabel(account: string): string {
+  const spec = quantStrategyAccount(account)
+  if (spec) return spec.label
+  const id = accountNumericId(account)
+  return id ? `rx${id}` : "—"
+}
+
+/** Detail subtitle. Broker books keep the account number next to the company. */
+export function quantStrategyTitle(account: string): string {
+  const spec = quantStrategyAccount(account)
+  if (spec?.source === "cfmmc") return `${spec.label} ${spec.id}`
+  return quantStrategyLabel(account)
 }
 
 export type SleeveGroup = "quant" | "subjective"

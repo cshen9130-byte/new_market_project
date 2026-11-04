@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { QuerySlots, usingQuerySlots } from "@/lib/server/query-slots"
 import { withMomCache } from "@/lib/server/mom-cache"
 import { getPrefix } from "@/lib/server/prod-utils"
-import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
+import { QUANT_STRATEGY_ACCOUNTS, accountNumericId, quantStrategyAccount, quantStrategyTitle } from "@/lib/ma/quant-accounts"
+import { quantStrategyBooks } from "@/lib/ma/quant-strategy-source"
 import {
   computeRegimeFactors,
   fitUnfitFromFactors,
@@ -108,6 +110,13 @@ function layerFromAgg(row: {
     profitFactor: grossLoss > 0 ? r2(grossWin / grossLoss) : null,
     expectancy: r0(toNum(row.expectancy)),
   }
+}
+
+/** Shared across requests so 横向对比 cannot open one pool client per account. */
+const strategySlots = new QuerySlots(4)
+
+function strategyQuery<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+  return usingQuerySlots(strategySlots, () => query<T>(sql, params))
 }
 
 const numExpr = (col: string) =>
@@ -435,11 +444,12 @@ async function _GET(req: Request) {
     const from = sp.get("from") || "2025-01-01"
     const to = sp.get("to") || isoToday
     const coreOnly = sp.get("scope") === "core"
+    const books = quantStrategyBooks(accountId)
     const nhFrom = lookbackFrom(from, 560)
     const NH_CODES = ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNEI.NH", "NHNFI.NH"]
 
     const [dailyRows, nhciRows, closeProdRows, closeHoldRows, closeDirRows, tradeSessRows, tradeDayRows, posRows, posMtmRows, clusterRows, contractRows, openInfRows, posInfRows, closeDayRows, mtmDayRows, closeSectorRows, mtmSectorRows, rrShapeRows] = await Promise.all([
-      query<{
+      strategyQuery<{
         account: string; date: string; pnl: string; gross_pnl: string; equity: string; margin: string; risk: string
       }>(
         `SELECT
@@ -450,13 +460,13 @@ async function _GET(req: Request) {
            ${numExpr("客户权益")}::text AS equity,
            ${numExpr("保证金占用")}::text AS margin,
            "风险度" AS risk
-         FROM mom_daily_reports
+         FROM ${books.daily}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
          ORDER BY "交易日期"`,
         [accountId, from, to],
       ),
-      query<{ date: string; code: string; close: string }>(
+      strategyQuery<{ date: string; code: string; close: string }>(
         `SELECT trade_date::text AS date, code, close::text AS close
          FROM raw_nanhua_indices_daily
          WHERE code = ANY($1::text[])
@@ -465,7 +475,7 @@ async function _GET(req: Request) {
          ORDER BY trade_date, code`,
         [NH_CODES, nhFrom, to],
       ).catch(() => [] as { date: string; code: string; close: string }[]),
-      query<{
+      strategyQuery<{
         product: string; pnl: string; lots: string; win_lots: string; loss_lots: string
         win_pnl: string; loss_pnl: string; avg_hold_win: string | null; avg_hold_loss: string | null
         n: string
@@ -481,14 +491,14 @@ async function _GET(req: Request) {
            AVG(GREATEST(("交易日期"::date - ${OPEN_DATE}), 0)) FILTER (WHERE ${numExpr("平仓盈亏")} > 0)::text AS avg_hold_win,
            AVG(GREATEST(("交易日期"::date - ${OPEN_DATE}), 0)) FILTER (WHERE ${numExpr("平仓盈亏")} < 0)::text AS avg_hold_loss,
            COUNT(*)::text AS n
-         FROM mom_close_details
+         FROM ${books.close}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
          GROUP BY 1`,
         [accountId, from, to],
       ),
-      query<{
+      strategyQuery<{
         bucket: string; outcome: string; lots: string; pnl: string; n: string
         avg_hold: string | null
       }>(
@@ -497,7 +507,7 @@ async function _GET(req: Request) {
              ${numExpr("平仓盈亏")} AS pnl,
              ${numExpr("手数")} AS lots,
              GREATEST(("交易日期"::date - ${OPEN_DATE}), 0) AS hold_days
-           FROM mom_close_details
+           FROM ${books.close}
            WHERE ${ACC}
              AND "交易日期"::date BETWEEN $2::date AND $3::date
          )
@@ -518,7 +528,7 @@ async function _GET(req: Request) {
          GROUP BY 1, 2`,
         [accountId, from, to],
       ),
-      query<{
+      strategyQuery<{
         direction: string; pnl: string; lots: string; win_lots: string; n: string
       }>(
         `SELECT
@@ -527,13 +537,13 @@ async function _GET(req: Request) {
            SUM(${numExpr("手数")})::text AS lots,
            SUM(CASE WHEN ${numExpr("平仓盈亏")} > 0 THEN ${numExpr("手数")} ELSE 0 END)::text AS win_lots,
            COUNT(*)::text AS n
-         FROM mom_close_details
+         FROM ${books.close}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
          GROUP BY 1`,
         [accountId, from, to],
       ),
-      query<{
+      strategyQuery<{
         session: string; pnl: string; lots: string; fee: string; open_lots: string; close_lots: string
       }>(
         `SELECT
@@ -543,27 +553,27 @@ async function _GET(req: Request) {
            SUM(${numExpr("手续费")})::text AS fee,
            SUM(CASE WHEN TRIM("开/平") LIKE '%开%' THEN ${numExpr("手数")} ELSE 0 END)::text AS open_lots,
            SUM(CASE WHEN TRIM("开/平") LIKE '%平%' THEN ${numExpr("手数")} ELSE 0 END)::text AS close_lots
-         FROM mom_futures_trade_details
+         FROM ${books.trade}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
          GROUP BY 1`,
         [accountId, from, to],
       ),
-      query<{
+      strategyQuery<{
         date: string; open_lots: string; close_lots: string
       }>(
         `SELECT
            "交易日期"::text AS date,
            SUM(CASE WHEN TRIM("开/平") LIKE '%开%' THEN ${numExpr("手数")} ELSE 0 END)::text AS open_lots,
            SUM(CASE WHEN TRIM("开/平") LIKE '%平%' THEN ${numExpr("手数")} ELSE 0 END)::text AS close_lots
-         FROM mom_futures_trade_details
+         FROM ${books.trade}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
          GROUP BY 1
          ORDER BY 1`,
         [accountId, from, to],
       ),
-      query<{
+      strategyQuery<{
         date: string; long_mv: string; short_mv: string; lock_mv: string; gross_mv: string
       }>(
         `SELECT
@@ -572,7 +582,7 @@ async function _GET(req: Request) {
            SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv,
            SUM(CASE WHEN ${numExpr("买持仓")} > 0 AND ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS lock_mv,
            SUM(${numExpr("持仓市値")})::text AS gross_mv
-         FROM mom_position_details
+         FROM ${books.pos}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
@@ -581,7 +591,7 @@ async function _GET(req: Request) {
          ORDER BY 1`,
         [accountId, from, to],
       ),
-      query<{
+      strategyQuery<{
         product: string; mtm: string; long_mtm: string; short_mtm: string
         win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
       }>(
@@ -594,14 +604,14 @@ async function _GET(req: Request) {
            SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("买持仓")} + ${numExpr("卖持仓")} ELSE 0 END)::text AS loss_lots,
            SUM(CASE WHEN ${numExpr("持仓盈亏")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS win_pnl,
            SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS loss_pnl
-         FROM mom_position_details
+         FROM ${books.pos}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
          GROUP BY 1`,
         [accountId, from, to],
       ),
-      query<{ date: string; cluster: string }>(
+      strategyQuery<{ date: string; cluster: string }>(
         `SELECT trade_date::text AS date, cluster::text AS cluster
          FROM current_market_prediction
          WHERE freq = 'daily'
@@ -609,7 +619,7 @@ async function _GET(req: Request) {
            AND cluster IS NOT NULL`,
         [from, to],
       ).catch(() => [] as { date: string; cluster: string }[]),
-      query<{
+      strategyQuery<{
         date: string; product: string; rk: string; px: string; oi: string
         doi: string; pct: string; volume: string; contract: string
       }>(
@@ -651,20 +661,20 @@ async function _GET(req: Request) {
         date: string; product: string; rk: string; px: string; oi: string
         doi: string; pct: string; volume: string; contract: string
       }[]),
-      query<{ date: string; product: string; buy_open: string; sell_open: string }>(
+      strategyQuery<{ date: string; product: string; buy_open: string; sell_open: string }>(
         `SELECT
            "交易日期"::text AS date,
            UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
            SUM(CASE WHEN TRIM("买/卖") LIKE '%买%' AND TRIM("开/平") LIKE '%开%' THEN ${numExpr("手数")} ELSE 0 END)::text AS buy_open,
            SUM(CASE WHEN TRIM("买/卖") LIKE '%卖%' AND TRIM("开/平") LIKE '%开%' THEN ${numExpr("手数")} ELSE 0 END)::text AS sell_open
-         FROM mom_futures_trade_details
+         FROM ${books.trade}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
          GROUP BY 1, 2`,
         [accountId, from, to],
       ).catch(() => [] as { date: string; product: string; buy_open: string; sell_open: string }[]),
-      query<{ date: string; product: string; buy_lots: string; sell_lots: string; mv: string; long_mv: string; short_mv: string }>(
+      strategyQuery<{ date: string; product: string; buy_lots: string; sell_lots: string; mv: string; long_mv: string; short_mv: string }>(
         `SELECT
            "交易日期"::text AS date,
            UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
@@ -673,7 +683,7 @@ async function _GET(req: Request) {
            SUM(${numExpr("持仓市値")})::text AS mv,
            SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS long_mv,
            SUM(CASE WHEN ${numExpr("卖持仓")} > 0 THEN ${numExpr("持仓市値")} ELSE 0 END)::text AS short_mv
-         FROM mom_position_details
+         FROM ${books.pos}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
@@ -681,7 +691,7 @@ async function _GET(req: Request) {
          GROUP BY 1, 2`,
         [accountId, from, to],
       ).catch(() => [] as { date: string; product: string; buy_lots: string; sell_lots: string; mv: string; long_mv: string; short_mv: string }[]),
-      query<{
+      strategyQuery<{
         date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
         lots: string; hold_sum: string
       }>(
@@ -693,7 +703,7 @@ async function _GET(req: Request) {
            SUM(CASE WHEN ${numExpr("平仓盈亏")} < 0 THEN ${numExpr("平仓盈亏")} ELSE 0 END)::text AS loss_pnl,
            SUM(${numExpr("手数")})::text AS lots,
            SUM(${numExpr("手数")} * GREATEST(("交易日期"::date - ${OPEN_DATE}), 0))::text AS hold_sum
-         FROM mom_close_details
+         FROM ${books.close}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
          GROUP BY 1`,
@@ -702,7 +712,7 @@ async function _GET(req: Request) {
         date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
         lots: string; hold_sum: string
       }[]),
-      query<{
+      strategyQuery<{
         date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
       }>(
         `SELECT
@@ -711,7 +721,7 @@ async function _GET(req: Request) {
            SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("买持仓")} + ${numExpr("卖持仓")} ELSE 0 END)::text AS loss_lots,
            SUM(CASE WHEN ${numExpr("持仓盈亏")} > 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS win_pnl,
            SUM(CASE WHEN ${numExpr("持仓盈亏")} < 0 THEN ${numExpr("持仓盈亏")} ELSE 0 END)::text AS loss_pnl
-         FROM mom_position_details
+         FROM ${books.pos}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
@@ -721,24 +731,24 @@ async function _GET(req: Request) {
       ).catch(() => [] as {
         date: string; win_lots: string; loss_lots: string; win_pnl: string; loss_pnl: string
       }[]),
-      query<{ date: string; product: string; pnl: string }>(
+      strategyQuery<{ date: string; product: string; pnl: string }>(
         `SELECT
            "交易日期"::text AS date,
            UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
            SUM(${numExpr("平仓盈亏")})::text AS pnl
-         FROM mom_close_details
+         FROM ${books.close}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
          GROUP BY 1, 2`,
         [accountId, from, to],
       ).catch(() => [] as { date: string; product: string; pnl: string }[]),
-      query<{ date: string; product: string; pnl: string }>(
+      strategyQuery<{ date: string; product: string; pnl: string }>(
         `SELECT
            "交易日期"::text AS date,
            UPPER(REGEXP_REPLACE(TRIM("合约"), '[0-9].*$', '')) AS product,
            SUM(${numExpr("持仓盈亏")})::text AS pnl
-         FROM mom_position_details
+         FROM ${books.pos}
          WHERE ${ACC}
            AND "交易日期"::date BETWEEN $2::date AND $3::date
            AND "合约" IS NOT NULL
@@ -746,7 +756,7 @@ async function _GET(req: Request) {
          GROUP BY 1, 2`,
         [accountId, from, to],
       ).catch(() => [] as { date: string; product: string; pnl: string }[]),
-      query<{
+      strategyQuery<{
         layers: {
           layer: string
           n: string; n_win: string; n_loss: string
@@ -762,7 +772,7 @@ async function _GET(req: Request) {
                WHEN TRIM("买/卖") LIKE '%买%' THEN 'short'
                ELSE 'other'
              END AS side
-           FROM mom_close_details
+           FROM ${books.close}
            WHERE ${ACC}
              AND "交易日期"::date BETWEEN $2::date AND $3::date
          ),
@@ -800,12 +810,14 @@ async function _GET(req: Request) {
       }),
     ])
 
-    const account = dailyRows[0]?.account || `rx${accountId}`
+    const account = quantStrategyAccount(accountId)?.source === "cfmmc"
+      ? quantStrategyTitle(accountId)
+      : (dailyRows[0]?.account || `rx${accountId}`)
 
     const pxLookback = lookbackFrom(from, 560)
     const akCodes = [...new Set(openInfRows.map((r) => AKSHARE_CONTINUOUS[r.product]).filter(Boolean))]
     const inferPxRows = akCodes.length
-      ? await query<{ date: string; code: string; close: string; volume: string }>(
+      ? await strategyQuery<{ date: string; code: string; close: string; volume: string }>(
         `SELECT trade_date::text AS date, code, close::text AS close, COALESCE(volume, 0)::text AS volume
          FROM raw_akshare_futures_daily
          WHERE code = ANY($1::text[])
@@ -1534,7 +1546,7 @@ async function _GET(req: Request) {
       ok: true,
       account,
       accountId,
-      quantIds: [...QUANT_ACCOUNT_IDS],
+      quantIds: QUANT_STRATEGY_ACCOUNTS.map((a) => Number(a.id)),
       from,
       to,
       kpis: {
@@ -1603,5 +1615,5 @@ async function _GET(req: Request) {
   }
 }
 
-export const QUANT_STRATEGY_CACHE_KEY = "quant-strategy-v51"
+export const QUANT_STRATEGY_CACHE_KEY = "quant-strategy-v52"
 export const GET = withMomCache(QUANT_STRATEGY_CACHE_KEY, _GET)

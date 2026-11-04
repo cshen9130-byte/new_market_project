@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { quantStrategyAccount } from "@/lib/ma/quant-accounts"
 
 type ExposureRow = { date: string } & Record<string, number | string>
 
@@ -152,7 +153,10 @@ export function QuantTraderExposureCharts({
     setVarLoading(true)
     setMvError("")
     setVarError("")
-    fetch(`/ma/api/mom-analysis/category-exposure?account=${encodeURIComponent(accountId)}`)
+    const cfmmc = quantStrategyAccount(accountId)?.source === "cfmmc"
+    const mvPath = cfmmc ? "/ma/api/account-risk/category-exposure" : "/ma/api/mom-analysis/category-exposure"
+    const varPath = cfmmc ? "/ma/api/account-risk/var-sector-timeseries" : "/ma/api/mom-analysis/var-sector-timeseries"
+    fetch(`${mvPath}?account=${encodeURIComponent(accountId)}`)
       .then((r) => r.json())
       .then((j) => {
         if (cancelled) return
@@ -161,7 +165,7 @@ export function QuantTraderExposureCharts({
       })
       .catch(() => { if (!cancelled) setMvError("持仓市值没有取到") })
       .finally(() => { if (!cancelled) setMvLoading(false) })
-    fetch(`/ma/api/mom-analysis/var-sector-timeseries?account=${encodeURIComponent(accountId)}&corrDays=252`)
+    fetch(`${varPath}?account=${encodeURIComponent(accountId)}&corrDays=252`)
       .then((r) => r.json())
       .then((j) => {
         if (cancelled) return

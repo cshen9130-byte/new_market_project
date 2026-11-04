@@ -17,14 +17,20 @@ export const GET = withCfmmcAccount(async function GET() {
     const posRes = await publicQuery(`
       SELECT trade_date::text AS date,
              UPPER(TRIM(instrument)) AS contract,
-             COALESCE(buy_lots, 0) AS buy_lots,
-             COALESCE(sell_lots, 0) AS sell_lots,
-             COALESCE(lots, 0) AS lots,
-             bs,
-             COALESCE(notional_mv, 0) AS notional_mv
+             SUM(CASE
+               WHEN COALESCE(buy_lots, 0) > 0 THEN ABS(COALESCE(notional_mv, 0))
+               WHEN bs = '买' AND COALESCE(lots, 0) > 0 THEN ABS(COALESCE(notional_mv, 0))
+               ELSE 0
+             END)::text AS long_mv,
+             SUM(CASE
+               WHEN COALESCE(sell_lots, 0) > 0 THEN ABS(COALESCE(notional_mv, 0))
+               WHEN bs = '卖' AND COALESCE(lots, 0) > 0 THEN ABS(COALESCE(notional_mv, 0))
+               ELSE 0
+             END)::text AS short_mv
       FROM public.cfmmc_positions
       WHERE instrument IS NOT NULL AND TRIM(instrument) <> ''
         AND ${scopeWhere(posParams)}
+      GROUP BY trade_date, UPPER(TRIM(instrument))
     `, posParams)
     const eqParams: unknown[] = []
     const eqRes = await publicQuery(`
@@ -51,19 +57,13 @@ export const GET = withCfmmcAccount(async function GET() {
     }
     const dateMap = new Map<string, DayEntry>()
 
-    for (const r of posRes.rows as {
-      date: string; contract: string; buy_lots: number | string; sell_lots: number | string
-      lots: number | string; bs: string | null; notional_mv: number | string
-    }[]) {
+    for (const r of posRes.rows as { date: string; contract: string; long_mv: string; short_mv: string }[]) {
       const prefix = getPrefix(r.contract)
       const cat = getCategory(r.contract)
       const sector = getSector(prefix)
       const subSector = getSubSector(prefix)
-      const mv = toNum(r.notional_mv)
-      const buy = toNum(r.buy_lots) || (r.bs === "买" ? toNum(r.lots) : 0)
-      const sell = toNum(r.sell_lots) || (r.bs === "卖" ? toNum(r.lots) : 0)
-      const longMv = buy > 0 ? Math.abs(mv) : 0
-      const shortMv = sell > 0 ? Math.abs(mv) : 0
+      const longMv = toNum(r.long_mv)
+      const shortMv = toNum(r.short_mv)
       if (longMv === 0 && shortMv === 0) continue
 
       if (!dateMap.has(r.date)) {

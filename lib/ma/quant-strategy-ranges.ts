@@ -1,4 +1,4 @@
-import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
+import { QUANT_STRATEGY_ACCOUNTS } from "@/lib/ma/quant-accounts"
 
 /** Calendar date in Beijing (UTC+8), matching mom-cache file dates. */
 export function beijingYmd(ms = Date.now()): string {
@@ -43,18 +43,18 @@ export type QuantStrategyWarmQuery = {
 
 /**
  * Every payload the 量化策略分析 page can request:
- * 7 accounts × 5 ranges × (core paint + full factor panel).
+ * each strategy account × 5 ranges × (core paint + full factor panel).
  * Default view (rx319, 全部, core then full) comes first.
  */
 export function quantStrategyWarmQueries(ms = Date.now()): QuantStrategyWarmQuery[] {
   const out: QuantStrategyWarmQuery[] = []
-  const accounts = [319, ...QUANT_ACCOUNT_IDS.filter((id) => id !== 319)]
+  const accounts = ["319", ...QUANT_STRATEGY_ACCOUNTS.map((a) => a.id).filter((id) => id !== "319")]
   const rangeLabels: QuantStrategyRangeLabel[] = ["全部", "近一年", "近六月", "近三月", "近一月"]
   for (const label of rangeLabels) {
     for (const id of accounts) {
       const { from, to } = quantStrategyBounds(label, ms)
-      out.push({ account: String(id), from, to, scope: "core" })
-      out.push({ account: String(id), from, to, scope: "full" })
+      out.push({ account: id, from, to, scope: "core" })
+      out.push({ account: id, from, to, scope: "full" })
     }
   }
   return out

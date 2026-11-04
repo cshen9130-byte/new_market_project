@@ -432,17 +432,26 @@ export default function QuantVsSubjectiveCharts({ part }: { part?: QuantVsSubjec
   const [asOf, setAsOf] = useState("")
 
   useEffect(() => {
+    const seenKey = "ma-qvs-quant-ids-seen"
+    let ids: number[] = [...QUANT_ACCOUNT_IDS]
     try {
       const raw = localStorage.getItem(QUANT_IDS_STORAGE)
       if (raw) {
-        const parsed = JSON.parse(raw)
+        const parsed = JSON.parse(raw) as unknown
         if (Array.isArray(parsed)) {
-          setQuantIds(parsed.map(Number).filter((n) => Number.isFinite(n) && n >= 0))
-          return
+          ids = parsed.map(Number).filter((n) => Number.isFinite(n) && n >= 0)
         }
       }
+      const seenRaw = localStorage.getItem(seenKey)
+      const seenParsed = seenRaw ? JSON.parse(seenRaw) as unknown : []
+      const seen = new Set<number>(Array.isArray(seenParsed) ? seenParsed.map(Number) : [])
+      for (const id of QUANT_ACCOUNT_IDS) {
+        if (!seen.has(id) && !ids.includes(id)) ids.push(id)
+      }
+      localStorage.setItem(seenKey, JSON.stringify([...QUANT_ACCOUNT_IDS]))
+      localStorage.setItem(QUANT_IDS_STORAGE, JSON.stringify(ids))
     } catch { /* ignore */ }
-    setQuantIds([...QUANT_ACCOUNT_IDS])
+    setQuantIds(ids)
   }, [])
 
   const persistQuantIds = (ids: number[]) => {

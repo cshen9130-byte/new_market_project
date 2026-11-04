@@ -5,7 +5,7 @@ import ReactECharts from "echarts-for-react"
 import { ArrowLeftRight, Columns2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
+import { QUANT_STRATEGY_ACCOUNTS, quantStrategyLabel } from "@/lib/ma/quant-accounts"
 import { QUANT_STRATEGY_RANGES, quantStrategyBounds, type QuantStrategyRangeLabel } from "@/lib/ma/quant-strategy-ranges"
 import { buildCompareInsights, type CompareInsights } from "@/lib/ma/quant-strategy-compare"
 import type { FactorFamily, HeatCell, RegimeFactors } from "@/lib/ma/quant-regime-factors"
@@ -77,9 +77,7 @@ function pnlColor(n: number): string {
 const PALETTE = ["#3b82f6", "#ef4444", "#8b5cf6", "#f59e0b", "#06b6d4", "#ec4899", "#10b981"]
 
 function accLabel(d: ApiData): string {
-  const id = d.accountId || d.account || ""
-  const digits = String(id).replace(/\D/g, "")
-  return digits ? `rx${digits}` : "—"
+  return quantStrategyLabel(String(d.accountId || d.account || ""))
 }
 
 function nightLotsShare(d: ApiData): number | null {
@@ -1589,13 +1587,9 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
       setData(null)
     }
     const coreParams = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo, scope: "core" })
-    const fullParams = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
-    const coreP = fetch(`/ma/api/mom-analysis/quant-strategy?${coreParams}`, { cache: "no-store" })
-      .then(async (res) => ({ res, json: await res.json() as ApiData }))
-    const fullP = fetch(`/ma/api/mom-analysis/quant-strategy?${fullParams}`, { cache: "no-store" })
-      .then(async (res) => ({ res, json: await res.json() as ApiData }))
     try {
-      const { res, json } = await coreP
+      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${coreParams}`, { cache: "no-store" })
+      const json = await res.json() as ApiData
       if (reqId !== loadSeq.current) return
       if (!res.ok || !json.ok) throw new Error(json.error || "请求失败")
       shownRef.current = json
@@ -1610,7 +1604,9 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
     setLoading(false)
     setFactorPending(true)
     try {
-      const { res, json } = await fullP
+      const fullParams = new URLSearchParams({ account: nextAccount, from: nextFrom, to: nextTo })
+      const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${fullParams}`, { cache: "no-store" })
+      const json = await res.json() as ApiData
       if (reqId !== loadSeq.current) return
       if (!res.ok || !json.ok) return
       shownRef.current = json
@@ -1625,7 +1621,7 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
   const loadCompare = useCallback(async (
     nextFrom = from,
     nextTo = to,
-    accountIds: readonly (string | number)[] = QUANT_ACCOUNT_IDS,
+    accountIds: readonly (string | number)[] = QUANT_STRATEGY_ACCOUNTS.map((a) => a.id),
   ) => {
     const reqId = ++compareSeq.current
     setCompareLoading(true)
@@ -1633,13 +1629,14 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
     const ids = accountIds.map(String)
     const fetchOne = async (id: string): Promise<ApiData> => {
       const params = new URLSearchParams({ account: id, from: nextFrom, to: nextTo, scope: "core" })
-      let last: unknown = new Error(`rx${id} 请求失败`)
+      const name = quantStrategyLabel(id)
+      let last: unknown = new Error(`${name} 请求失败`)
       for (let attempt = 0; attempt < 3; attempt++) {
         if (reqId !== compareSeq.current) throw new Error("stale")
         try {
           const res = await fetch(`/ma/api/mom-analysis/quant-strategy?${params}`, { cache: "no-store" })
           const json = await res.json() as ApiData
-          if (!res.ok || !json.ok) throw new Error(json.error || `rx${id} 请求失败`)
+          if (!res.ok || !json.ok) throw new Error(json.error || `${name} 请求失败`)
           return json
         } catch (e) {
           last = e
@@ -1648,16 +1645,34 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
           }
         }
       }
-      throw last instanceof Error ? last : new Error(`rx${id} 请求失败`)
+      throw last instanceof Error ? last : new Error(`${name} 请求失败`)
     }
     try {
-      const settled = await Promise.allSettled(ids.map((id) => fetchOne(id)))
+      const settled: PromiseSettledResult<ApiData>[] = new Array(ids.length)
+      let cursor = 0
+      const workers = Array.from({ length: Math.min(2, ids.length) }, async () => {
+        while (cursor < ids.length) {
+          const i = cursor
+          cursor += 1
+          const id = ids[i]
+          if (!id || reqId !== compareSeq.current) {
+            settled[i] = { status: "rejected", reason: new Error("stale") }
+            continue
+          }
+          try {
+            settled[i] = { status: "fulfilled", value: await fetchOne(id) }
+          } catch (reason) {
+            settled[i] = { status: "rejected", reason }
+          }
+        }
+      })
+      await Promise.all(workers)
       if (reqId !== compareSeq.current) return
       const ok: ApiData[] = []
       const missing: string[] = []
       const broken: string[] = []
       settled.forEach((s, i) => {
-        const name = `rx${ids[i]}`
+        const name = quantStrategyLabel(ids[i])
         if (s.status === "fulfilled" && !s.value.notYetRun) ok.push(s.value)
         else if (s.status === "fulfilled") missing.push(name)
         else if (s.reason instanceof Error && s.reason.message === "stale") return
@@ -1771,7 +1786,7 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
     : (data?.to ?? to)
   const periodText = `${range} · ${periodFrom} 至 ${periodTo}`
 
-  const ids = data?.quantIds?.length ? data.quantIds : [...QUANT_ACCOUNT_IDS]
+  const ids = QUANT_STRATEGY_ACCOUNTS
   const k = data?.kpis
   const p = data?.payoff
   const eq = data?.equity ?? []
@@ -2341,11 +2356,11 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
           {pairPick && (
             <p className="text-xs text-muted-foreground mt-1">
               {pairIds.length === 2
-                ? `${compareRows[0]?.from ?? from} 至 ${compareRows[0]?.to ?? to} · rx${pairIds[0]} 与 rx${pairIds[1]} · 正在选${pairSlot === 0 ? "左侧" : "右侧"}`
+                ? `${compareRows[0]?.from ?? from} 至 ${compareRows[0]?.to ?? to} · ${quantStrategyLabel(pairIds[0])} 与 ${quantStrategyLabel(pairIds[1])} · 正在选${pairSlot === 0 ? "左侧" : "右侧"}`
                 : pairSlot === 0
-                  ? `正在选左侧${pairIds[0] ? `，当前 rx${pairIds[0]}` : ""}`
+                  ? `正在选左侧${pairIds[0] ? `，当前 ${quantStrategyLabel(pairIds[0])}` : ""}`
                   : pairIds[0]
-                    ? `正在选右侧，左侧是 rx${pairIds[0]}`
+                    ? `正在选右侧，左侧是 ${quantStrategyLabel(pairIds[0])}`
                     : "先点一个账户作为左侧"}
             </p>
           )}
@@ -2379,20 +2394,21 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
 
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground mr-1">账户</span>
-        {ids.map((id) => {
-          const pairIndex = pairIds.indexOf(String(id))
-          const active = pairPick ? pairIndex >= 0 : !compareMode && String(id) === accountId
+        {ids.map((spec) => {
+          const pairIndex = pairIds.indexOf(spec.id)
+          const active = pairPick ? pairIndex >= 0 : !compareMode && spec.id === accountId
           return (
             <button
-              key={id}
-              onClick={() => (pairPick ? pickPairAccount(String(id)) : selectAccount(String(id)))}
+              key={spec.id}
+              title={spec.source === "cfmmc" ? `${spec.label} ${spec.id}` : spec.label}
+              onClick={() => (pairPick ? pickPairAccount(spec.id) : selectAccount(spec.id))}
               className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
                 active
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
               }`}
             >
-              rx{id}
+              {spec.label}
               {pairPick && pairIndex >= 0 ? (pairIndex === 0 ? " 左" : " 右") : ""}
             </button>
           )
@@ -2409,7 +2425,7 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
                 : "border-input bg-background text-foreground hover:bg-muted"
             }`}
           >
-            左 {pairIds[0] ? `rx${pairIds[0]}` : "点选账户"}
+            左 {pairIds[0] ? quantStrategyLabel(pairIds[0]) : "点选账户"}
           </button>
           <span className="text-xs text-muted-foreground">对比</span>
           <button
@@ -2421,7 +2437,7 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
                 : "border-input bg-background text-foreground hover:bg-muted"
             }`}
           >
-            右 {pairIds[1] ? `rx${pairIds[1]}` : "点选账户"}
+            右 {pairIds[1] ? quantStrategyLabel(pairIds[1]) : "点选账户"}
           </button>
           <span className="text-xs text-muted-foreground">点亮的一侧会被下一个账户替换</span>
         </div>
@@ -2456,9 +2472,9 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
       {compareMode && pairPick && pairIds.length < 2 ? (
         <p className="text-sm text-muted-foreground py-8 text-center">
           {pairSlot === 0
-            ? `正在选左侧${pairIds[0] ? `，当前 rx${pairIds[0]}` : ""}。点一个账户。`
+            ? `正在选左侧${pairIds[0] ? `，当前 ${quantStrategyLabel(pairIds[0])}` : ""}。点一个账户。`
             : pairIds[0]
-              ? `正在选右侧。左侧是 rx${pairIds[0]}，点一个账户。`
+              ? `正在选右侧。左侧是 ${quantStrategyLabel(pairIds[0])}，点一个账户。`
               : "先点「左」，再点一个账户。"}
         </p>
       ) : compareMode && !part ? (
