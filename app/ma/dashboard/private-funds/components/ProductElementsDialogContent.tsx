@@ -32,6 +32,13 @@ function displayFeeText(v: string | null | undefined) {
   return formatBareFeeRate(s) || s
 }
 
+function displayRedeemFee(v: string | null | undefined) {
+  const s = String(v ?? "").trim()
+  if (!s) return null
+  if (/持有|\d+\s*天/.test(s)) return s
+  return summarizeRedeemFee(s) || displayFeeText(s)
+}
+
 function displayManageRate(rate: string | null | undefined, manage: string | null | undefined) {
   return summarizeManageFee(manage, rate)
 }
@@ -120,7 +127,7 @@ export function ProductElementsDialogContent({ data }: { data: ProductElementsDa
         <tbody>
           <Row2 l1="开放日" v1={displayOpenDay(data.open_day)} l2="是否可临开" v2={formatTemporaryOpen(data.is_temporary_open)} />
           <Row2 l1="申购费" v1={data.fee_purchase} l2="追加限制" v2={data.add_amount} />
-          <Row2 l1="赎回费" v1={summarizeRedeemFee(data.fee_redeem) || displayFeeText(data.fee_redeem)} l2="风险等级" v2={data.risk_level} multiline />
+          <Row2 l1="赎回费" v1={displayRedeemFee(data.fee_redeem)} l2="风险等级" v2={data.risk_level} multiline />
           <Row2 l1="预警线" v1={data.precautious_line} l2="封闭期" v2={displayClosedPeriod(data.closed_period)} />
           <Row2 l1="平仓线" v1={data.stop_line} l2="锁定期说明" v2={data.lock_period_desc} multiline />
           <Row2 l1="管理费率" v1={displayManageRate(data.fee_manage_rate, data.fee_manage)} l2="托管费" v2={displayFeeText(data.fee_trust)} />

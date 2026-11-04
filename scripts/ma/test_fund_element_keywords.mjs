@@ -441,8 +441,20 @@ const zhongliang19 = `
 `
 assert.equal(extractFeeRedeemFromText(zhongliang19), "持有不足90天赎回费1%，满90天0%。")
 assert.equal(extractFeeRedeemFromText("本基金的赎回费率为0%。不收取其他费用。"), "0%")
+assert.equal(
+  extractFeeRedeemFromText("本基金持有期限低于90天（不含）的赎回费率为0.5%，基金份额持有期在90天及以上的赎回费率为0%。"),
+  "持有不足90天赎回费0.5%，满90天0%。",
+)
 const zhongliangFilled = fillMissingElementsFromKeywords(zhongliang19, { fee_redeem: "0%" })
 assert.equal(zhongliangFilled.fee_redeem, "持有不足90天赎回费1%，满90天0%。")
+const xinanFilled = fillMissingElementsFromKeywords(
+  "2、赎回费率 本基金持有期限低于90天（不含）的赎回费率为0.5%，基金份额持有期在90天及以上的赎回费率为0%。",
+  { fee_redeem: "90天内赎回费0.5%，90天以上无赎回费" },
+)
+assert.equal(xinanFilled.fee_redeem, "持有不足90天赎回费0.5%，满90天0%。")
+assert.equal(summarizeRedeemFee("90天内赎回费0.5%，90天以上无赎回费"), "0.5%/0%")
+assert.equal(summarizeRedeemFee("持有不足90天赎回费0.5%，满90天0%。"), "0.5%/0%")
+assert.equal(summarizeRedeemFee("不收取赎回费"), "0%")
 
 const openDayGlossaryThenFixed = `
 第十二条 释义

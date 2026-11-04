@@ -1141,12 +1141,21 @@ function isTimedRedeemFee(value: string | null | undefined): boolean {
   return /持有/.test(s) && /赎回?费/.test(s)
 }
 
-/** LLM often keeps only the last 0% band; a holding-period schedule should replace that. */
+/** "90天以上无赎回费" names the zero band but drops 「低于 / 不含 / 及以上」. */
+function isLooseRedeemWaiver(value: string | null | undefined): boolean {
+  const s = value ?? ""
+  if (!/无赎回费|不收取赎回费|不设置赎回费|免赎回费/.test(s)) return false
+  if (/持有不足|持有期低于|低于\s*\d+\s*天/.test(s)) return false
+  return true
+}
+
+/** A flat 0%, or a waiver paraphrase, should yield to a holding-period schedule. */
 export function shouldUpgradeFeeRedeem(
   current: string | null | undefined,
   next: string | null | undefined,
 ): boolean {
-  return isFlatFeePercent(current) && isTimedRedeemFee(next)
+  if (!isTimedRedeemFee(next)) return false
+  return isFlatFeePercent(current) || isLooseRedeemWaiver(current)
 }
 
 function preferFeeRedeem(

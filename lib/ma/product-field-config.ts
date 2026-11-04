@@ -398,6 +398,8 @@ export function summarizeManageFee(
   return firstClause(s, 10)
 }
 
+const REDEEM_WAIVER_RE = /不收取赎回费|不设置赎回费|免赎回费|无赎回费|赎回费率为?零|赎回费率为0%/
+
 export function summarizeRedeemFee(raw: string | null | undefined): string | null {
   const s = String(raw ?? "").trim()
   if (!s) return null
@@ -405,16 +407,14 @@ export function summarizeRedeemFee(raw: string | null | undefined): string | nul
   const bare = formatBareFeeRate(s)
   if (bare) return bare
   if (/^0%$/.test(compact) || compact === "0") return "0%"
-  if (
-    /不收取赎回费|不设置赎回费|免赎回费|无赎回费|赎回费率为?零/.test(compact)
-    && !/持有/.test(compact)
-  ) {
-    return "0%"
-  }
   const pcts = uniqueKeepOrder(extractPercents(s))
-  if (pcts.length === 1) return pcts[0]
+  const waiver = REDEEM_WAIVER_RE.test(compact)
+  const timed = /持有|\d+天|\d+个?(?:自然)?日/.test(compact)
+  if (waiver && timed && pcts.length > 0 && !pcts.includes("0%")) pcts.push("0%")
+  if (waiver && pcts.length === 0 && !timed) return "0%"
+  if (pcts.length === 1 && !(waiver && timed)) return pcts[0]
   if (pcts.length > 1) return pcts.slice(0, 3).join("/")
-  if (/免/.test(s)) return "0%"
+  if (/免/.test(s) && !timed) return "0%"
   return firstClause(s, 10)
 }
 
