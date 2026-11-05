@@ -9598,10 +9598,27 @@ const OPS_ELEMENTS_TABS: { key: OpsElementsTab; label: string }[] = [
 
 const OPS_BENCHMARK_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数", "中证商品指数"]
 
-const DEFAULT_PERF_GRADIENTS: PerfFeeGradient[] = [
-  { fromPct: "0", toPct: "6", ratePct: "0" },
-  { fromPct: "6", toPct: "", ratePct: "40" },
-]
+function blankPerfGradients(): PerfFeeGradient[] {
+  return [
+    { fromPct: "", toPct: "", ratePct: "" },
+    { fromPct: "", toPct: "", ratePct: "" },
+  ]
+}
+
+function perfGradientsHaveRates(rows: PerfFeeGradient[]): boolean {
+  return rows.some((row) => row.fromPct.trim() && row.ratePct.trim())
+}
+
+function perfFormulaPayload(
+  mode: PerfFeeMode | null,
+  gradients: PerfFeeGradient[],
+): { fee_pay_mode: PerfFeeMode; fee_pay_gradients: PerfFeeGradient[] } | Record<string, never> {
+  if (!mode) return {}
+  if ((mode === "annual_gradient" || mode === "excess_gradient") && !perfGradientsHaveRates(gradients)) {
+    return {}
+  }
+  return { fee_pay_mode: mode, fee_pay_gradients: gradients }
+}
 
 function OpsElementsFieldLabel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
@@ -9678,8 +9695,8 @@ function OpsEditElementsDialog({
   const [stopLine, setStopLine] = useState("")
   const [feeAdminService, setFeeAdminService] = useState("")
   const [feeTrust, setFeeTrust] = useState("")
-  const [perfFeeMode, setPerfFeeMode] = useState<PerfFeeMode>("annual_gradient")
-  const [perfGradients, setPerfGradients] = useState<PerfFeeGradient[]>(DEFAULT_PERF_GRADIENTS)
+  const [perfFeeMode, setPerfFeeMode] = useState<PerfFeeMode | null>(null)
+  const [perfGradients, setPerfGradients] = useState<PerfFeeGradient[]>(blankPerfGradients)
 
   useEffect(() => {
     if (!open || !beian_hao) return
@@ -9749,11 +9766,11 @@ function OpsEditElementsDialog({
           setPerfGradients(
             d.fee_pay_formula_config.gradients?.length
               ? d.fee_pay_formula_config.gradients
-              : DEFAULT_PERF_GRADIENTS,
+              : blankPerfGradients(),
           )
         } else {
-          setPerfFeeMode("annual_gradient")
-          setPerfGradients(DEFAULT_PERF_GRADIENTS)
+          setPerfFeeMode(null)
+          setPerfGradients(blankPerfGradients())
         }
         setFeeAdminService(d.fee_admin_service ?? "")
         setFeeTrust(d.fee_trust ?? "")
@@ -9841,8 +9858,7 @@ function OpsEditElementsDialog({
           fee_manage: feeManageDesc || null,
           fee_admin_service: feeAdminService || null,
           fee_pay: feePayDesc || null,
-          fee_pay_mode: perfFeeMode,
-          fee_pay_gradients: perfGradients,
+          ...perfFormulaPayload(perfFeeMode, perfGradients),
           team_benchmark: teamBenchmark || null,
         }),
       })
@@ -10170,7 +10186,7 @@ function OpsEditElementsDialog({
                               <div key={i} className="flex items-center gap-2 flex-wrap text-xs text-zinc-600">
                                 <input value={g.fromPct} onChange={(e) => setPerfGradients(perfGradients.map((row, j) => j === i ? { ...row, fromPct: e.target.value } : row))} className="w-10 border rounded px-1 py-0.5 text-center bg-background" />
                                 <span>% ≤ 年化收益</span>
-                                {g.toPct ? (
+                                {i < perfGradients.length - 1 || g.toPct ? (
                                   <>
                                     <span>&lt;</span>
                                     <input value={g.toPct} onChange={(e) => setPerfGradients(perfGradients.map((row, j) => j === i ? { ...row, toPct: e.target.value } : row))} className="w-10 border rounded px-1 py-0.5 text-center bg-background" />
@@ -10714,8 +10730,6 @@ function OpsAddScaleDialog({
   const [batchPreview, setBatchPreview] = useState<OpsScaleBatchPreviewRow[]>([])
   const [batchError, setBatchError] = useState("")
   const [isDragOver, setIsDragOver] = useState(false)
-  const [nonTradingChoice, setNonTradingChoice] = useState<OpsTeamNavNonTradingChoice | null>(null)
-  const [pendingRows, setPendingRows] = useState<OpsTeamNavUploadPreviewRow[] | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -10728,8 +10742,6 @@ function OpsAddScaleDialog({
     setBatchPreview([])
     setBatchError("")
     setIsDragOver(false)
-    setNonTradingChoice(null)
-    setPendingRows(null)
   }, [open])
 
   async function handleBatchFile(file: File) {
@@ -10756,43 +10768,28 @@ function OpsAddScaleDialog({
     }
   }
 
-  async function handleConfirm(policy?: "drop" | "keep") {
+  async function handleConfirm() {
     if (saving) return
-    let rows: OpsTeamNavUploadPreviewRow[] = pendingRows ?? []
-    if (!pendingRows) {
-      if (tab === "single") {
-        if (!date || !unitNav.trim()) return
-        rows = [{
-          seq: 1,
-          date,
-          unit_nav: unitNav.trim(),
-          cumulative_nav: cumulativeNav.trim() || unitNav.trim(),
-        }]
-      } else if (tab === "paste") {
-        if (pasteResult.length === 0) return
-        rows = pasteResult
-      } else {
-        if (!batchFile || batchPreview.length === 0) return
-        rows = batchPreview
+    if (tab === "single") {
+      if (!date || !amount.trim()) return
+      setSaving(true)
+      try {
+        onConfirmSingle(date, amount.trim())
+        onClose()
+      } finally {
+        setSaving(false)
       }
+      return
     }
+    if (!batchFile) return
     setSaving(true)
-    setBatchError("")
     try {
-      const result = await onUpload(rows, policy ? { non_trading_policy: policy } : undefined)
-      if (result && typeof result === "object" && "needs_non_trading_choice" in result && result.needs_non_trading_choice) {
-        setPendingRows(rows)
-        setNonTradingChoice(result)
-        return
-      }
+      onConfirmBatch(batchPreview)
       onClose()
-    } catch (err) {
-      setBatchError(err instanceof Error ? err.message : "上传失败，请稍后重试")
     } finally {
       setSaving(false)
     }
   }
-
 
   if (!open) return null
 
@@ -13329,6 +13326,8 @@ function OpsTeamNavUploadDialog({
   const [batchPreview, setBatchPreview] = useState<OpsTeamNavUploadPreviewRow[]>([])
   const [batchError, setBatchError] = useState("")
   const [isDragOver, setIsDragOver] = useState(false)
+  const [nonTradingChoice, setNonTradingChoice] = useState<OpsTeamNavNonTradingChoice | null>(null)
+  const [pendingRows, setPendingRows] = useState<OpsTeamNavUploadPreviewRow[] | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const previewRows = batchPreview
@@ -13346,6 +13345,8 @@ function OpsTeamNavUploadDialog({
     setBatchPreview([])
     setBatchError("")
     setIsDragOver(false)
+    setNonTradingChoice(null)
+    setPendingRows(null)
   }, [open])
 
   function handlePasteIdentify() {
@@ -13396,28 +13397,35 @@ function OpsTeamNavUploadDialog({
     }
   }
 
-  async function handleConfirm() {
+  async function handleConfirm(policy?: "drop" | "keep") {
     if (saving) return
-    let rows: OpsTeamNavUploadPreviewRow[] = []
-    if (tab === "single") {
-      if (!date || !unitNav.trim()) return
-      rows = [{
-        seq: 1,
-        date,
-        unit_nav: unitNav.trim(),
-        cumulative_nav: cumulativeNav.trim() || unitNav.trim(),
-      }]
-    } else if (tab === "paste") {
-      if (pasteResult.length === 0) return
-      rows = pasteResult
-    } else {
-      if (!batchFile || batchPreview.length === 0) return
-      rows = batchPreview
+    let rows: OpsTeamNavUploadPreviewRow[] = pendingRows ?? []
+    if (!pendingRows) {
+      if (tab === "single") {
+        if (!date || !unitNav.trim()) return
+        rows = [{
+          seq: 1,
+          date,
+          unit_nav: unitNav.trim(),
+          cumulative_nav: cumulativeNav.trim() || unitNav.trim(),
+        }]
+      } else if (tab === "paste") {
+        if (pasteResult.length === 0) return
+        rows = pasteResult
+      } else {
+        if (!batchFile || batchPreview.length === 0) return
+        rows = batchPreview
+      }
     }
     setSaving(true)
     setBatchError("")
     try {
-      await onUpload(rows)
+      const result = await onUpload(rows, policy ? { non_trading_policy: policy } : undefined)
+      if (result && typeof result === "object" && "needs_non_trading_choice" in result && result.needs_non_trading_choice) {
+        setPendingRows(rows)
+        setNonTradingChoice(result)
+        return
+      }
       onClose()
     } catch (err) {
       setBatchError(err instanceof Error ? err.message : "上传失败，请稍后重试")

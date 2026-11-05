@@ -261,6 +261,31 @@ def normalize_nav_frequency(freq: str | None) -> str:
     return "weekly"
 
 
+# Launch prints a few days after 成立 are still par. 0.997 vs 1.0000 makes
+# 运作以来 disagree with 最新净值/1 (investors read 初始净值 as 1.0000).
+PAR_OPENING_NAV = 1.0
+PAR_OPENING_TOLERANCE = 0.005
+
+
+def _snap_opening_nav_to_par(sampled: pd.DataFrame) -> pd.DataFrame:
+    """Use 1.0000 as the first weekly/monthly point when the opening print is still par."""
+    if sampled.empty or "adj_nav" not in sampled.columns:
+        return sampled
+    opening = float(sampled["adj_nav"].iloc[0])
+    if not np.isfinite(opening) or opening <= 0:
+        return sampled
+    if abs(opening - PAR_OPENING_NAV) > PAR_OPENING_TOLERANCE:
+        return sampled
+    if abs(opening - PAR_OPENING_NAV) <= 1e-12:
+        return sampled
+    sampled = sampled.copy()
+    sampled.loc[sampled.index[0], "adj_nav"] = PAR_OPENING_NAV
+    for col in ("unit_nav", "cum_nav"):
+        if col in sampled.columns:
+            sampled.loc[sampled.index[0], col] = PAR_OPENING_NAV
+    return sampled
+
+
 def periods_per_year_for_frequency(freq: str | None) -> int:
     normalized = normalize_nav_frequency(freq)
     if normalized == "daily":
@@ -287,10 +312,11 @@ def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
     Daily keeps every trading day. The kept row keeps its real date, so a
     report that ends mid-week still includes that week.
 
-    For weekly/monthly, also keep the first trading-day NAV as an anchor when
-    it is not already the first sampled point. Otherwise a series that starts
-    mid-week (or on Monday before Friday) drops the inception/first NAV and
-    cumulative YTD/since-inception collapse to the first week-end move.
+    For weekly/monthly, keep the first trading-day NAV as the anchor, then
+    the last trading day of each later week or month (Friday / month-end).
+    A launch print still within 0.5% of par is treated as 1.0000 so 运作以来
+    matches 最新净值 against the 初始净值 investors see. Series that do not
+    open near 1 keep their real first NAV.
     """
     normalized = normalize_nav_frequency(freq)
     work = _trading_day_nav(df)
@@ -316,6 +342,8 @@ def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
             sampled = pd.concat([first, sampled], ignore_index=True)
             sampled = sampled.drop_duplicates(subset=["date"], keep="first")
     sampled = sampled.sort_values("date").reset_index(drop=True)
+    if normalized in ("weekly", "monthly"):
+        sampled = _snap_opening_nav_to_par(sampled)
     sampled["daily_ret"] = sampled["adj_nav"].pct_change()
     sampled["pct_chg"] = sampled["daily_ret"].apply(
         lambda x: f"{x * 100:+.2f}%" if pd.notna(x) else "--"
@@ -1553,7 +1581,7 @@ def _make_weekly_report(
     table_items = [
         ("成立日期", metrics["start_date"].strftime("%Y-%m-%d")),
         ("运作天数", f"{metrics['trading_days']} 个交易日"),
-        ("初始净值", "1.0000"),
+        ("初始净值", f"{float(metrics['start_nav']):.4f}"),
         ("年化收益", fmt_pct(metrics["annual_return"])),
         ("卡玛比率", f"{metrics['calmar']:.2f}"),
         (

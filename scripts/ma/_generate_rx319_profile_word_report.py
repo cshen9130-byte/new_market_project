@@ -401,9 +401,8 @@ def cell_text(cell, text, *, size=9, bold=False, color=None, align="center"):
 
 
 def add_table(doc, headers, rows, highlight_rows=None, red_cols=None, green_cols=None):
+    del red_cols, green_cols  # sign color is fixed: plus red, minus green
     highlight_rows = set(highlight_rows or [])
-    red_cols = set(red_cols or [])
-    green_cols = set(green_cols or [])
     table = doc.add_table(rows=1 + len(rows), cols=len(headers))
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = True
@@ -415,10 +414,11 @@ def add_table(doc, headers, rows, highlight_rows=None, red_cols=None, green_cols
         for c_i, val in enumerate(row):
             color = None
             s = "" if val is None else str(val)
-            if c_i in red_cols or (s.startswith("-") and any(ch.isdigit() for ch in s)):
-                if s.startswith("-") and any(ch.isdigit() for ch in s):
-                    color = RED
-            if color is None and s.startswith("+"):
+            # Chinese market: a gain is red, a loss is green.
+            digits = any(ch.isdigit() for ch in s)
+            if s.startswith("+") and digits:
+                color = RED
+            elif s.startswith("-") and digits:
                 color = GREEN
             cell_text(table.rows[r_i + 1].cells[c_i], val, size=8, color=color, align="center" if c_i else "left")
             shade(table.rows[r_i + 1].cells[c_i], fill)

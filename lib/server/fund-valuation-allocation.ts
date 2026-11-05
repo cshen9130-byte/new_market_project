@@ -617,6 +617,8 @@ function isOptionHolding(h: HoldingRow): boolean {
 /** Futures/options 市值 is contract notional, not fund NAV (保证金 already sits in 结算备付金). */
 function isDerivativeNotionalHolding(h: HoldingRow): boolean {
   const kind = h.row_kind ?? ""
+  // 存出保证金_国债期货 is cash margin, not the TL contract notional.
+  if (isCashLikeHoldingKind(kind)) return false
   if (kind === "derivative" || kind === "option") return true
   if (isOptionHolding(h)) return true
   const code = String(h.original_subject_code ?? h.subject_code ?? "").replace(/[\s.]/g, "")
@@ -631,13 +633,45 @@ function derivativeNotionalAbs(holdings: HoldingRow[]): number {
     .reduce((sum, h) => sum + Math.abs(rowMarketValue(h)), 0)
 }
 
-/** Undo 资产净值 that folded in 期货/期权名义本金 (e.g. SCQ403 52M + 188M → 240M). */
+function sheetWeightPct(weightRaw: number): number {
+  if (!Number.isFinite(weightRaw) || weightRaw === 0) return 0
+  return Math.abs(weightRaw) <= 1 ? weightRaw * 100 : weightRaw
+}
+
+/** True when the 估值表 市值占比 column already equals 市值 / nav. */
+function sheetWeightsAgreeWithNav(holdings: HoldingRow[], nav: number): boolean {
+  if (!(nav > 0)) return false
+  let checked = 0
+  let agree = 0
+  for (const h of holdings) {
+    if (h.include_in_detail === false) continue
+    const mv = Math.abs(parseNum(h.signed_market_value) || parseNum(h.market_value))
+    const sheet = Math.abs(sheetWeightPct(parseNum(h.market_weight)))
+    if (mv < 1000 || sheet <= 0) continue
+    const computed = (mv / nav) * 100
+    if (!(computed > 0)) continue
+    checked += 1
+    const ratio = sheet / computed
+    if (ratio > 0.85 && ratio < 1.15) agree += 1
+    if (checked >= 8 && agree >= 5) return true
+    if (checked >= 16) break
+  }
+  return checked >= 3 && agree / checked >= 0.6
+}
+
+/**
+ * Undo 资产净值 that folded in 期货/期权名义本金 (e.g. SCQ403 52M + 188M → 240M).
+ * Skip when the sheet's own 市值占比 already reconciles with the stored NAV.
+ * A large hedge book (SAVW72: 56M futures notional vs 85.6M 资产净值) must not
+ * shrink the denominator, or fund 市值占比 sums past 100%.
+ */
 function stripDerivativeNotionalFromNav(nav: number, holdings: HoldingRow[]): number {
   const notional = derivativeNotionalAbs(holdings)
   if (!(nav > 0) || !(notional > 0)) return nav
   const stripped = nav - notional
-  if (stripped >= 1000 && nav > stripped * 2.5) return stripped
-  return nav
+  if (!(stripped >= 1000) || !(nav > stripped * 2.5)) return nav
+  if (sheetWeightsAgreeWithNav(holdings, nav)) return nav
+  return stripped
 }
 
 function alignPaidInToNav(
