@@ -34,6 +34,7 @@ import {
   lookupFundCodeByProductName,
   resolveFofValuationCodeAlias,
   resolveFundHoldingCode,
+  strategyMatchCodes,
 } from "@/lib/server/fund-holding-code"
 import {
   isFundHoldingMergeCandidate,
@@ -1592,6 +1593,20 @@ function calcPriceChangePct(decimal: number | null): number | null {
   return decimal * 100
 }
 
+function lookupStrategyRow(
+  map: Map<string, CompanyStrategyRow>,
+  codes: Array<string | null | undefined>,
+  name?: string | null,
+): CompanyStrategyRow | undefined {
+  for (const code of strategyMatchCodes(...codes)) {
+    const hit = map.get(code)
+    if (hit && (hit.l1 || hit.l2 || hit.l3)) return hit
+  }
+  const trimmed = name?.trim()
+  if (!trimmed) return undefined
+  return map.get(trimmed)
+}
+
 function formatFundStrategy(l1: string | null | undefined, l2: string | null | undefined): string | null {
   const s1 = l1?.trim() || null
   const s2 = l2?.trim() || null
@@ -1640,7 +1655,10 @@ async function loadCompanyStrategyBatch(
       [codes],
     )
     for (const r of rows) {
-      out.set(r.register_number, { key: r.register_number, l1: r.l1, l2: r.l2, l3: r.l3 })
+      const row = { key: r.register_number, l1: r.l1, l2: r.l2, l3: r.l3 }
+      for (const code of strategyMatchCodes(r.register_number)) {
+        if (!out.has(code)) out.set(code, row)
+      }
     }
   }
 
@@ -1949,7 +1967,7 @@ async function buildFundHoldings(
   }
 
   const asOfDate = valuationDate?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
-  const beianCodes = fundRows.map((r) => r.beianHao).filter(Boolean) as string[]
+  const beianCodes = [...new Set(fundRows.flatMap((r) => strategyMatchCodes(r.beianHao, r.valuationCode)))]
 
   // Code-first loads avoid fuzzy name joins over the whole underlying book.
   const [strategyMap, emailNavMap, marketNavMap] = await Promise.all([
@@ -2024,8 +2042,7 @@ async function buildFundHoldings(
       unitNav = row.virtualUnitNav
     }
 
-    const strategyRow = (navKey ? strategyMap.get(navKey) : null)
-      ?? strategyMap.get(row.fundName)
+    const strategyRow = lookupStrategyRow(strategyMap, [navKey, row.beianHao], row.fundName)
     const fundStrategy = formatFundStrategy(strategyRow?.l1, strategyRow?.l2)
     const strategyL1 = strategyRow?.l1?.trim() || null
     const strategyL2 = strategyRow?.l2?.trim() || null
@@ -3269,9 +3286,7 @@ async function enrichCachedFundStrategies(
   // (regression from always-enrich-with-names; prod avoided it via the old early return).
   // Name-only rows without a code still get a capped fuzzy fallback below.
   // Cache rows are also patched on write via patchValuationSnapshotStrategies.
-  const beianCodes = rows
-    .map((row) => row.beianHao ?? row.valuationCode)
-    .filter((v): v is string => Boolean(v))
+  const beianCodes = [...new Set(rows.flatMap((row) => strategyMatchCodes(row.beianHao, row.valuationCode)))]
   const strategyMap = await loadCompanyStrategyBatch(beianCodes, [])
 
   const NAME_JOIN_CAP = 8
@@ -3295,7 +3310,7 @@ async function enrichCachedFundStrategies(
 
   const fund_holdings = rows.map((row) => {
     const navKey = row.valuationCode ?? row.beianHao
-    const strategyRow = (navKey ? strategyMap.get(navKey) : null) ?? strategyMap.get(row.fundName)
+    const strategyRow = lookupStrategyRow(strategyMap, [navKey, row.beianHao], row.fundName)
     const fromPath = (row.fundStrategy ?? "")
       .split("/")
       .map((part) => part.trim())
@@ -3349,7 +3364,7 @@ function extractStrategyFundWeights(
     if (mv <= 0) continue
     const beian = fundHoldingBeianCode(h)
     const name = fundHoldingDisplayName(h)
-    const strategyRow = (beian ? strategyMap.get(beian) : null) ?? strategyMap.get(name)
+    const strategyRow = lookupStrategyRow(strategyMap, [beian], name)
     const label = formatFundStrategy(strategyRow?.l1, strategyRow?.l2) ?? "未配置"
     weights.set(label, (weights.get(label) ?? 0) + (mv / navBase) * 100)
   }
@@ -3414,7 +3429,7 @@ async function buildFofTrendAnalysis(
     for (const h of dedupeFundHoldings(snapshot.holdings)) {
       const code = fundHoldingBeianCode(h)
       const name = fundHoldingDisplayName(h)
-      if (code) beianCodes.push(code)
+      if (code) beianCodes.push(...strategyMatchCodes(code))
       if (name) productNames.push(name)
     }
   }

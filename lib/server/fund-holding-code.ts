@@ -192,6 +192,25 @@ export function resolveFofValuationCodeAlias(code: string | null | undefined): s
   return null
 }
 
+/**
+ * 估值表代码 and the canonical 备案号 for one holding.
+ * SSB595A is stored as SB595A; strategy lookup has to try both.
+ */
+export function strategyMatchCodes(...codes: Array<string | null | undefined>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (value: string | null | undefined) => {
+    const key = String(value ?? "").trim().toUpperCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    out.push(key)
+    const alias = resolveFofValuationCodeAlias(key)
+    if (alias) push(alias)
+  }
+  for (const code of codes) push(code)
+  return out
+}
+
 /** Known A-share ETF name patterns → 6-digit ticker code. */
 const ETF_NAME_PATTERNS: Array<{ test: RegExp; code: string }> = [
   { test: /华宝.*证券.*ETF/u, code: "512000" },
