@@ -1,4 +1,4 @@
-import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeManagedTeamPointsWithLegacy, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, dropManualSeriesDisjointFromCustodian, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases, isPostInvestmentVirtualNavEmail, preferEmailNavRow } from "../lib/server/email-nav-query.ts"
+import { appendEmailAfterSeriesTip, mergeLegacyWithTeamNav, mergeManagedTeamPointsWithLegacy, mergeNavSeriesWithEmail, preferCustodianEmailOverUnitOnlyManual, dropManualSeriesDisjointFromCustodian, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate, emailRowMatchesFund, collectFundNameAliases, isPostInvestmentVirtualNavEmail, preferEmailNavRow, sanitizeMisassignedUnitNavRows } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
   calcDailyReturnPctFromHistory,
@@ -4350,6 +4350,51 @@ function testGt288aUnitOnlyManualPrefersCustodianEmail() {
 }
 
 testGt288aUnitOnlyManualPrefersCustodianEmail()
+
+function testGt288aFullHistoryKeepsPreSplitUnitAndInteriorGap() {
+  const preSplit = sanitizeMisassignedUnitNavRows([
+    { price_date: "2025-06-04", nav: "1.1555", cumulative_nav: "1.1555", cum_nav_withdrawal: "1.1555", price_change: "" },
+    { price_date: "2025-06-06", nav: "1.1711", cumulative_nav: "1.1711", cum_nav_withdrawal: "1.1711", price_change: "" },
+    { price_date: "2025-06-09", nav: "1.1871", cumulative_nav: "1.1871", cum_nav_withdrawal: "1.1871", price_change: "" },
+    { price_date: "2025-06-10", nav: "1.0000", cumulative_nav: "1.1929", cum_nav_withdrawal: "1.1929", price_change: "" },
+  ])
+  const jun09 = preSplit.find((row) => row.price_date === "2025-06-09")
+  assert(
+    "GT288A unit reset does not rewrite the prior 单位=累计 day",
+    jun09 != null && Math.abs(parseFloat(jun09.nav) - 1.1871) < 1e-6,
+  )
+
+  const series = [
+    { price_date: "2023-08-23", nav: "0.5855", cumulative_nav: "0.5855", cum_nav_withdrawal: "0.5855", price_change: "" },
+    { price_date: "2023-08-25", nav: "0.5855", cumulative_nav: "0.5855", cum_nav_withdrawal: "0.5855", price_change: "" },
+    { price_date: "2023-09-27", nav: "1.0000", cumulative_nav: "1.0000", cum_nav_withdrawal: "1.0000", price_change: "" },
+    { price_date: "2023-09-28", nav: "0.9996", cumulative_nav: "0.9996", cum_nav_withdrawal: "0.9996", price_change: "" },
+    { price_date: "2023-10-09", nav: "0.9996", cumulative_nav: "0.9996", cum_nav_withdrawal: "0.9996", price_change: "" },
+    { price_date: "2023-10-10", nav: "1.0010", cumulative_nav: "1.0010", cum_nav_withdrawal: "1.0010", price_change: "" },
+  ]
+  const email = [{
+    price_date: "2023-10-11",
+    nav: "1.0020",
+    cumulative_nav: "1.0020",
+    adjusted_nav: "1.0020",
+    source: "attachment_nav_table",
+    subject: "托管净值",
+  }]
+  const out = appendEmailAfterSeriesTip(series, email, { beian_hao: "GT288A", product_name: "卓尚天道1号A类" })
+  const resumed = out.find((row) => row.price_date === "2023-09-27")
+  const tip = out.find((row) => row.price_date === "2023-10-10")
+  const extended = out.find((row) => row.price_date === "2023-10-11")
+  assert(
+    "GT288A interior pause does not drop the resumed history",
+    resumed != null && Math.abs(parseFloat(resumed.nav) - 1) < 1e-6 && tip != null,
+  )
+  assert(
+    "GT288A email still extends after the real series end",
+    extended != null && Math.abs(parseFloat(extended.nav) - 1.002) < 1e-4,
+  )
+}
+
+testGt288aFullHistoryKeepsPreSplitUnitAndInteriorGap()
 
 // STE102 京盈智投博远: on 2026-09-10 and 2026-09-23 the platform stored a stale
 // unit+0.10 in cumulative_nav and the real 累计 in cum_nav_withdrawal.

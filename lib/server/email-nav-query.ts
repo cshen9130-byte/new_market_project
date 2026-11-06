@@ -2379,6 +2379,18 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
     // Only the ex-div row itself stores cum as unit (sharp jump to cum level), not the prior equal unit==cum day.
     if (!tracksPrevCum && (currVsPrev <= 0.995 || currVsPrev >= 1.05)) continue
     if (tracksPrevCum && currVsPrev < 1.01) continue
+    // A pre-dividend run keeps 单位 = 累计 on every day, then the next row is the
+    // real unit reset (GT288A 2025-06-09 → 2025-06-10, unit 1.1871 → 1.0000 while
+    // 累计 stays ~1.19). That prior day is the real unit. A misassigned ex-div
+    // row sits after a day that already has 累计 > 单位.
+    if (
+      prevCum != null
+      && Math.abs(prevUnit - prevCum) / prevCum <= 0.001
+      && currVsPrev > 0.9
+      && currVsPrev < 1.1
+    ) {
+      continue
+    }
 
     const fixedUnit = currCum / nextRatio
     if (!Number.isFinite(fixedUnit) || fixedUnit <= 0 || fixedUnit >= currCum) continue
@@ -3829,13 +3841,29 @@ export function mergeLegacyWithTeamNav(
 function seriesTipBeforeLongHole(series: LegacyNavRow[]): string {
   const dates = [...new Set(series.map((row) => row.price_date.slice(0, 10)))].sort()
   if (dates.length === 0) return ""
-  let tip = dates[0]
+  const gaps: Array<{ index: number; days: number }> = []
   for (let i = 1; i < dates.length; i += 1) {
-    const gapDays = (Date.parse(dates[i]) - Date.parse(dates[i - 1])) / 86_400_000
-    if (gapDays > 21) return dates[i - 1]
-    tip = dates[i]
+    gaps.push({
+      index: i,
+      days: (Date.parse(dates[i]) - Date.parse(dates[i - 1])) / 86_400_000,
+    })
   }
-  return tip
+  // A parent 估值表 can append one later point after the team series has ended.
+  // That point must not become the tip, or email inside the hole is hidden
+  // (BUK40A 2026-08-31). An interior pause followed by the real history
+  // (GT288A: 33 days in Aug–Sep 2023, then years of points) stays intact.
+  const STRAY_TAIL_POINTS = 3
+  for (const gap of gaps) {
+    if (gap.days <= 21) continue
+    const tailCount = dates.length - gap.index
+    if (tailCount > STRAY_TAIL_POINTS) continue
+    const earlier = gaps.filter((item) => item.index < gap.index).map((item) => item.days)
+    if (earlier.length === 0) return dates[gap.index - 1]
+    const sorted = [...earlier].sort((a, b) => a - b)
+    const median = sorted[Math.floor((sorted.length - 1) / 2)] ?? 0
+    if (gap.days > median * 2 && gap.days > median + 14) return dates[gap.index - 1]
+  }
+  return dates[dates.length - 1]
 }
 
 /**
