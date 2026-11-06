@@ -199,16 +199,62 @@ def load() -> dict:
             WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-04'
             """,
         )
+        hist_ohlc = prof.read_sql(
+            conn,
+            """
+            SELECT trade_date::date AS dt, contract,
+                   open::float8 AS open, high::float8 AS high,
+                   low::float8 AS low, close::float8 AS close,
+                   clear::float8 AS clear
+            FROM raw_futures_contracts_daily
+            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-04'
+            """,
+        )
+        hist_ak = prof.read_sql(
+            conn,
+            """
+            SELECT trade_date::date AS dt, code,
+                   open::float8 AS open, high::float8 AS high,
+                   low::float8 AS low, close::float8 AS close,
+                   clear::float8 AS clear
+            FROM raw_akshare_futures_daily
+            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-04'
+            """,
+        )
+        civ = prof.read_sql(
+            conn,
+            """
+            SELECT trade_date::date AS dt, LOWER(underlying_key) AS product, iv::float8 AS iv
+            FROM raw_commodity_option_iv_daily
+            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-04'
+            """,
+        )
+        opt_px = prof.read_sql(
+            conn,
+            """
+            SELECT trade_date::date AS dt, contract, COALESCE(clear, close)::float8 AS px
+            FROM raw_options_contracts_daily
+            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-04'
+              AND COALESCE(clear, close) > 0
+            """,
+        )
     finally:
         conn.close()
-    for df in (ohlc, ak):
+    for df in (ohlc, ak, hist_ohlc, hist_ak, civ, opt_px):
         if not df.empty:
             df["dt"] = pd.to_datetime(df["dt"])
     if not ohlc.empty:
         ohlc["code"] = ohlc["contract"].map(base.norm_code)
+    if not hist_ohlc.empty:
+        hist_ohlc["code"] = hist_ohlc["contract"].map(base.norm_code)
     if not ak.empty:
         ak["product"] = ak["code"].map(_ak_product)
-    return {"raw": raw, "ohlc": ohlc, "ak": ak}
+    if not hist_ak.empty:
+        hist_ak["product"] = hist_ak["code"].map(_ak_product)
+    if not civ.empty:
+        civ["product"] = civ["product"].astype(str).str.upper()
+        civ["iv"] = base.to_percent(civ["iv"])
+    return {"raw": raw, "ohlc": ohlc, "ak": ak, "hist_ohlc": hist_ohlc, "hist_ak": hist_ak, "civ": civ, "opt_px": opt_px}
 
 
 def clean_px(df: pd.DataFrame) -> pd.DataFrame:
@@ -272,10 +318,144 @@ def events_for(product: str, opt: pd.DataFrame, fut: pd.DataFrame) -> pd.DataFra
     return ev.groupby(["dt", "kind"], as_index=False)["lots"].sum()
 
 
-def plot_candle(product: str, px: pd.DataFrame, ev: pd.DataFrame, fut_net: pd.DataFrame, strikes: dict, path: Path) -> None:
+def history_for(label: str, product: str, hist_ohlc: pd.DataFrame, hist_ak: pd.DataFrame) -> pd.DataFrame:
+    """Same instrument as the candle, with enough sessions to form a 20-day realized vol."""
+    if not label:
+        return pd.DataFrame()
+    if str(label).endswith("连续"):
+        if hist_ak.empty:
+            return pd.DataFrame()
+        return clean_px(hist_ak[hist_ak["product"] == UNDER.get(product, product)])
+    if hist_ohlc.empty:
+        return pd.DataFrame()
+    return clean_px(hist_ohlc[hist_ohlc["code"] == label])
+
+
+def _returns(hist: pd.DataFrame) -> pd.Series:
+    if hist is None or hist.empty:
+        return pd.Series(dtype=float)
+    h = hist.sort_values("dt").drop_duplicates("dt")
+    s = pd.Series(h["c"].to_numpy(float), index=pd.to_datetime(h["dt"]))
+    return s.pct_change()
+
+
+def rv20_on(contract_hist: pd.DataFrame, cont_hist: pd.DataFrame, dates: pd.Series) -> pd.Series:
+    """20-day realized vol. Before the listed month has 20 sessions, earlier returns come from the continuous contract."""
+    listed = _returns(contract_hist)
+    cont = _returns(cont_hist)
+    idx = listed.index.union(cont.index)
+    rets = listed.reindex(idx).combine_first(cont.reindex(idx)).sort_index()
+    rv = rets.rolling(20, min_periods=20).std() * math.sqrt(252.0) * 100.0
+    return rv.reindex(pd.to_datetime(dates))
+
+
+def _exchange_atm() -> pd.DataFrame:
+    path = OUT / "atm_fill.csv"
+    if not path.is_file():
+        return pd.DataFrame(columns=["dt", "product", "iv"])
+    fill = pd.read_csv(path)
+    if fill.empty:
+        return pd.DataFrame(columns=["dt", "product", "iv"])
+    fill["dt"] = pd.to_datetime(fill["dt"])
+    fill["product"] = fill["product"].astype(str).str.upper()
+    fill["iv"] = pd.to_numeric(fill["iv"], errors="coerce")
+    return fill.dropna(subset=["iv"])[["dt", "product", "iv"]]
+
+
+def _invert_atm(opt_px: pd.DataFrame, ohlc: pd.DataFrame) -> pd.DataFrame:
+    """Nearest listed strike within 8% of the future, inverted from that day's settlement."""
+    cols = ["dt", "product", "iv"]
+    if opt_px is None or opt_px.empty or ohlc is None or ohlc.empty:
+        return pd.DataFrame(columns=cols)
+    parsed = opt_px["contract"].map(base.parse_contract)
+    chain = opt_px.loc[parsed.notna()].copy()
+    if chain.empty:
+        return pd.DataFrame(columns=cols)
+    info = pd.DataFrame(list(parsed.loc[chain.index]))
+    chain = pd.concat([chain.reset_index(drop=True), info.reset_index(drop=True)], axis=1)
+    fut = ohlc.copy()
+    fut["fut"] = pd.to_numeric(fut["close"], errors="coerce")
+    fut["fut"] = fut["fut"].where(fut["fut"] > 0, pd.to_numeric(fut["clear"], errors="coerce"))
+    fut = fut[fut["fut"] > 0][["dt", "code", "fut"]].drop_duplicates(["dt", "code"])
+    best: dict[tuple, tuple] = {}
+    for r in chain.itertuples(index=False):
+        if not r.strike or r.strike <= 0 or not r.px or r.px <= 0:
+            continue
+        hit = fut[(fut["dt"] == r.dt) & fut["code"].isin(base.fut_lookup_keys(r.product, r.month))]
+        if hit.empty:
+            continue
+        spot = float(hit["fut"].iloc[0])
+        dist = abs(float(r.strike) / spot - 1.0)
+        if dist > 0.08:
+            continue
+        exp = option_expiry(r.product, r.month)
+        if exp is None:
+            continue
+        dte = (exp - pd.Timestamp(r.dt).date()).days
+        if dte <= 1:
+            continue
+        try:
+            iv = _implied_vol(spot, float(r.strike), dte / 365.0, float(r.px), r.cp) * 100.0
+        except Exception:
+            continue
+        if not math.isfinite(iv) or not 1.0 < iv < 250.0:
+            continue
+        key = (pd.Timestamp(r.dt), r.product, r.cp)
+        prev = best.get(key)
+        if prev is None or dist < prev[0]:
+            best[key] = (dist, iv)
+    rows = []
+    by_day: dict[tuple, list] = {}
+    for (dt, product, _cp), (_dist, iv) in best.items():
+        by_day.setdefault((dt, product), []).append(iv)
+    for (dt, product), ivs in by_day.items():
+        rows.append((dt, product, float(sum(ivs) / len(ivs))))
+    return pd.DataFrame(rows, columns=cols)
+
+
+def atm_table(civ: pd.DataFrame, opt_px: pd.DataFrame, ohlc: pd.DataFrame) -> pd.DataFrame:
+    """Published at-the-money first, then the exchange fill, then a settlement inversion."""
+    parts = []
+    if civ is not None and not civ.empty:
+        published = civ.rename(columns={"iv": "iv"})[["dt", "product", "iv"]].copy()
+        published["rank"] = 0
+        parts.append(published)
+    extra = _exchange_atm()
+    if not extra.empty:
+        extra = extra.copy()
+        extra["rank"] = 1
+        parts.append(extra)
+    inv = _invert_atm(opt_px, ohlc)
+    if not inv.empty:
+        inv = inv.copy()
+        inv["rank"] = 2
+        parts.append(inv)
+    if not parts:
+        return pd.DataFrame(columns=["dt", "product", "iv"])
+    all_iv = pd.concat(parts, ignore_index=True)
+    all_iv = all_iv.sort_values("rank").drop_duplicates(["dt", "product"], keep="first")
+    return all_iv[["dt", "product", "iv"]]
+
+
+def vol_lines(product: str, px: pd.DataFrame, contract_hist: pd.DataFrame, cont_hist: pd.DataFrame, atm: pd.DataFrame) -> pd.DataFrame:
+    out = pd.DataFrame({"dt": pd.to_datetime(px["dt"])})
+    out["rv20"] = rv20_on(contract_hist, cont_hist, out["dt"]).to_numpy()
+    out["atm"] = np.nan
+    if atm is not None and not atm.empty:
+        sub = atm[atm["product"] == product].drop_duplicates("dt")
+        mapped = pd.Series(sub["iv"].to_numpy(float), index=pd.to_datetime(sub["dt"])).reindex(out["dt"])
+        out["atm"] = mapped.to_numpy()
+    out["gap"] = out["atm"] - out["rv20"]
+    return out
+
+
+def plot_candle(product: str, px: pd.DataFrame, ev: pd.DataFrame, fut_net: pd.DataFrame, strikes: dict, vol: pd.DataFrame, path: Path) -> None:
     prof.configure_matplotlib()
     has_fut = fut_net is not None and not fut_net.empty and float(fut_net["net"].abs().sum()) > 0
-    fig, ax = plt.subplots(figsize=(8.2, 4.2 if has_fut else 3.6))
+    fig, (ax, axv) = plt.subplots(
+        2, 1, sharex=True, figsize=(8.2, 6.6 if has_fut else 5.8),
+        gridspec_kw={"height_ratios": [1.7, 1.05]},
+    )
     xs = np.arange(len(px))
     date_pos = {pd.Timestamp(d): i for i, d in enumerate(px["dt"])}
     for i, r in enumerate(px.itertuples(index=False)):
@@ -324,15 +504,22 @@ def plot_candle(product: str, px: pd.DataFrame, ev: pd.DataFrame, fut_net: pd.Da
     else:
         h2, l2 = [], []
     h1, l1 = ax.get_legend_handles_labels()
-    ax.set_xlim(-0.8, len(px) - 0.2)
-    step = max(1, len(px) // 8)
-    ax.set_xticks(xs[::step])
-    ax.set_xticklabels([pd.Timestamp(d).strftime("%m-%d") for d in px["dt"].iloc[::step]], rotation=0)
     ax.set_ylabel("期货价格")
     ax.set_title(prof.pname(product))
+    ax.tick_params(labelbottom=False)
+    axv.plot(xs, vol["atm"], color=prof.C_NAVY, lw=1.2, marker="o", ms=3.2, label="平值隐波")
+    axv.plot(xs, vol["rv20"], color=prof.C_ORANGE, lw=1.2, label="20日实现波动")
+    axv.plot(xs, vol["gap"], color=prof.C_PURPLE, lw=1.2, marker="o", ms=3.2, label="平值隐波减20日实现波动")
+    axv.axhline(0, color=prof.C_GRAY, lw=0.5)
+    axv.set_ylabel("百分数")
+    axv.legend(frameon=False, fontsize=8, ncol=3, loc="upper left")
+    axv.set_xlim(-0.8, len(px) - 0.2)
+    step = max(1, len(px) // 8)
+    axv.set_xticks(xs[::step])
+    axv.set_xticklabels([pd.Timestamp(d).strftime("%m-%d") for d in px["dt"].iloc[::step]], rotation=0)
     if h1 or h2:
         fig.legend(h1 + h2, l1 + l2, frameon=False, ncol=4, fontsize=8, loc="lower center", bbox_to_anchor=(0.5, 0.0))
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=140)
     plt.close()
@@ -469,6 +656,7 @@ def main() -> None:
 
     products = sorted(set(opt["product"]) | (set(fut["product"]) if not fut.empty else set()),
                       key=lambda p: -float(opt.loc[opt["product"] == p, "lots"].sum() if not opt.empty else 0))
+    atm = atm_table(data["civ"], data["opt_px"], data["ohlc"])
     charts = []
     rows = []
     for product in products:
@@ -478,10 +666,12 @@ def main() -> None:
         net = fpos[fpos["product"] == product].groupby("dt", as_index=False)["net"].sum() if not fpos.empty else pd.DataFrame()
         path = CHART / f"{product}.png"
         if not px.empty:
+            hist = history_for(label, product, data["hist_ohlc"], data["hist_ak"])
+            cont = history_for(f"{UNDER.get(product, product)} 连续", product, data["hist_ohlc"], data["hist_ak"])
             plot_candle(product, px, ev, net, {
                 "C": strike_med(opt, product, "C"),
                 "P": strike_med(opt, product, "P"),
-            }, path)
+            }, vol_lines(product, px, hist, cont, atm), path)
         o_sell_c = float(opt.loc[(opt["product"] == product) & opt["is_open"] & opt["is_sell"] & (opt["cp"] == "C"), "lots"].sum())
         o_sell_p = float(opt.loc[(opt["product"] == product) & opt["is_open"] & opt["is_sell"] & (opt["cp"] == "P"), "lots"].sum())
         o_close = float(opt.loc[(opt["product"] == product) & opt["is_close"], "lots"].sum())
@@ -538,7 +728,7 @@ def main() -> None:
     logic = category_logic(opt)
     write_doc(
         doc_path, summary, pick, timing, months, rows, tape, both, only_opt,
-        fut_lots, fut_sell_lots, fut_buy_lots, example, buckets, cases, dte, logic,
+        fut_lots, fut_sell_lots, fut_buy_lots, example, buckets, cases, dte, logic, opt,
     )
     print("CASES")
     for c in cases:
@@ -1615,7 +1805,7 @@ def fmt_feat(v, feature: str) -> str:
     return f"{v:.2f}"
 
 
-def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, fut_lots, fut_sell, fut_buy, example, buckets, cases, dte, logic) -> None:
+def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, fut_lots, fut_sell, fut_buy, example, buckets, cases, dte, logic, opt) -> None:
     doc = Document()
     sec = doc.sections[0]
     sec.page_width = Cm(21.0)
@@ -2136,6 +2326,8 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
         charts / "timing_clock.png",
         "卖开和买平按成交小时。卖开从 9 点铺到夜盘，买平集中在到期日的 16 点。",
     )
+    import _rx383_intraday as intraday
+    intraday_close = intraday.write_intraday(doc, opt, add_fig, add_tab)
     show = [r for r in pick.get("features") or [] if r.get("cover", 0) >= 0.5][:8]
     by_name = {r["feature"]: r for r in show}
 
@@ -2179,7 +2371,9 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
     prof.para(
         doc,
         "K 线是他卖得最多的那个月期货；郑商所 10 月没有分月行情的，改用连续主力。倒三角是卖开，三角是买平，方块是期货。虚线是卖开手数加权的行权价，只有落在这根价格附近才画出来。"
-        "期货净持仓画在右轴，只出现在有期货的品种上。",
+        "期货净持仓画在右轴，只出现在有期货的品种上。"
+        "每根 K 线下面三条线用同一段日期。平值隐波先用公布数。公布数断掉的日子，碳酸锂用广期所合约系列隐波补到 10 月 28 日；生猪、焦煤、鸡蛋用当天结算价里离期货最近、距离不超过 8% 的那一档反解。两处都没有的日子仍然断开。只有单独一天有数的，画成点，不把中间的空档连起来。"
+        "20 日实现波动是年化标准差。该月份上市不足 20 个交易日的开头，用连续合约更早的日收益补上。紫色是前一条减去后一条，零线以上是平值隐波更高。",
     )
     n_before = seq["fig"]
     for r in rows:
@@ -2203,7 +2397,8 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
         "从 10 月 15 日到 11 月 3 日，上期所到期日过了 10 月 26 日，大商所 11 月期权的到期日过了 10 月 23 日。走到这两个日子的空头，在当天收盘批次了结。"
         "螺纹 1 月的到期日是 12 月 25 日，豆粕 1 月是 12 月 16 日，玉米 1 月和鸡蛋 12 月都是 11 月 17 日，这些合约到样本结束都还开着。第一节那笔螺纹就是其中一张。"
         "卖虚值。到期日当天，该月份的空头在收盘批次了结；到期日之前大部分留着，盘中买平的是少数。LC 和 LH 上另外加着没有买回的期货空头。"
-        "选品种的模型打中三成，高于随机，还不能按名单逐个下单。",
+        "选品种的模型打中三成，高于随机，还不能按名单逐个下单。"
+        + intraday_close,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
