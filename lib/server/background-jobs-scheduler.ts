@@ -113,6 +113,24 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   })
 
+  // Sunday and Monday 08:10 Beijing. Yingmi's daily MCP credit resets at 00:00.
+  // Sunday starts or resumes the weekly 代销私募 crawl; if that day's credit stops
+  // the run, Monday continues the same queue. The refresh token lives in
+  // Postgres, so this worker does not need a browser or a localhost callback.
+  for (const expr of ["10 8 * * 0", "10 8 * * 1"] as const) {
+    cron.schedule(expr, () => {
+      void (async () => {
+        try {
+          const { startYingmiPrivateFundEtl } = await import("./yingmi-private-fund-etl-job")
+          const started = startYingmiPrivateFundEtl()
+          if (!started.ok) console.log(`[yingmi-private-fund] skipped: ${started.reason}`)
+        } catch (e) {
+          console.error("[yingmi-private-fund] scheduler error:", e)
+        }
+      })()
+    }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+  }
+
   // Daily at 04:45: AMAC private-fund list → amac_private_funds + private_fund_info.
   // Independent of the 01:00 full linux cron so newly filed products stay searchable
   // even when that launcher is missing +x / a vanished .venv / hung later steps.

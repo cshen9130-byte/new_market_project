@@ -2432,6 +2432,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   const [trackTab, setTrackTab] = useState<"team" | "mine" | "weekly" | "weekly-futures" | "external-rank">("team")
+  useEffect(() => {
+    if (searchParams.get("rank_source") === "yingmi") setTrackTab("external-rank")
+  }, [searchParams])
   const [activePool, setActivePool] = useState("all")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
   const [strategySource, setStrategySource] = useState<TrackStrategySource>("company")

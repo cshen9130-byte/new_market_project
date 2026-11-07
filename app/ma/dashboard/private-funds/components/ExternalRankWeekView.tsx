@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Download, ExternalLink, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import { EXTERNAL_RANK_FOLDER, type ExternalRankWeekFile, type ExternalRankWeekPreview, type ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
+import { YingmiPrivateFundPanel } from "./YingmiPrivateFundPanel"
 
 function shanghaiToday(): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -101,6 +102,8 @@ function compareRows(a: ExternalRankWeekRow, b: ExternalRankWeekRow, key: SortKe
 }
 
 export function ExternalRankWeekView() {
+  const [source, setSource] = useState<"week" | "yingmi">("week")
+  const [yingmiNotice, setYingmiNotice] = useState("")
   const [weekEnd, setWeekEnd] = useState(defaultWeekEnd)
   const [preview, setPreview] = useState<ExternalRankWeekPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
@@ -140,6 +143,14 @@ export function ExternalRankWeekView() {
   }, [])
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("rank_source") === "yingmi") setSource("yingmi")
+    if (params.get("yingmi") === "connected") setYingmiNotice("盈米账号已连到这台服务器，周日和周一早上会自动拉取。")
+    if (params.get("yingmi") === "error") setYingmiNotice("盈米授权没有完成，可以再点一次连接。")
+  }, [])
+
+  useEffect(() => {
+    if (source !== "week") return
     let stale = false
     void loadPreview(weekEnd, () => stale)
     return () => {
@@ -227,10 +238,13 @@ export function ExternalRankWeekView() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
             <h2 className="text-base font-semibold">外部私募业绩排行</h2>
+            {source === "week" && (
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed max-w-3xl">
               从知识库「{EXTERNAL_RANK_FOLDER}」里找出与所选周对应的榜单：文件名里的日期或区间，或表格中的净值截止日期，落在该周周一到截止日。可以预览排名、下载原文件，或把本周已识别的榜单合并成一份 Excel。
             </p>
+            )}
           </div>
+          {source === "week" && (
           <div className="flex flex-wrap items-center gap-2">
             <a
               href={folderHref}
@@ -249,9 +263,23 @@ export function ExternalRankWeekView() {
               {generating ? "正在生成…" : "生成本周 Excel"}
             </button>
           </div>
+          )}
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-zinc-400 shrink-0">数据源</span>
+            <select
+              value={source}
+              onChange={(event) => setSource(event.target.value === "yingmi" ? "yingmi" : "week")}
+              className="h-9 min-w-[8rem] rounded-md border border-zinc-200 bg-background px-2 text-sm dark:border-zinc-700"
+            >
+              <option value="week">周报文件</option>
+              <option value="yingmi">盈米</option>
+            </select>
+          </label>
+          {source === "week" && (
+          <>
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 shrink-0">报告周截止日</span>
             <button
@@ -303,12 +331,18 @@ export function ExternalRankWeekView() {
             {preview ? ` · 扫描 ${preview.scanned} 个表格 · 本周 ${preview.files.length} 个文件` : null}
             {preview && parsedCount !== preview.files.length ? ` · ${parsedCount} 个可汇总` : null}
           </div>
+          </>
+          )}
         </div>
 
-        {generateError && <p className="mt-3 text-sm text-red-600">{generateError}</p>}
-        {previewError && <p className="mt-3 text-sm text-red-600">{previewError}</p>}
+        {source === "week" && generateError && <p className="mt-3 text-sm text-red-600">{generateError}</p>}
+        {source === "week" && previewError && <p className="mt-3 text-sm text-red-600">{previewError}</p>}
       </div>
 
+      {source === "yingmi" ? (
+        <YingmiPrivateFundPanel notice={yingmiNotice} />
+      ) : (
+      <div className="contents">
       <div className="rounded-xl border bg-background shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b text-sm font-medium">策略分布</div>
         {previewLoading ? (
@@ -460,6 +494,8 @@ export function ExternalRankWeekView() {
           </div>
         )}
       </div>
+      </div>
+      )}
     </div>
   )
 }
