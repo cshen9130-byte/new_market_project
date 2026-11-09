@@ -813,6 +813,9 @@ def clear_mom_file_cache(*substrings: str) -> int:
     for p in root.iterdir():
         if not p.is_file() or not p.name.startswith(prefix):
             continue
+        # 单账户 cache keys stay on disk; this ETL only advances MOM tables.
+        if "account__" in p.name or "source=account" in p.name:
+            continue
         if substrings and not any(s in p.name for s in substrings):
             continue
         try:
@@ -2052,9 +2055,10 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
             log.info("Running market data steps for charts")
             run_market_data_steps(conn)
 
-        # Positions and/or NHCI may have advanced — drop stale MOM 简报 cache.
+        # Positions and/or NHCI may have advanced. Drop every MOM chart cache
+        # from today; a partial clear left 持仓 / VaR on the previous session.
         if ok_count > 0 or not skip_market_data:
-            clear_mom_file_cache("quant-vs-subjective", "warm-cache", "benchmark", "product-nav")
+            clear_mom_file_cache()
 
         return 0 if err_count == 0 else 2
 

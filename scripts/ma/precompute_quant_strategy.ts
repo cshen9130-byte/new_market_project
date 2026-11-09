@@ -49,7 +49,8 @@ function parseArgs(argv: string[]) {
 
 async function main() {
   const { force, account, range } = parseArgs(process.argv.slice(2))
-  const { paramKey, readCache } = await import("@/lib/server/mom-cache")
+  const { freshnessCacheSuffix, paramKey, readCache } = await import("@/lib/server/mom-cache")
+  const { momNhciFreshnessToken } = await import("@/lib/server/mom-nhci-freshness")
   const { QUANT_STRATEGY_CACHE_KEY, GET } = await import("@/app/ma/api/mom-analysis/quant-strategy/route")
   const { quantStrategyBounds, quantStrategyWarmQueries } = await import("@/lib/ma/quant-strategy-ranges")
 
@@ -73,7 +74,8 @@ async function main() {
   for (const q of queries) {
     const sp = new URLSearchParams({ account: q.account, from: q.from, to: q.to })
     if (q.scope === "core") sp.set("scope", "core")
-    const key = `mom__${QUANT_STRATEGY_CACHE_KEY}${paramKey(sp)}`
+    const fresh = freshnessCacheSuffix(await momNhciFreshnessToken())
+    const key = `mom__${QUANT_STRATEGY_CACHE_KEY}${paramKey(sp)}${fresh}`
     const label = `rx${q.account} ${q.from}..${q.to} ${q.scope}`
     const cachedBody = force ? null : readCache(key)
     if (cachedBody != null && hasChartPayload(cachedBody)) {

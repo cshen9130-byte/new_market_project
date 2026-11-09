@@ -6,6 +6,7 @@ import { ChevronDown } from "lucide-react"
 import { FundDataApiPanel } from "./fund-data-api-panel"
 import { MomDataApiPanel } from "./mom-data-api-panel"
 import { authService, type User } from "@/lib/auth"
+import { copyTextToClipboard } from "@/lib/copy-text"
 import { canAccessMomDataApi } from "@/lib/permissions"
 import { withInstructionAssignment } from "@/lib/page-permissions"
 import {
@@ -1380,7 +1381,7 @@ function UserCenterPanel() {
               <div className="flex gap-2">
                 {user?.api_key ? outlineBtn(showApiKey ? "隐藏" : "查看", () => setShowApiKey((v) => !v)) : null}
                 {user?.api_key ? outlineBtn("复制", () => {
-                  void navigator.clipboard.writeText(user.api_key || "")
+                  void copyTextToClipboard(user.api_key || "")
                 }) : null}
                 {outlineBtn(user?.api_key ? "重新生成" : "生成", async () => {
                   if (user?.api_key && !window.confirm("重新生成后旧 Key 立即失效，确定吗？")) return
@@ -1631,11 +1632,11 @@ function InviteRegistrationPanel() {
 
   async function copyLink() {
     if (!inviteUrl) return
-    try {
-      await navigator.clipboard.writeText(inviteUrl)
+    const ok = await copyTextToClipboard(inviteUrl)
+    if (ok) {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
-    } catch {
+    } else {
       window.prompt("复制链接", inviteUrl)
     }
   }

@@ -42,7 +42,7 @@ const toolCards = [
   },
   {
     title: "净值归因",
-    description: "上传产品净值数据，按多资产大类或商品CTA风格因子做回归分析，生成因子贡献与风险贡献报告。",
+    description: "上传产品净值数据，按多资产大类或期货风格因子做回归分析，生成因子贡献与风险贡献报告。",
     href: "/ma/dashboard/tools/nav-attribution",
     icon: Activity,
     actionLabel: "打开小工具",

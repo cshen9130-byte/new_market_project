@@ -30,6 +30,7 @@ import {
 import { parseValuationWorkbookFilename } from "@/lib/server/valuation-filename"
 import {
   fillMissingElementsFromKeywords,
+  planShareClassesFromText,
   isWeakAddAmount,
   isWeakFeeManage,
   isWeakFeePay,
@@ -1157,6 +1158,8 @@ export async function extractFundContractElements(input: {
   extracted: ExtractedFundElements
   matched_funds: FundMatchCandidate[]
   text_preview: string
+  share_classes: Array<"A" | "B" | "C">
+  share_class_fees: ReturnType<typeof planShareClassesFromText>["shareClassOverrides"]
 }> {
   const text = await readFundContractText(input.buffer, input.fileName)
   const extractedRaw = await extractElementsWithLlm(text)
@@ -1168,10 +1171,13 @@ export async function extractFundContractElements(input: {
     withoutConflict,
     pickHighConfidenceFundMatch(withoutConflict, matched_funds, hints),
   )
+  const sharePlan = planShareClassesFromText(text)
   return {
     extracted,
     matched_funds,
     text_preview: text.slice(0, 2000),
+    share_classes: sharePlan.shareClasses,
+    share_class_fees: sharePlan.shareClassOverrides,
   }
 }
 

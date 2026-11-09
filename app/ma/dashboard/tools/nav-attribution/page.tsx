@@ -176,7 +176,7 @@ export default function NavAttributionToolPage() {
         description:
           model === "multi-asset"
             ? `已识别 ${rows.length} 个有效净值点，将按多资产大类因子（权益/债/金/商品）做归因。`
-            : `已识别 ${rows.length} 个有效净值点，将按商品CTA风格因子做归因。`,
+            : `已识别 ${rows.length} 个有效净值点，将按期货风格因子页的默认 9 个因子做归因。`,
       })
     } catch (error) {
       toast({
@@ -223,7 +223,7 @@ export default function NavAttributionToolPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">净值归因</h1>
           <p className="mt-2 text-muted-foreground">
-            上传产品净值数据，按策略类型选择多资产大类或商品CTA风格因子，生成回归分析报告。
+            上传产品净值数据，按策略类型选择多资产大类或期货风格因子，生成回归分析报告。
           </p>
         </div>
       </div>
@@ -387,7 +387,7 @@ export default function NavAttributionToolPage() {
             <CardTitle>2. 归因报告</CardTitle>
             <CardDescription>
               FOF/综合产品默认使用多资产大类因子（沪深300、中证500/1000、国债ETF、黄金ETF、南华商品等）；
-              商品CTA策略可切换为南华风格因子模型。
+              商品CTA策略使用期货风格因子页默认的 9 个全市场因子。
             </CardDescription>
           </CardHeader>
           <CardContent>

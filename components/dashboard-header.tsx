@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { LogoutButton } from "@/components/logout-button"
+import { SystemNotificationBell } from "@/components/ma/system-notification-bell"
 import { UserAvatar } from "@/components/ma/user-avatar"
 import { Bot, Moon, Sun, Menu } from "lucide-react"
 import { useTheme } from "next-themes"
@@ -9,6 +10,7 @@ import { Button } from "@/components/ui/button"
 
 interface DashboardHeaderProps {
   user: {
+    id?: string | null
     email: string | null
     full_name: string | null
     avatar_url?: string | null
@@ -56,6 +58,7 @@ export function DashboardHeader({ user, onChatToggle, onMenuToggle }: DashboardH
           </Link>
         </div>
         <div className="flex items-center gap-2">
+          {user.id ? <SystemNotificationBell userId={user.id} /> : null}
           {onChatToggle && (
             <Button
               variant="ghost"

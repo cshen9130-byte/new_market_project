@@ -25,10 +25,10 @@ END = pd.Timestamp("2026-11-03")
 CHART = Path("reports/_rx383_option_strategy/charts/hyp_metal_14d.png")
 
 
-def _load():
+def _load(end: pd.Timestamp = END):
     data = pick.load()
     trades = data["raw"]["opt_trades"]
-    trades = trades[pd.to_datetime(trades["dt"]) <= END].copy()
+    trades = trades[pd.to_datetime(trades["dt"]) <= end].copy()
     trades["dt"] = pd.to_datetime(trades["dt"]).dt.normalize()
     chain = data["mkt"]["chain"]
     if not data["vol"].empty:
@@ -41,10 +41,10 @@ def _load():
     return feat, trades, ak
 
 
-def _calendar(ak: pd.DataFrame, feat: pd.DataFrame) -> list[pd.Timestamp]:
+def _calendar(ak: pd.DataFrame, feat: pd.DataFrame, end: pd.Timestamp = END) -> list[pd.Timestamp]:
     days = set(pd.to_datetime(ak["dt"]).dt.normalize())
     days |= set(pd.to_datetime(feat["dt"]).dt.normalize())
-    return sorted(d for d in days if d <= END)
+    return sorted(d for d in days if d <= end)
 
 
 def _prev_print(feat: pd.DataFrame, cal: list[pd.Timestamp], days: list[pd.Timestamp], col: str) -> pd.DataFrame:
@@ -61,11 +61,12 @@ def _prev_print(feat: pd.DataFrame, cal: list[pd.Timestamp], days: list[pd.Times
     return pd.DataFrame(rows, columns=["dt", "product", col + "_prev", ])
 
 
-def build() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    feat, trades, ak = _load()
-    cal = _calendar(ak, feat)
-    days = [d for d in cal if START <= d <= END]
-    products = sorted(set(feat.loc[feat["dt"].between(START - pd.Timedelta(days=10), END), "product"].astype(str)) | set(METALS))
+def build(end: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    end = pd.Timestamp(end) if end is not None else END
+    feat, trades, ak = _load(end)
+    cal = _calendar(ak, feat, end)
+    days = [d for d in cal if START <= d <= end]
+    products = sorted(set(feat.loc[feat["dt"].between(START - pd.Timedelta(days=10), end), "product"].astype(str)) | set(METALS))
     grid = pd.DataFrame([(d, p) for d in days for p in products], columns=["dt", "product"])
     extra, _td = hyp._forecasts(grid)
     extra["dt"] = pd.to_datetime(extra["dt"]).dt.normalize()

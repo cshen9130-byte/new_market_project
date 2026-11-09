@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Download, Menu, BarChart3, LineChart as LineChartIcon } from "lucide-react"
+import { Download, Menu, BarChart3, LineChart as LineChartIcon, Upload } from "lucide-react"
 import {
   LineChart, Line,
   BarChart, Bar, Cell,
@@ -15,8 +15,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { RED, GREEN, getNavFieldValue, type NavRow, type BenchmarkPoint } from "./shared"
 import {
-  buildFactorReturns,
   buildMultiAssetFactorReturns,
+  compoundFactorReturnsToNavDates,
   computeFundDailyReturns,
   computeStyleAttribution,
   factorDefsForModel,
@@ -28,11 +28,12 @@ import {
   attributionToSensitivityColumn,
   type AttributionFactorModel,
   type DailyCloseSeries,
+  type FactorDef,
   type StyleAttributionResult,
   type FactorSensitivityTrend,
 } from "@/lib/style-attribution"
 import { FactorSensitivityTrendPanel } from "./FactorSensitivityTrendPanel"
-import { CalcExplanationButton } from "./AttributionCalcExplanation"
+import { CalcExplanationButton, UPLOADED_FACTOR_FORMULAS } from "./AttributionCalcExplanation"
 
 export type { AttributionFactorModel }
 
@@ -200,6 +201,19 @@ function computeFundReturnsForRows(
   return { dates, fundReturns }
 }
 
+type StyleFactorDaily = {
+  dates: string[]
+  series: Record<string, Array<number | null>>
+}
+
+type UploadedFactors = {
+  fileName: string
+  sheetName: string
+  warnings: string[]
+  factorDefs: FactorDef[]
+  daily: StyleFactorDaily
+}
+
 function runAttributionForRows(
   sliceRows: NavRow[],
   navType: string,
@@ -208,14 +222,17 @@ function runAttributionForRows(
   hasBenchmark: boolean,
   benchmarkSeries: BenchmarkPoint[],
   factorModel: AttributionFactorModel,
+  styleDaily: StyleFactorDaily | null,
+  uploaded: UploadedFactors | null,
 ): StyleAttributionResult | null {
   const prepared = computeFundReturnsForRows(sliceRows, navType, excessMode, hasBenchmark, benchmarkSeries)
   if (!prepared) return null
-  const factorDefs = factorDefsForModel(factorModel)
-  const factorReturns =
-    factorModel === "multi-asset"
-      ? buildMultiAssetFactorReturns(indexSeries, prepared.dates, sliceRows[0].price_date)
-      : buildFactorReturns(indexSeries, prepared.dates)
+  const factorDefs = uploaded?.factorDefs ?? factorDefsForModel(factorModel)
+  const navDates = sliceRows.map((row) => row.price_date)
+  const daily = uploaded?.daily ?? styleDaily
+  const factorReturns = !uploaded && factorModel === "multi-asset"
+    ? buildMultiAssetFactorReturns(indexSeries, prepared.dates, sliceRows[0].price_date)
+    : compoundFactorReturnsToNavDates(daily?.dates ?? [], daily?.series ?? {}, navDates)
   return computeStyleAttribution({
     dates: prepared.dates,
     fundReturns: prepared.fundReturns,
@@ -250,7 +267,13 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
   const [excessMode, setExcessMode] = useState(false)
   const [factorModel, setFactorModel] = useState<AttributionFactorModel>(defaultFactorModel)
   const [loading, setLoading] = useState(true)
+  const [factorError, setFactorError] = useState<string | null>(null)
   const [indexSeries, setIndexSeries] = useState<Record<string, DailyCloseSeries[]>>({})
+  const [styleDaily, setStyleDaily] = useState<StyleFactorDaily | null>(null)
+  const [uploaded, setUploaded] = useState<UploadedFactors | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const factorFileRef = useRef<HTMLInputElement>(null)
   const tableRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<HTMLDivElement>(null)
   const contributionRef = useRef<HTMLDivElement>(null)
@@ -266,8 +289,39 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
     if (!dateFrom || !dateTo) return
     let cancelled = false
     setLoading(true)
+    setFactorError(null)
+
+    if (factorModel === "commodity-cta") {
+      const qs = new URLSearchParams({ from: dateFrom, to: dateTo })
+      fetch(`/ma/api/style-factors/daily-frac?${qs}`)
+        .then(async (res) => {
+          const json = await res.json()
+          if (!res.ok || !json?.ok || !Array.isArray(json.dates) || !Array.isArray(json.factors)) {
+            throw new Error(json?.error || "期货风格因子加载失败")
+          }
+          if (cancelled) return
+          const series: Record<string, Array<number | null>> = {}
+          for (const factor of json.factors as Array<{ key: string; returns: Array<number | null> }>) {
+            series[factor.key] = factor.returns
+          }
+          setStyleDaily({ dates: json.dates as string[], series })
+          setIndexSeries({})
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return
+          setStyleDaily(null)
+          setFactorError(err instanceof Error ? err.message : "期货风格因子加载失败")
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
+
     const codes = marketCodesForModel(factorModel)
-    // Extend lookback so rolling CTA factors / asset-class ffill have history.
+    // Extend lookback so asset-class factors can forward-fill the first NAV date.
     const fetchFrom = (() => {
       const d = new Date(`${dateFrom}T12:00:00`)
       d.setDate(d.getDate() - 120)
@@ -282,6 +336,12 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
       .then((entries) => {
         if (cancelled) return
         setIndexSeries(Object.fromEntries(entries))
+        setStyleDaily(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setIndexSeries({})
+        setFactorError(err instanceof Error ? err.message : "市场指数加载失败")
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -292,14 +352,16 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
   }, [dateFrom, dateTo, factorModel])
 
   const attribution = useMemo((): StyleAttributionResult | null => {
-    if (rows.length < 30 || loading) return null
+    if (rows.length < 30) return null
+    if (!uploaded && loading) return null
+    if (!uploaded && factorModel === "commodity-cta" && !styleDaily) return null
     return runAttributionForRows(
-      rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel,
+      rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel, styleDaily, uploaded,
     )
-  }, [rows, navType, excessMode, hasBenchmark, benchmarkSeries, indexSeries, loading, factorModel])
+  }, [rows, navType, excessMode, hasBenchmark, benchmarkSeries, indexSeries, loading, factorModel, styleDaily, uploaded])
 
   const sensitivityTrend = useMemo((): FactorSensitivityTrend | null => {
-    if (!attribution || loading) return null
+    if (!attribution || (loading && !uploaded)) return null
 
     const annualPeriodCols = listYearsInRange(dateFrom, dateTo)
       .map((year) => {
@@ -307,7 +369,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
         const to = `${year}-12-31` > dateTo ? dateTo : `${year}-12-31`
         const slice = rows.filter((r) => r.price_date >= from && r.price_date <= to)
         const result = runAttributionForRows(
-          slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel,
+          slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel, styleDaily, uploaded,
         )
         if (!result) return null
         return attributionToSensitivityColumn(result, `year-${year}`, `${year}年`, false)
@@ -320,7 +382,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
         if (!bounds) return null
         const slice = rows.filter((r) => r.price_date >= bounds.from && r.price_date <= bounds.to)
         const result = runAttributionForRows(
-          slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel,
+          slice, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, factorModel, styleDaily, uploaded,
         )
         if (!result) return null
         const [, year, quarter] = qKey.match(/^(\d{4})-Q(\d)$/) ?? []
@@ -335,7 +397,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
       annualColumns: [...annualPeriodCols, intervalCol],
       quarterlyColumns: [...quarterlyPeriodCols, intervalCol],
     }
-  }, [attribution, loading, rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, dateFrom, dateTo, factorModel])
+  }, [attribution, loading, rows, navType, indexSeries, excessMode, hasBenchmark, benchmarkSeries, dateFrom, dateTo, factorModel, styleDaily, uploaded])
 
   const maxAbsCoeff = useMemo(
     () => Math.max(...(attribution?.factors.map((f) => Math.abs(f.coefficient)) ?? [1]), 0.01),
@@ -445,6 +507,47 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
     URL.revokeObjectURL(url)
   }, [attribution, productName, dateFrom, dateTo])
 
+  const activeFactorDefs = uploaded?.factorDefs ?? factorDefs
+  const showFactorLoading = loading && !uploaded
+
+  async function handleFactorFile(file: File) {
+    const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase()
+    if (![".xlsx", ".xls", ".xlsm"].includes(ext)) {
+      setUploadError("请上传 xlsx、xls 或 xlsm。")
+      return
+    }
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const body = new FormData()
+      body.append("file", file)
+      const res = await fetch("/ma/api/tools/factor-workbook/parse", { method: "POST", body })
+      const json = await res.json()
+      if (!res.ok || !json?.ok || !Array.isArray(json.factors) || !Array.isArray(json.dates)) {
+        throw new Error(json?.error || "因子文件识别失败")
+      }
+      const series: Record<string, Array<number | null>> = {}
+      for (const factor of json.factors as Array<{ key: string }>) {
+        series[factor.key] = (json.series?.[factor.key] ?? []) as Array<number | null>
+      }
+      setUploaded({
+        fileName: String(json.fileName ?? file.name),
+        sheetName: String(json.sheetName ?? ""),
+        warnings: Array.isArray(json.warnings) ? json.warnings.filter((item: unknown) => typeof item === "string") : [],
+        factorDefs: (json.factors as Array<{ key: string; name: string }>).map((factor) => ({
+          key: factor.key,
+          name: factor.name,
+        })),
+        daily: { dates: json.dates as string[], series },
+      })
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : "因子文件识别失败")
+    } finally {
+      setUploading(false)
+      if (factorFileRef.current) factorFileRef.current.value = ""
+    }
+  }
+
   if (rows.length < 30) {
     return (
       <div className="min-h-[320px] flex items-center justify-center text-sm text-zinc-400">
@@ -455,10 +558,18 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800 leading-relaxed">
-        {factorModel === "multi-asset"
-          ? "当前为多资产大类归因：用权益/债券/黄金/商品指数收益对产品净值做回归，解释大类风险暴露，并非持仓还原，仅供参考。"
-          : "当前为商品 CTA 风格归因：因子由南华商品指数体系构造，适用于期货/CTA 策略；用于非商品策略时解释力可能很弱，仅供参考。"}
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800 leading-relaxed space-y-1">
+        <p>
+          {uploaded
+            ? `本次使用上传文件「${uploaded.fileName}」工作表「${uploaded.sheetName}」的因子收盘价，已换成日收益后做一次回归。文件不会保存。`
+            : factorModel === "multi-asset"
+              ? "当前为多资产大类归因：用权益/债券/黄金/商品指数收益对产品净值做回归，解释大类风险暴露，并非持仓还原，仅供参考。"
+              : "当前为期货风格因子归因：自变量是「期货风格因子」页默认的 9 个全市场因子（基差、长期截面、库存、量价相关性、长期规则、利润、期限基差、基差动量、中期动量），与该页同一套组合日收益。适用于期货/CTA；用于其他策略时解释力可能很弱，仅供参考。"}
+        </p>
+        {uploaded?.warnings.map((warning) => (
+          <p key={warning}>{warning}</p>
+        ))}
+        {uploadError ? <p>{uploadError}</p> : null}
       </div>
 
       <div className="rounded-xl border border-zinc-100 bg-white p-5">
@@ -466,7 +577,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
           <div>
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-1">
               <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
-              {factorModel === "multi-asset" ? "多资产大类归因分析" : "商品CTA风格归因分析"}
+              {uploaded ? "上传因子归因分析" : factorModel === "multi-asset" ? "多资产大类归因分析" : "期货风格因子归因分析"}
             </div>
             <div className="text-xs text-zinc-500 pl-3 tabular-nums">
               归因区间：{dateRangeLabel}
@@ -482,10 +593,41 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
                   className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 focus:outline-none focus:ring-1 focus:ring-zinc-300"
                 >
                   <option value="multi-asset">多资产大类（FOF/综合）</option>
-                  <option value="commodity-cta">商品CTA风格</option>
+                  <option value="commodity-cta">期货风格因子</option>
                 </select>
               </label>
             )}
+            <input
+              ref={factorFileRef}
+              type="file"
+              accept=".xlsx,.xls,.xlsm"
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) void handleFactorFile(file)
+              }}
+            />
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => factorFileRef.current?.click()}
+              className="inline-flex items-center gap-1 rounded border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              {uploading ? "读取中…" : "上传因子Excel"}
+            </button>
+            {uploaded ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setUploaded(null)
+                  setUploadError(null)
+                }}
+                className="text-xs text-zinc-500 hover:text-zinc-800"
+              >
+                改回内置因子
+              </button>
+            ) : null}
             <CheckboxToggle
               checked={excessMode}
               onChange={() => setExcessMode((v) => !v)}
@@ -498,7 +640,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
           <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-1.5 text-sm font-semibold text-zinc-800">
               区间因子回归分析
-              <CalcExplanationButton section="regression" factorModel={factorModel} label="区间因子回归分析说明" />
+              <CalcExplanationButton section="regression" factorModel={factorModel} formulaOverride={uploaded ? UPLOADED_FACTOR_FORMULAS : undefined} label="区间因子回归分析说明" />
             </div>
             <button
               type="button"
@@ -511,13 +653,13 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             </button>
           </div>
 
-          {loading ? (
+          {showFactorLoading ? (
             <div className="h-[200px] flex items-center justify-center text-sm text-zinc-400">
               加载因子数据中…
             </div>
           ) : !attribution ? (
             <div className="h-[200px] flex items-center justify-center text-sm text-zinc-400">
-              无法完成回归分析，请检查净值区间与因子数据
+              {factorError || "无法完成回归分析，请检查净值区间与因子数据"}
             </div>
           ) : (
             <>
@@ -574,7 +716,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             </div>
             <div className="flex items-center gap-1 text-xs text-zinc-600 pl-3">
               区间因子解释收益率
-              <CalcExplanationButton section="explained" factorModel={factorModel} label="区间因子解释收益率说明" />
+              <CalcExplanationButton section="explained" factorModel={factorModel} formulaOverride={uploaded ? UPLOADED_FACTOR_FORMULAS : undefined} label="区间因子解释收益率说明" />
             </div>
           </div>
           <DropdownMenu>
@@ -661,7 +803,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
           </>
         ) : (
           <div className="h-[320px] flex items-center justify-center text-sm text-zinc-400">
-            {loading ? "加载中…" : "暂无解释收益率数据"}
+            {showFactorLoading ? "加载中…" : "暂无解释收益率数据"}
           </div>
         )}
       </div>
@@ -672,7 +814,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-1">
               <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
               区间因子收益率贡献
-              <CalcExplanationButton section="contribution" factorModel={factorModel} label="区间因子收益率贡献说明" />
+              <CalcExplanationButton section="contribution" factorModel={factorModel} formulaOverride={uploaded ? UPLOADED_FACTOR_FORMULAS : undefined} label="区间因子收益率贡献说明" />
             </div>
             <div className="text-xs text-zinc-500 pl-3">因子贡献收益率</div>
           </div>
@@ -816,7 +958,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
           </div>
         ) : (
           <div className="h-[360px] flex items-center justify-center text-sm text-zinc-400">
-            {loading ? "加载中…" : "暂无因子贡献数据"}
+            {showFactorLoading ? "加载中…" : "暂无因子贡献数据"}
           </div>
         )}
       </div>
@@ -827,7 +969,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
             <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 mb-1">
               <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
               区间因子风险贡献
-              <CalcExplanationButton section="riskContribution" factorModel={factorModel} label="区间因子风险贡献说明" />
+              <CalcExplanationButton section="riskContribution" factorModel={factorModel} formulaOverride={uploaded ? UPLOADED_FACTOR_FORMULAS : undefined} label="区间因子风险贡献说明" />
             </div>
             <div className="text-xs text-zinc-500 pl-3">因子贡献年化波动率</div>
           </div>
@@ -890,7 +1032,7 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
           </div>
         ) : (
           <div className="h-[360px] flex items-center justify-center text-sm text-zinc-400">
-            {loading ? "加载中…" : "暂无因子风险贡献数据"}
+            {showFactorLoading ? "加载中…" : "暂无因子风险贡献数据"}
           </div>
         )}
       </div>
@@ -900,9 +1042,10 @@ export const NavAttributionPanel = memo(function NavAttributionPanel({
         dateFrom={dateFrom}
         dateTo={dateTo}
         trend={sensitivityTrend}
-        loading={loading}
-        factorDefs={factorDefs}
+        loading={showFactorLoading}
+        factorDefs={activeFactorDefs}
         factorModel={factorModel}
+        formulaOverride={uploaded ? UPLOADED_FACTOR_FORMULAS : undefined}
       />
     </div>
   )

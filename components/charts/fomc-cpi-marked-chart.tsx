@@ -62,10 +62,11 @@ export default function FomcCpiMarkedChart({
       .map((d) => [toUtc(d.released), d.forecast as number] as [number, number])
 
     const t0 = actualPts[0].t
-    const t1 = Math.max(actualPts[actualPts.length - 1].t, toUtc("2026-09-16"))
+    const pendingAt = meetings.filter((m) => m.action === "Pending").map((m) => toUtc(m.decision))
+    const t1 = Math.max(actualPts[actualPts.length - 1].t, ...pendingAt, 0)
     const meetPts = meetings.filter((m) => {
       const t = toUtc(m.decision)
-      return t >= t0 - 20 * 86400000 && t <= toUtc("2026-09-20")
+      return t >= t0 - 20 * 86400000 && t <= t1 + 86400000
     })
 
     const byAction: Record<Action, Meeting[]> = { Hike: [], Hold: [], Cut: [], Pending: [] }

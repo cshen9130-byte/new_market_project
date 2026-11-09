@@ -6,6 +6,7 @@ import { DateInput } from "@/components/ui/date-input"
 import { authService, type User } from "@/lib/auth"
 import { downloadMomDataApiGuide } from "@/lib/ma/mom-data-api-guide"
 import { ACCOUNT_RISK_DATA_API_BASE, MOM_DATA_API_BASE, MOM_DATA_MCP_URL, MOM_DATA_PUBLIC_ORIGIN } from "@/lib/ma/mom-data-public"
+import { copyTextToClipboard } from "@/lib/copy-text"
 import { canAccessMomDataApi } from "@/lib/permissions"
 
 type Envelope = {
@@ -25,9 +26,11 @@ function CodeBlock({ text }: { text: string }) {
         type="button"
         className="absolute top-2 right-2 text-[11px] px-2 py-0.5 border rounded bg-background/90 hover:bg-muted"
         onClick={() => {
-          void navigator.clipboard.writeText(text)
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1200)
+          void copyTextToClipboard(text).then((ok) => {
+            if (!ok) return
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1200)
+          })
         }}
       >
         {copied ? "已复制" : "复制"}
@@ -202,8 +205,9 @@ export function MomDataApiPanel() {
                     type="button"
                     className="shrink-0 text-xs text-red-500 hover:underline"
                     onClick={() => {
-                      void navigator.clipboard.writeText(apiKey)
-                      setKeyMsg("已复制")
+                      void copyTextToClipboard(apiKey).then((ok) => {
+                        setKeyMsg(ok ? "已复制" : "复制失败，请手动选择后复制")
+                      })
                     }}
                   >
                     复制

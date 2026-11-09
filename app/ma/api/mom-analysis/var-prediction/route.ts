@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { paramKey, readCache, writeCache } from "@/lib/server/mom-cache"
+import { freshnessCacheSuffix, paramKey, readCache, writeCache } from "@/lib/server/mom-cache"
+import { momNhciFreshnessToken } from "@/lib/server/mom-nhci-freshness"
 import { getPrefix } from "@/lib/server/prod-utils"
-import { withRiskSource } from "@/lib/server/risk-data-source"
+import { parseSourceFromRequest, withRiskSource } from "@/lib/server/risk-data-source"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -342,10 +343,21 @@ async function _GET(req: Request) {
 export const GET = withRiskSource(async function GET(req: Request) {
   const url = new URL(req.url)
   const noCache = url.searchParams.get("nocache") === "1"
-  const key = "var-prediction" + paramKey(url.searchParams)
+  const mom = parseSourceFromRequest(req) !== "account"
+  let fresh = ""
+  let freshnessFailed = false
+  if (mom) {
+    try {
+      fresh = String((await momNhciFreshnessToken(req)) || "").trim()
+    } catch {
+      freshnessFailed = true
+    }
+  }
+  const cacheable = !mom || (!freshnessFailed && fresh.length > 0)
+  const key = "var-prediction" + paramKey(url.searchParams) + freshnessCacheSuffix(fresh)
   const cacheHeaders = { "Cache-Control": "no-cache" }
 
-  if (!noCache) {
+  if (!noCache && cacheable) {
     const cached = readCache<{
       data?: { date: string; var: number; actual: number }[]
       nextDayVar?: number
@@ -361,7 +373,7 @@ export const GET = withRiskSource(async function GET(req: Request) {
   }
 
   const resp = await _GET(req)
-  if (resp.status === 200) {
+  if (resp.status === 200 && cacheable) {
     try {
       const body = await resp.json()
       writeCache(key, body)

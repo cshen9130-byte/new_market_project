@@ -125,6 +125,9 @@ data/mom-cache/
 # Live 事件日历 cache (华尔街见闻)
 data/market-events-cache/
 
+# US macro page payload, rewritten by the daily ETL
+data/us-macro/
+
 # Local large tracking imports (never commit)
 nav_csv_group/
 nav_csv_group_type6/

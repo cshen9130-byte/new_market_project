@@ -22,7 +22,7 @@ import { loadOperationDate as loadStoredOperationDate } from "@/lib/server/ops-f
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
 import { formatBareFeeRate } from "@/lib/ma/product-field-config"
-import { isWeakShortFee } from "@/lib/server/fund-contract-element-keywords"
+import { isWeakShortFee, normalizeShareClassPlan } from "@/lib/server/fund-contract-element-keywords"
 import { loadResolvedFundStrategies } from "@/lib/server/fund-strategy-resolve"
 
 export const dynamic = "force-dynamic"
@@ -222,7 +222,11 @@ export async function PATCH(req: Request) {
 
   try {
     if (body.fanout_share_classes === true) {
-      await writeFundElementsAcrossShareClasses(body)
+      const sharePlan = normalizeShareClassPlan({
+        shareClasses: body.share_classes,
+        shareClassFees: body.share_class_fees,
+      })
+      await writeFundElementsAcrossShareClasses(body, sharePlan)
     } else {
       await writeFundElementsFromBody(body)
     }

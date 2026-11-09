@@ -174,6 +174,10 @@ export function isWeakFeeManage(value: string | null | undefined): boolean {
 export function summarizeFeePayDesc(text: string): string | null {
   const classFees = extractShareClassPerfFees(text)
   const classBits = classFees.map(formatClassPerfPayLine)
+  if (!classBits.length) {
+    const floor = extractFullReturnFloorPerf(text)
+    if (floor) return floor.desc
+  }
   if (classBits.length) {
     const hasBench = classFees.some((f) => f.hurdlePct != null && parseFloat(f.hurdlePct) > 0)
     const prefix = hasBench
@@ -752,6 +756,39 @@ function collectEquations(scope: string): string[] {
   return parts
 }
 
+/**
+ * Full-return carry with a hurdle floor:
+ * R < B → 0; R ≥ B → MIN(R × P, R − B) × time-weighted high-water capital.
+ * Prose is usually 「对持有期全额收益按 P 计提，但计提后年化不低于计提基准」.
+ * PDF text often breaks the MIN braces, so the words are enough.
+ */
+function extractFullReturnFloorPerf(text: string): { desc: string; formula: string } | null {
+  const s = flattenCjk(text).replace(/∗/g, "*").replace(/[−－]/g, "-")
+  const eq =
+    s.match(/R\s*<\s*([\d.]+)\s*%[^。]{0,180}?MIN[^。]{0,100}?R\s*[*×x]\s*([\d.]+)\s*%[^。]{0,140}?R\s*-\s*\1\s*%/i)
+    || s.match(/R\s*<\s*([\d.]+)\s*%[^。]{0,180}?MIN[^。]{0,120}?R\s*-\s*\1\s*%[^。]{0,140}?R\s*[*×x]\s*([\d.]+)\s*%/i)
+  const prose = /全额收益/.test(s) && /不低于/.test(s) && /计提基准/.test(s)
+  if (!prose && !eq) return null
+
+  const rate = parseCarryPct(
+    s.match(/提取比例[^。]{0,48}?为\s*[【[]?\s*([\d.]+)\s*%/)?.[1]
+    || s.match(/全额收益按\s*[【[]?\s*([\d.]+)\s*%/)?.[1]
+    || s.match(/按\s*[【[]\s*([\d.]+)\s*%\s*[】]]\s*比例/)?.[1]
+    || eq?.[2],
+  )
+  const benchRaw =
+    s.match(/计提基准[^。]{0,60}?[（(]\s*([\d.]+)\s*%\s*[)）]/)?.[1]
+    || s.match(/当\s*R\s*<\s*([\d.]+)\s*%/)?.[1]
+    || eq?.[1]
+  const benchN = benchRaw ? parseFloat(benchRaw) : NaN
+  if (!rate || !Number.isFinite(benchN) || benchN <= 0 || benchN > 50) return null
+  const bench = pct(benchRaw!)
+  const desc = `按业绩基准计提，业绩基准${bench}，全额收益计提比例${rate}，计提后年化不低于基准。`
+  const formula = `基准${bench}；全额收益计提比例${rate}，计提后不低于基准；R<${bench}为0，R≥${bench}取MIN(R×${rate},R-${bench})×HWM'×T/365×F；R=(NAVe-HWM)×365/(HWM'×T)。`
+  if (desc.length > FEE_DESC_MAX || formula.length > FORMULA_MAX) return null
+  return { desc, formula }
+}
+
 function formulaHeadFromScope(scope: string): string[] {
   const s = flatten(scope)
   const { bench, rate } = formulaBenchRate(s)
@@ -801,6 +838,10 @@ function composePerfFormula(eqParts: string[], classFees: ClassPerfFee[], benchH
 export function extractFeePayFormulaFromText(text: string): string | null {
   const s = flatten(text)
   const classFees = extractShareClassPerfFees(s)
+  if (!classFees.length) {
+    const floor = extractFullReturnFloorPerf(s)
+    if (floor) return floor.formula
+  }
   const starts: number[] = []
   const re = /业绩报酬计提方法|业绩报酬的计算|业绩报酬的?计算公式|业绩报酬计提基准为|基金的业绩报酬(?!；)/g
   let match: RegExpExecArray | null
@@ -886,9 +927,304 @@ export type ShareClassFeeFields = {
   fee_manage?: string
   /** Performance fee short description specific to this class, e.g. "超额计提30%" */
   fee_pay?: string
+  /** Class formula: this class's计提 line plus the shared equation. */
+  fee_pay_formula?: string
+  /** Subscription / purchase fee for this class, e.g. "0%". */
+  fee_purchase?: string
+  /** Redemption fee for this class. */
+  fee_redeem?: string
+  /** Subscription minimums when the contract sets them per class. */
+  add_amount?: string
 }
 
+/** Fields that can differ by A/B/C share class. Everything else is common to the whole product. */
+export const SHARE_CLASS_VARYING_KEYS = [
+  "fee_manage_rate",
+  "fee_manage",
+  "fee_pay",
+  "fee_pay_formula",
+  "fee_purchase",
+  "fee_redeem",
+  "add_amount",
+] as const
+
+export type ShareClassVaryingKey = (typeof SHARE_CLASS_VARYING_KEYS)[number]
+
 export type ShareClassFeeOverrides = Partial<Record<ShareClassLetterKey, ShareClassFeeFields>>
+
+export type ShareClassWritePlan = {
+  shareClassOverrides: ShareClassFeeOverrides
+  shareClasses: ShareClassLetterKey[]
+}
+
+function distinctClassValues(values: Array<string | undefined>): boolean {
+  const present = values.filter((value): value is string => Boolean(value?.trim()))
+  if (present.length < 2) return false
+  const norm = (value: string) => value.replace(/[ABC]类/g, "").replace(/\s/g, "")
+  return new Set(present.map(norm)).size > 1
+}
+
+function percentTokens(value: string): string[] {
+  return [...value.matchAll(/(\d+(?:\.\d+)?)\s*%/g)].map((match) => String(parseFloat(match[1])))
+}
+
+/** True when the contract text still contains the rates this class override was built from. */
+function overrideAgrees(shared: string, overrideValue: string): boolean {
+  const rates = percentTokens(overrideValue)
+  if (!rates.length) {
+    if (/不收取|不计提/.test(overrideValue)) return /不收取|不计提/.test(shared)
+    return true
+  }
+  const sharedRates = new Set(percentTokens(shared))
+  return rates.every((rate) => sharedRates.has(rate))
+}
+
+function leadingClass(part: string): ShareClassLetterKey | null {
+  const match = part.trim().match(/^(?:赎回费|申购费|认购费|管理费|业绩报酬)?\s*([ABC])\s*(?:类|份额|份)/)
+  if (match?.[1] === "A" || match?.[1] === "B" || match?.[1] === "C") return match[1]
+  return null
+}
+
+/**
+ * Pull one class out of 「A类…；B类…；R=…」.
+ * Equation fragments (they contain "=") stay on every class. Returns null when this class is absent.
+ */
+export function splitClassLabeledField(value: string | null | undefined, cls: string): string | null {
+  const source = (value ?? "").trim()
+  if (!source || shareClassLabelCount(source) < 2) return null
+  if (cls !== "A" && cls !== "B" && cls !== "C") return null
+
+  const partition = (parts: string[]) => {
+    const buckets: Partial<Record<ShareClassLetterKey, string[]>> = {}
+    const shared: string[] = []
+    let current: ShareClassLetterKey | null = null
+    let classCount = 0
+    for (const part of parts) {
+      const head = leadingClass(part)
+      if (head) {
+        current = head
+        classCount += 1
+        ;(buckets[head] ??= []).push(part)
+        continue
+      }
+      if (/=/.test(part)) {
+        shared.push(part)
+        continue
+      }
+      if (current) (buckets[current] ??= []).push(part)
+      else shared.push(part)
+    }
+    return { buckets, shared, classCount }
+  }
+
+  const semi = source.split(/[;；]/).map((part) => part.trim()).filter(Boolean)
+  let grouped = partition(semi)
+  if (grouped.classCount < 2) {
+    const commas = source.split(/[，,]/).map((part) => part.trim()).filter(Boolean)
+    const retry = partition(commas)
+    if (retry.classCount >= 2) grouped = retry
+    else return null
+  }
+  const mine = grouped.buckets[cls]
+  if (!mine?.length) return null
+  return [...mine, ...grouped.shared].join("；")
+}
+
+export function shareClassTextOmitsClass(value: string | null | undefined, cls: ShareClassLetterKey): boolean {
+  if (!value || shareClassLabelCount(value) < 2) return false
+  return !splitClassLabeledField(value, cls)
+}
+
+/**
+ * Fee fields to store on one share.
+ * Class-specific text wins; a combined 「A类…；B类…」 string is sliced; unlabeled values are common.
+ */
+export function feeFieldsForShareClass(
+  shared: Partial<Record<ShareClassVaryingKey, string | null | undefined>>,
+  overrides: ShareClassFeeOverrides,
+  cls: ShareClassLetterKey | null,
+): Partial<Record<ShareClassVaryingKey, string>> {
+  if (!cls) {
+    const out: Partial<Record<ShareClassVaryingKey, string>> = {}
+    for (const key of SHARE_CLASS_VARYING_KEYS) {
+      const raw = shared[key]?.trim()
+      if (raw) out[key] = raw
+    }
+    return out
+  }
+  const override = overrides[cls] ?? {}
+  const out: Partial<Record<ShareClassVaryingKey, string>> = {}
+  for (const key of SHARE_CLASS_VARYING_KEYS) {
+    const raw = shared[key]?.trim() || ""
+    const slice = raw ? splitClassLabeledField(raw, cls) : null
+    const classOverride = override[key]?.trim()
+    if (slice && classOverride) {
+      out[key] = overrideAgrees(raw, classOverride) ? classOverride : slice
+      continue
+    }
+    if (slice) {
+      out[key] = slice
+      continue
+    }
+    if (raw && shareClassLabelCount(raw) >= 2) continue
+    if (classOverride) {
+      out[key] = classOverride
+      continue
+    }
+    if (raw) out[key] = raw
+  }
+  if (shareClassLabelCount(shared.fee_manage ?? "") >= 2 && out.fee_manage) {
+    if (/不计提|不收取/.test(out.fee_manage) && !/[\d.]+\s*%/.test(out.fee_manage)) {
+      out.fee_manage_rate = "0%"
+    } else {
+      const rate = out.fee_manage.match(/([\d.]+)\s*%/)
+      if (rate?.[1]) out.fee_manage_rate = `${parseFloat(rate[1])}%`
+    }
+  }
+  return out
+}
+
+function ownClassWindow(text: string, cls: string): string | null {
+  const re = new RegExp(`${cls}\\s*类(?:基金)?份额`, "g")
+  const others = ["A", "B", "C"].filter((letter) => letter !== cls).join("")
+  const boundary = new RegExp(`[${others}]\\s*类(?:基金)?份额`)
+  let match: RegExpExecArray | null
+  let best: string | null = null
+  while ((match = re.exec(text)) !== null) {
+    const before = text.slice(Math.max(0, match.index - 16), match.index)
+    if (/投资于|其他|标的|底层|除\s*$/.test(before)) continue
+    const rest = text.slice(match.index + match[0].length)
+    const cut = rest.search(boundary)
+    const span = cut >= 0 ? cut : Math.min(rest.length, 400)
+    const window = text.slice(match.index, match.index + match[0].length + span)
+    if (!best || window.length > best.length) best = window
+  }
+  return best
+}
+
+function perClassPurchaseRate(text: string, cls: string): string | null {
+  const window = ownClassWindow(text, cls)
+  if (!window) return null
+  const match = window.match(/申购\s*费\s*率[为是：:\s]*([\d.]+)\s*%/)
+    || window.match(/认购\s*费\s*率[为是：:\s]*([\d.]+)\s*%/)
+  return match?.[1] ? pct(match[1]) : null
+}
+
+function perClassRedeemText(text: string, cls: string): string | null {
+  const window = ownClassWindow(text, cls)
+  if (!window) return null
+  return extractFeeRedeemFromText(window)
+}
+
+function perClassAddAmount(text: string, cls: string): string | null {
+  const window = ownClassWindow(text, cls)
+  if (!window) return null
+  return extractAddAmountFromText(window)
+}
+
+function perClassFormulaText(
+  text: string,
+  cls: ShareClassLetterKey,
+  fullFormula: string | null,
+): string | null {
+  const mine = extractShareClassPerfFees(text).find((fee) => fee.cls === cls)
+  if (!mine) return null
+  const line = formatClassPerfPayLine(mine)
+  const shared = (fullFormula ?? "")
+    .split(/[;；]/)
+    .map((part) => part.trim())
+    .filter((part) => part && !/^[ABC]\s*类/.test(part) && part !== line)
+  const out = [line, ...shared].join("；").slice(0, FORMULA_MAX)
+  return out || null
+}
+
+function addSetupClasses(text: string, found: Set<ShareClassLetterKey>) {
+  const patterns = [
+    /本基金[^。]{0,40}(?:设置|分为|包括)\s*([ABC])\s*类[^。]{0,24}([ABC])\s*类(?:[^。]{0,16}([ABC])\s*类)?/,
+    /份额分类[^。]{0,80}([ABC])\s*类(?:基金)?份额[^。]{0,40}([ABC])\s*类(?:基金)?份额(?:[^。]{0,40}([ABC])\s*类(?:基金)?份额)?/,
+  ]
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (!match) continue
+    for (const group of [match[1], match[2], match[3]]) {
+      if (group === "A" || group === "B" || group === "C") found.add(group)
+    }
+  }
+}
+
+function ownShareClassMentions(text: string): ShareClassLetterKey[] {
+  const found = new Set<ShareClassLetterKey>()
+  const re = /([ABC])\s*类(?:基金)?份额/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(text)) !== null) {
+    const before = text.slice(Math.max(0, match.index - 16), match.index)
+    if (/投资于|其他|标的|底层|除\s*$/.test(before)) continue
+    const after = text.slice(match.index + match[0].length, match.index + match[0].length + 8).replace(/\s/g, "")
+    if (after.startsWith("投资者以外")) continue
+    if (match[1] === "A" || match[1] === "B" || match[1] === "C") found.add(match[1])
+  }
+  if (found.size < 2) return []
+  return [...found]
+}
+
+/**
+ * Share classes this contract actually sets up.
+ * Underlying-fund mentions (投资于某基金A类份额) do not count.
+ * One class alone does not create siblings; two or more do.
+ */
+export function shareClassesDefinedInContract(
+  text: string,
+  overrides?: ShareClassFeeOverrides,
+): ShareClassLetterKey[] {
+  const source = flattenCjk(text.slice(0, 200_000))
+  const found = new Set<ShareClassLetterKey>()
+  const known = overrides ?? extractShareClassFeeOverrides(source)
+  for (const cls of ["A", "B", "C"] as const) {
+    if (known[cls]) found.add(cls)
+  }
+  addSetupClasses(source, found)
+  for (const cls of ownShareClassMentions(source)) found.add(cls)
+  const rank: Record<ShareClassLetterKey, number> = { A: 0, B: 1, C: 2 }
+  return [...found].sort((a, b) => rank[a] - rank[b])
+}
+
+export function planShareClassesFromText(text: string): ShareClassWritePlan {
+  const shareClassOverrides = extractShareClassFeeOverrides(text)
+  return {
+    shareClassOverrides,
+    shareClasses: shareClassesDefinedInContract(text, shareClassOverrides),
+  }
+}
+
+export function normalizeShareClassPlan(raw: {
+  shareClasses?: unknown
+  shareClassFees?: unknown
+} | null | undefined): ShareClassWritePlan {
+  const shareClasses: ShareClassLetterKey[] = []
+  if (Array.isArray(raw?.shareClasses)) {
+    for (const item of raw.shareClasses) {
+      if ((item === "A" || item === "B" || item === "C") && !shareClasses.includes(item)) {
+        shareClasses.push(item)
+      }
+    }
+  }
+  const allowed = new Set<string>(SHARE_CLASS_VARYING_KEYS)
+  const shareClassOverrides: ShareClassFeeOverrides = {}
+  const fees = raw?.shareClassFees
+  if (fees && typeof fees === "object") {
+    for (const cls of ["A", "B", "C"] as const) {
+      const row = (fees as Record<string, unknown>)[cls]
+      if (!row || typeof row !== "object") continue
+      const fields: ShareClassFeeFields = {}
+      for (const [key, value] of Object.entries(row as Record<string, unknown>)) {
+        if (!allowed.has(key) || typeof value !== "string" || !value.trim()) continue
+        fields[key as ShareClassVaryingKey] = value.trim()
+      }
+      if (Object.keys(fields).length) shareClassOverrides[cls] = fields
+    }
+  }
+  return { shareClasses, shareClassOverrides }
+}
 
 /**
  * Search text for segments that start with the class letter and contain "管理费率" within a short
@@ -973,6 +1309,26 @@ export function extractShareClassFeeOverrides(text: string): ShareClassFeeOverri
   const payValues = Object.values(payMap)
   const allSamePay = payValues.length < 2 || new Set(payValues).size === 1
 
+  const fullFormula = extractFeePayFormulaFromText(s)
+  const formulaMap: Partial<Record<ShareClassLetterKey, string>> = {}
+  const purchaseMap: Partial<Record<ShareClassLetterKey, string>> = {}
+  const redeemMap: Partial<Record<ShareClassLetterKey, string>> = {}
+  const addMap: Partial<Record<ShareClassLetterKey, string>> = {}
+  for (const cls of ["A", "B", "C"] as const) {
+    const formula = perClassFormulaText(s, cls, fullFormula)
+    if (formula) formulaMap[cls] = formula
+    const purchase = perClassPurchaseRate(s, cls)
+    if (purchase) purchaseMap[cls] = purchase
+    const redeem = perClassRedeemText(s, cls)
+    if (redeem) redeemMap[cls] = redeem
+    const add = perClassAddAmount(s, cls)
+    if (add) addMap[cls] = add
+  }
+  const formulasDiffer = distinctClassValues(Object.values(formulaMap))
+  const purchaseDiffers = distinctClassValues(Object.values(purchaseMap))
+  const redeemDiffers = distinctClassValues(Object.values(redeemMap))
+  const addDiffers = distinctClassValues(Object.values(addMap))
+
   const result: ShareClassFeeOverrides = {}
 
   for (const cls of ["A", "B", "C"] as const) {
@@ -997,6 +1353,10 @@ export function extractShareClassFeeOverrides(text: string): ShareClassFeeOverri
     if (!allSamePay && cls in payMap) {
       override.fee_pay = payMap[cls]
     }
+    if (formulasDiffer && formulaMap[cls]) override.fee_pay_formula = formulaMap[cls]
+    if (purchaseDiffers && purchaseMap[cls]) override.fee_purchase = purchaseMap[cls]
+    if (redeemDiffers && redeemMap[cls]) override.fee_redeem = redeemMap[cls]
+    if (addDiffers && addMap[cls]) override.add_amount = addMap[cls]
 
     if (Object.keys(override).length) {
       result[cls] = override

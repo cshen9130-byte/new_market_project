@@ -33,13 +33,23 @@ import {
   shouldUpgradeFeeRedeem,
   shouldUpgradeFormula,
   shouldUpgradeOpenDay,
+  feeFieldsForShareClass,
+  shareClassTextOmitsClass,
+  SHARE_CLASS_VARYING_KEYS,
   type ShareClassFeeOverrides,
+  type ShareClassLetterKey,
+  type ShareClassVaryingKey,
+  type ShareClassWritePlan,
 } from "@/lib/server/fund-contract-element-keywords"
 import { toIsoDateInputValue } from "@/lib/nav-trading-day"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { upsertOperationDate } from "@/lib/server/ops-fund-operation-dates"
-import { canonicalizeShareClassBeianCode, listFundFamilyProducts } from "@/lib/server/share-class-product"
+import {
+  canonicalizeShareClassBeianCode,
+  ensureFamilyShareClasses,
+  listFundFamilyProducts,
+} from "@/lib/server/share-class-product"
 
 const ELEMENTS_SOURCE = "ops/fund-elements"
 
@@ -569,19 +579,19 @@ export function appliedFieldKeys(body: FundElementWriteBody | null): string[] {
   return Object.keys(body).filter((key) => key !== "beian_hao" && body[key] !== undefined)
 }
 
-/** Fill empty 要素 on the matched product and every A/B/C share class with the same extracted rules. */
+/** Fill empty 要素 on the mother fund and every A/B/C share. Class-specific fees replace that share only. */
 export async function writeFillEmptyElementsAcrossShareClasses(
   beian_hao: string,
   product_name: string,
   extracted: ExtractedFundElements,
-  options?: { shareClassOverrides?: ShareClassFeeOverrides },
+  options?: ShareClassWritePlan,
 ): Promise<string[]> {
   return writeExtractedElementsAcrossShareClasses(
     beian_hao,
     product_name,
     extracted,
     "fill-empty",
-    options?.shareClassOverrides,
+    options,
   )
 }
 
@@ -589,67 +599,65 @@ export async function writeOverwriteElementsAcrossShareClasses(
   beian_hao: string,
   product_name: string,
   extracted: ExtractedFundElements,
+  options?: ShareClassWritePlan,
 ): Promise<string[]> {
-  return writeExtractedElementsAcrossShareClasses(beian_hao, product_name, extracted, "overwrite")
+  return writeExtractedElementsAcrossShareClasses(
+    beian_hao,
+    product_name,
+    extracted,
+    "overwrite",
+    options,
+  )
 }
 
-/** Return the A/B/C share class letter from a beian code, or null if not a share class. */
-function shareClassLetterFromBeian(beian: string): "A" | "B" | "C" | null {
+/** Trailing A/B/C on the filing code. Parent codes have no letter. */
+function shareClassLetterFromBeian(beian: string): ShareClassLetterKey | null {
   const upper = (beian ?? "").trim().toUpperCase()
   const last = upper.slice(-1)
   if (last === "A" || last === "B" || last === "C") return last
   return null
 }
 
+/** Share class of this product row. The name suffix wins over a bare parent code. */
+function targetShareClass(beian: string, productName?: string | null): ShareClassLetterKey | null {
+  const fromName = String(productName ?? "").trim().match(/([ABC])类(?:份额)?$/u)
+  if (fromName?.[1] === "A" || fromName?.[1] === "B" || fromName?.[1] === "C") return fromName[1]
+  return shareClassLetterFromBeian(beian)
+}
+
+function varyingSharedFields(
+  extracted: ExtractedFundElements,
+): Partial<Record<ShareClassVaryingKey, string | null>> {
+  const shared: Partial<Record<ShareClassVaryingKey, string | null>> = {}
+  for (const key of SHARE_CLASS_VARYING_KEYS) shared[key] = textField(extracted, key)
+  return shared
+}
+
+/** Mother fund keeps the full extract. A share gets common fees, or its own slice when they differ. */
+function projectExtractedForShare(
+  extracted: ExtractedFundElements,
+  overrides: ShareClassFeeOverrides | undefined,
+  cls: ShareClassLetterKey | null,
+): { extracted: ExtractedFundElements; skipVarying: Array<keyof ExtractedFundElements> } {
+  if (!cls) return { extracted, skipVarying: [] }
+  const projected = feeFieldsForShareClass(varyingSharedFields(extracted), overrides ?? {}, cls)
+  const next: ExtractedFundElements = { ...extracted }
+  const skipVarying: Array<keyof ExtractedFundElements> = []
+  for (const key of SHARE_CLASS_VARYING_KEYS) {
+    if (projected[key]) next[key] = projected[key] ?? null
+    else if (textField(extracted, key)) {
+      next[key] = null
+      skipVarying.push(key)
+    }
+  }
+  if ((next.fee_pay_formula ?? null) !== (extracted.fee_pay_formula ?? null)) {
+    next.fee_pay_formula_config = null
+  }
+  return { extracted: next, skipVarying }
+}
+
 function shareClassLabelCount(s: string | null | undefined): number {
   return new Set(String(s ?? "").match(/[ABC]类/g) ?? []).size
-}
-
-/**
- * If the base fee_pay looks like a combined "A...;B..." multi-class string,
- * extract the portion that belongs to `cls`.  Returns null if not applicable.
- */
-function splitClassFeePay(feePay: string | null | undefined, cls: string): string | null {
-  if (!feePay) return null
-  const s = feePay.trim()
-  // Only act on values that look like multi-class combined strings (>= 2 class segments)
-  if (!/[;；][A-C](?:类|份额|份)/.test(s)) return null
-  const parts = s.split(/[;；]/)
-  if (parts.length < 2) return null
-  const clsPartIdx = parts.findIndex((p) => new RegExp(`^${cls}(?:类|份额|份)`).test(p.trim()))
-  if (clsPartIdx < 0) return null
-  const chunks = [parts[clsPartIdx].trim()]
-  // "A类计提基准：年化10%；计提比例：50%；B类不计提" — 50% belongs to A, not a new class.
-  for (let i = clsPartIdx + 1; i < parts.length; i++) {
-    const part = parts[i].trim()
-    if (/^[A-C](?:类|份额|份)/.test(part)) break
-    if (part) chunks.push(part)
-  }
-  return chunks.join("；")
-}
-
-/** Merge class-specific fee overrides into the extracted object before writing. */
-function applyShareClassOverride(
-  extracted: ExtractedFundElements,
-  overrides: ShareClassFeeOverrides,
-  beian: string,
-): ExtractedFundElements {
-  const cls = shareClassLetterFromBeian(beian)
-  if (!cls) return extracted
-  const override = overrides[cls] ?? {}
-  const combinedPay = typeof extracted.fee_pay === "string" ? extracted.fee_pay : null
-  // If the shared 说明 already maps A/B/C, keep it on every share class (same as 管理费).
-  const keepCombinedPay = shareClassLabelCount(combinedPay) >= 2
-  const fee_pay = keepCombinedPay
-    ? combinedPay
-    : (override.fee_pay ?? splitClassFeePay(combinedPay, cls))
-  if (!Object.keys(override).length && !fee_pay) return extracted
-  return {
-    ...extracted,
-    ...(override.fee_manage_rate !== undefined ? { fee_manage_rate: override.fee_manage_rate } : {}),
-    ...(override.fee_manage !== undefined ? { fee_manage: override.fee_manage } : {}),
-    ...(fee_pay !== undefined && fee_pay !== null ? { fee_pay } : {}),
-  }
 }
 
 async function writeExtractedElementsAcrossShareClasses(
@@ -657,8 +665,11 @@ async function writeExtractedElementsAcrossShareClasses(
   product_name: string,
   extracted: ExtractedFundElements,
   mode: "fill-empty" | "overwrite",
-  shareClassOverrides?: ShareClassFeeOverrides,
+  plan?: ShareClassWritePlan,
 ): Promise<string[]> {
+  if (plan?.shareClasses?.length) {
+    await ensureFamilyShareClasses(beian_hao, plan.shareClasses)
+  }
   const family = await listFundFamilyProducts(beian_hao)
   const targets = family.length ? family : [{ beian_hao, product_name }]
   const primary = beian_hao.trim().toUpperCase()
@@ -666,18 +677,25 @@ async function writeExtractedElementsAcrossShareClasses(
 
   for (const target of targets) {
     const isPrimary = target.beian_hao.trim().toUpperCase() === primary
+    const cls = targetShareClass(target.beian_hao, target.product_name)
     const current = await loadExtractedElementDisplayValues(target.beian_hao, target.product_name, {
       exactBeian: true,
     })
+    const projected = projectExtractedForShare(extracted, plan?.shareClassOverrides, cls)
     const skipKeys: Array<keyof ExtractedFundElements> = isPrimary ? [] : ["fund_name"]
-    // Apply per-class overrides if provided
-    const effectiveExtracted = shareClassOverrides
-      ? applyShareClassOverride(extracted, shareClassOverrides, target.beian_hao)
-      : extracted
+    skipKeys.push(...projected.skipVarying)
+    const effectiveExtracted = projected.extracted
+    const mergeSkip = [...skipKeys]
+    if (cls) {
+      for (const key of SHARE_CLASS_VARYING_KEYS) {
+        const next = textField(effectiveExtracted, key)
+        if (next && next !== textField(extracted, key)) mergeSkip.push(key)
+      }
+    }
     const body = mode === "overwrite"
       ? buildOverwriteNonEmptyWriteBody(
           target.beian_hao,
-          mergeAmendmentIntoCurrent(effectiveExtracted, current, skipKeys),
+          mergeAmendmentIntoCurrent(effectiveExtracted, current, mergeSkip),
           skipKeys,
         )
       : buildFillEmptyWriteBody(target.beian_hao, effectiveExtracted, current, { skipKeys })
@@ -686,40 +704,22 @@ async function writeExtractedElementsAcrossShareClasses(
       for (const key of appliedFieldKeys(body)) written.add(key)
     }
 
-    // Class-specific overrides are authoritative — write them even when current value is non-empty,
-    // provided they are more specific than the current value (not just null/empty).
-    if (shareClassOverrides && mode === "fill-empty") {
-      const cls = shareClassLetterFromBeian(target.beian_hao)
-      const override = cls ? shareClassOverrides[cls] : undefined
-      if (override || cls) {
-        const overrideBody: FundElementWriteBody = { beian_hao: target.beian_hao }
-        const cur = current ?? {}
-        // fee_manage_rate: write if override differs from current
-        if (
-          override?.fee_manage_rate &&
-          encodeManageRate(override.fee_manage_rate) !== encodeManageRate(String(cur.fee_manage_rate ?? ""))
-        ) {
-          overrideBody.fee_manage_rate = override.fee_manage_rate
-        }
-        // fee_manage: write if override is different from current (class-specific is more precise)
-        if (override?.fee_manage && override.fee_manage !== (cur.fee_manage ?? "")) {
-          overrideBody.fee_manage = override.fee_manage
-        }
-        // fee_pay: prefer the full A/B/C map; otherwise the class-specific line.
-        const combinedPay = typeof extracted.fee_pay === "string" ? extracted.fee_pay : null
-        const splitPay = splitClassFeePay(combinedPay, cls ?? "")
-        const targetFeePay =
-          shareClassLabelCount(combinedPay) >= 2
-            ? combinedPay
-            : (override?.fee_pay ?? splitPay)
-        if (targetFeePay && targetFeePay !== (cur.fee_pay ?? "")) {
-          overrideBody.fee_pay = targetFeePay
-        }
-        if (appliedFieldKeys(overrideBody).length) {
-          await writeFundElementsFromBody(overrideBody)
-          for (const key of appliedFieldKeys(overrideBody)) written.add(key)
-        }
+    if (!cls) continue
+    const correction: FundElementWriteBody = { beian_hao: target.beian_hao }
+    for (const key of SHARE_CLASS_VARYING_KEYS) {
+      const next = textField(effectiveExtracted, key)
+      const parentValue = textField(extracted, key)
+      const prev = textField(current, key)
+      const specialized = Boolean(next) && next !== parentValue
+      if (specialized && next !== prev) {
+        correction[key] = next
+        continue
       }
+      if (!next && shareClassTextOmitsClass(prev, cls)) correction[key] = ""
+    }
+    if (appliedFieldKeys(correction).length) {
+      await writeFundElementsFromBody(correction)
+      for (const key of appliedFieldKeys(correction)) written.add(key)
     }
   }
   return [...written]
@@ -810,23 +810,68 @@ function buildOverwriteNonEmptyWriteBody(
   return Object.keys(body).length > 1 ? body : null
 }
 
-const SHARE_CLASS_FANOUT_SKIP = new Set(["beian_hao", "fund_name", "register_number", "fanout_share_classes"])
+const SHARE_CLASS_FANOUT_SKIP = new Set([
+  "beian_hao",
+  "fund_name",
+  "register_number",
+  "fanout_share_classes",
+  "share_classes",
+  "share_class_fees",
+])
 
-/** Copy the same PATCH fields onto every A/B/C share class (used by live 要素提取). */
-export async function writeFundElementsAcrossShareClasses(body: FundElementWriteBody): Promise<{ beian_hao: string }> {
-  const written = await writeFundElementsFromBody(body)
-  const family = await listFundFamilyProducts(written.beian_hao)
-  const primary = written.beian_hao.trim().toUpperCase()
-  for (const target of family) {
-    if (target.beian_hao.trim().toUpperCase() === primary) continue
-    const sibling: FundElementWriteBody = { beian_hao: target.beian_hao }
-    for (const [key, value] of Object.entries(body)) {
-      if (SHARE_CLASS_FANOUT_SKIP.has(key)) continue
-      sibling[key] = value
-    }
-    if (Object.keys(sibling).length > 1) {
-      await writeFundElementsFromBody(sibling)
+function projectWriteBodyForTarget(
+  body: FundElementWriteBody,
+  target: { beian_hao: string; product_name: string },
+  primary: string,
+  overrides: ShareClassFeeOverrides | undefined,
+): FundElementWriteBody {
+  const isPrimary = target.beian_hao.trim().toUpperCase() === primary
+  const next: FundElementWriteBody = { beian_hao: target.beian_hao }
+  for (const [key, value] of Object.entries(body)) {
+    if (SHARE_CLASS_FANOUT_SKIP.has(key)) continue
+    if (!isPrimary && key === "fund_name") continue
+    next[key] = value
+  }
+  const cls = targetShareClass(target.beian_hao, target.product_name)
+  if (!cls) return next
+  const shared: Partial<Record<ShareClassVaryingKey, string | null>> = {}
+  for (const key of SHARE_CLASS_VARYING_KEYS) {
+    shared[key] = typeof next[key] === "string" ? next[key] : null
+  }
+  const projected = feeFieldsForShareClass(shared, overrides ?? {}, cls)
+  for (const key of SHARE_CLASS_VARYING_KEYS) {
+    if (!(key in next)) continue
+    if (projected[key]) next[key] = projected[key]
+    else if (typeof next[key] === "string" && shareClassTextOmitsClass(next[key], cls)) next[key] = ""
+    else delete next[key]
+  }
+  if (next.fee_pay_formula !== body.fee_pay_formula) delete next.fee_pay_formula_config
+  return next
+}
+
+/**
+ * Write the selected 要素 onto the mother fund and every A/B/C share.
+ * Common fields are copied. Fee fields the contract splits by class are written only onto that class.
+ */
+export async function writeFundElementsAcrossShareClasses(
+  body: FundElementWriteBody,
+  plan?: ShareClassWritePlan,
+): Promise<{ beian_hao: string }> {
+  const primary = String(body.beian_hao ?? "").trim()
+  if (!primary) throw new Error("missing beian_hao")
+  if (plan?.shareClasses?.length) {
+    await ensureFamilyShareClasses(primary, plan.shareClasses)
+  }
+  const family = await listFundFamilyProducts(primary)
+  const targets = family.length ? family : [{ beian_hao: primary, product_name: primary }]
+  let writtenBeian = primary
+  for (const target of targets) {
+    const projected = projectWriteBodyForTarget(body, target, primary, plan?.shareClassOverrides)
+    if (Object.keys(projected).length <= 1) continue
+    const written = await writeFundElementsFromBody(projected)
+    if (target.beian_hao.trim().toUpperCase() === primary.toUpperCase()) {
+      writtenBeian = written.beian_hao
     }
   }
-  return written
+  return { beian_hao: writtenBeian }
 }

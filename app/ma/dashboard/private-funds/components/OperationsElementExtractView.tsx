@@ -36,6 +36,9 @@ type FundMatchCandidate = {
   short_name: string | null
 }
 
+type ShareClassLetter = "A" | "B" | "C"
+type ShareClassFees = Partial<Record<ShareClassLetter, Record<string, string>>>
+
 type ElementKey = keyof ExtractedFundElements
 
 type ContractJob = {
@@ -47,6 +50,8 @@ type ContractJob = {
   extracted: ExtractedFundElements | null
   matchedFunds: FundMatchCandidate[]
   textPreview: string
+  shareClasses?: ShareClassLetter[]
+  shareClassFees?: ShareClassFees
   fundInput: string
   selectedFund: FundMatchCandidate | null
   currentElements: ExtractedFundElements | null
@@ -193,11 +198,15 @@ function countSelectedFields(job: ContractJob): number {
   ).length
 }
 
-function buildApplyPayload(job: ContractJob): Record<string, string | boolean | null> | null {
+function buildApplyPayload(job: ContractJob): Record<string, unknown> | null {
   if (!job.selectedFund?.beian_hao || !job.extracted) return null
-  const payload: Record<string, string | boolean | null> = {
+  const payload: Record<string, unknown> = {
     beian_hao: job.selectedFund.beian_hao,
     fanout_share_classes: true,
+  }
+  if (job.shareClasses?.length) payload.share_classes = job.shareClasses
+  if (job.shareClassFees && Object.keys(job.shareClassFees).length) {
+    payload.share_class_fees = job.shareClassFees
   }
   for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
     if (!job.selectedFields[key]) continue
@@ -475,6 +484,9 @@ function InstantExtractPanel() {
     const extracted = json.extracted as ExtractedFundElements
     const matchedFunds = Array.isArray(json.matched_funds) ? json.matched_funds as FundMatchCandidate[] : []
     const selectedFund = pickAutoSelectedFund(extracted, matchedFunds)
+    const shareClasses = Array.isArray(json.share_classes)
+      ? (json.share_classes as unknown[]).filter((item): item is ShareClassLetter => item === "A" || item === "B" || item === "C")
+      : []
 
     return {
       fileName: file.name,
@@ -483,6 +495,10 @@ function InstantExtractPanel() {
       extracted,
       matchedFunds,
       textPreview: String(json.text_preview || ""),
+      shareClasses,
+      shareClassFees: json.share_class_fees && typeof json.share_class_fees === "object"
+        ? json.share_class_fees as ShareClassFees
+        : undefined,
       fundInput: extracted.fund_name?.trim() || selectedFund?.product_name || "",
       selectedFund,
       currentElements: null,
@@ -614,9 +630,12 @@ function InstantExtractPanel() {
       const count = countSelectedFields(job)
       const refresh = await fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(job.selectedFund.beian_hao)}`)
       const refreshed = await refresh.json()
+      const shareNote = job.shareClasses?.length
+        ? `，已同步母基金和 ${job.shareClasses.join("/")} 类份额`
+        : "，已同步母基金和各份额的共同要素"
       updateJob(job.id, {
         applyStatus: "done",
-        applyMessage: `已成功写入 ${count} 个字段`,
+        applyMessage: `已成功写入 ${count} 个字段${shareNote}`,
         currentElements: refreshed?.error ? job.currentElements : (refreshed as ExtractedFundElements),
         loadingCurrent: false,
       })
@@ -1103,8 +1122,8 @@ export function OperationsElementExtractView() {
         <h1 className="text-lg font-semibold">要素提取</h1>
         <p className="text-sm text-muted-foreground mt-1">
           {tab === "batch"
-            ? "批量上传基金合同后在后台提取并写入空缺要素；待确认任务可手动修正提取值后再写入，或确认为未备案产品并创建临时产品。也可查看哪些 FOF底层产品尚未关联合同。"
-            : "即时提取：上传后立即解析，核对匹配产品与字段后再写入。"}
+            ? "批量上传基金合同后在后台提取并写入空缺要素；待确认任务可手动修正提取值后再写入，或确认为未备案产品并创建临时产品。共同要素会写入母基金和 A/B/C 份额；合同里按份额区分的费率只写入对应份额。也可查看哪些 FOF底层产品尚未关联合同。"
+            : "即时提取：上传后立即解析，核对匹配产品与字段后再写入。共同要素会同步到母基金和各份额；合同写明的分级费率按份额分别写入。"}
         </p>
       </div>
       <div className="flex gap-1 border-b">

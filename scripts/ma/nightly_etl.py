@@ -10,6 +10,7 @@ Usage
   python scripts/ma/nightly_etl.py               # normal nightly run
   python scripts/ma/nightly_etl.py --step nhci   # run single step only
   python scripts/ma/nightly_etl.py --step email_nav_parse
+  python scripts/ma/nightly_etl.py --step public_enhanced_index_nav
   python scripts/ma/nightly_etl.py --step amac_private_funds
   python scripts/ma/nightly_etl.py --step amac_futures
   python scripts/ma/nightly_etl.py --step amac_extra
@@ -534,7 +535,7 @@ def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
         )
     conn.commit()
     log.info("NHCI: upserted %d rows (max date now %s).", len(records), max(r[0] for r in records))
-    clear_mom_file_cache("quant-vs-subjective", "warm-cache", "benchmark", "product-nav")
+    clear_mom_file_cache()
     return len(records)
 
 
@@ -714,7 +715,7 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
         )
     conn.commit()
     log.info("NH indices: upserted %d rows (max date %s).", len(records), max(r[0] for r in records))
-    clear_mom_file_cache("quant-vs-subjective", "warm-cache", "benchmark", "product-nav")
+    clear_mom_file_cache()
     return len(records)
 
 
@@ -4628,6 +4629,9 @@ def clear_mom_file_cache(*substrings: str) -> int:
     for p in root.iterdir():
         if not p.is_file() or not p.name.startswith(prefix):
             continue
+        # 单账户 cache keys stay on disk; this ETL only advances MOM / market tables.
+        if "account__" in p.name or "source=account" in p.name:
+            continue
         if substrings and not any(s in p.name for s in substrings):
             continue
         try:
@@ -4778,6 +4782,36 @@ def step_edb_commodity_spot(conn, *, force: bool = False) -> int:
     return n
 
 
+def step_public_enhanced_index_nav(conn, *, force: bool = False) -> int:
+    """Incremental Choice NAV for the 公募指增 universe.
+
+    --force on the whole nightly is ignored here. A forced run of this step
+    would re-download every share from inception (~3M Choice cells). Reload
+    history with fetch_public_enhanced_index_nav.py --force on purpose.
+    """
+    from datetime import date as _date
+    if force:
+        log.info("公募指增 NAV: ignoring nightly --force; incremental only")
+    end = _date.today()
+    result = run_script(
+        "fetch_public_enhanced_index_nav.py",
+        extra_args=["--end", end.isoformat()],
+        timeout=900,
+        log_stderr=True,
+    )
+    if not result or result.get("error") or result.get("quota"):
+        raise RuntimeError(f"public enhanced-index NAV fetch failed: {result}")
+    failed = int(result.get("failed") or 0)
+    rows = int(result.get("rows") or 0)
+    log.info(
+        "公募指增 NAV: rows=%s calls=%s failed=%s pending=%s end=%s",
+        rows, result.get("calls"), failed, result.get("pending"), result.get("end"),
+    )
+    if failed:
+        raise RuntimeError(f"public enhanced-index NAV: {failed} share classes failed")
+    return rows
+
+
 def step_edb_commodity_inventory(conn, *, force: bool = False) -> int:
     """Incremental Choice EDB commodity inventory -> raw_edb_commodity_inventory_daily."""
     from datetime import date as _date, timedelta as _td
@@ -4877,6 +4911,18 @@ def step_money_credit(conn) -> int:
     if result and result.get("status") == "ok":
         return result.get("rows", 0)
     return 0
+
+
+def step_us_macro() -> int:
+    """Refresh US FOMC / CPI / jobs charts for /ma/dashboard/macro-market.
+
+    Writes data/us-macro/fomc-cpi.json. The page API reads that file, so this
+    step does not need a Next.js rebuild.
+    """
+    result = run_script("fetch_us_macro.py", timeout=180)
+    if not result or result.get("error"):
+        raise RuntimeError((result or {}).get("error") or "us macro refresh failed")
+    return int(result.get("updated") or 0)
 
 
 def step_market_events_calendar() -> int:
@@ -5706,6 +5752,7 @@ MACRO_STEPS = [
     "regime_similarity",
     "shibor_3m",
     "money_credit",
+    "us_macro",
     "market_events_calendar",
 ]
 
@@ -5773,6 +5820,7 @@ ORDERED_STEPS = [
     "edb_industry_profit",         # Choice EDB EMI processing margins
     "edb_commodity_spot",          # Choice EDB physical commodity spot (report_basis_spot)
     "edb_commodity_inventory",     # Choice EDB social/exchange inventory
+    "public_enhanced_index_nav",   # Choice 公募指增 NAV gap through today
     # Continuous futures BEFORE option IV — MOM VaR depends on this table. option_iv
     # has hung for hours on AkShare; it must not gate market-data catchup.
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
@@ -5810,6 +5858,7 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
+    "us_macro",                      # 宏观市场 全球/美国 FOMC CPI 就业 FedWatch
     "market_events_calendar",        # 系统总览 事件日历 (华尔街见闻)
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
@@ -5962,11 +6011,13 @@ def main():
         "edb_industry_profit":             lambda: step_edb_industry_profit(conn, force=force),
         "edb_commodity_spot":              lambda: step_edb_commodity_spot(conn, force=force),
         "edb_commodity_inventory":         lambda: step_edb_commodity_inventory(conn, force=force),
+        "public_enhanced_index_nav":       lambda: step_public_enhanced_index_nav(conn, force=force),
         "afre":                            lambda: step_afre(conn, force=force),
         "regime_indicators":               lambda: step_regime_indicators(conn, force=force),
         "regime_similarity":               lambda: step_regime_similarity(conn),
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
         "money_credit":                    lambda: step_money_credit(conn),
+        "us_macro":                        lambda: step_us_macro(),
         "market_events_calendar":          lambda: step_market_events_calendar(),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
         "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),

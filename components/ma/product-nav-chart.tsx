@@ -1552,7 +1552,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
           <CardHeader className="pb-2 pt-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">{volWindow}日滚动波动率（年化）</CardTitle>
-              {nhciLagMeta?.lagging && (
+              {!!nhciLagMeta?.positionAsOf && (!nhciLagMeta.nhciAsOf || nhciLagMeta.nhciAsOf < nhciLagMeta.positionAsOf) && (
                 <p className="mt-1 text-[11px] text-amber-700">
                   {"南华商品 NHCI（"}{nhciLagMeta.nhciAsOf || "缺失"}{"）落后持仓日（"}{nhciLagMeta.positionAsOf || "?"}{"），最新日波动比率可能截断。"}
                 </p>

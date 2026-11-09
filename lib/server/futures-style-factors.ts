@@ -13,6 +13,7 @@
 import { readFileSync, existsSync } from "fs"
 import path from "path"
 import { fmtIso, n, query } from "@/lib/db"
+import { FUTURES_STYLE_PAGE_FACTORS } from "@/lib/futures-style-page-factors"
 import { getPrefix } from "@/lib/server/prod-utils"
 
 import {
@@ -3305,25 +3306,32 @@ export async function resolveFuturesStyleRange(
   }
 }
 
-export async function buildFuturesStyleReturns(
+type FuturesStyleMaterials = {
+  prices: Awaited<ReturnType<typeof loadAksharePrices>>
+  contracts: Awaited<ReturnType<typeof loadContractLegs>>
+  warehouse: Awaited<ReturnType<typeof loadWarehouseReceipts>>
+  profit: Awaited<ReturnType<typeof loadEdbIndustryProfit>>
+  socialInv: Awaited<ReturnType<typeof loadEdbCommodityInventory>>
+  commoditySpot: Awaited<ReturnType<typeof loadEdbCommoditySpot>>
+}
+
+type FuturesStyleDailyPack = {
+  allDates: string[]
+  dailyFrac: ReturnType<typeof computeDailyFactorReturns>
+  windTable: ReturnType<typeof loadGtjaqhCloses> | null
+}
+
+/** Same daily portfolio returns the 期货风格因子 page compounds into its charts. */
+export async function loadFuturesStyleDailyFrac(
   from: string,
   to: string,
   sector: FuturesStyleSector,
-  opts?: { auto?: boolean; minDate?: string | null; maxDate?: string | null },
-): Promise<FuturesStyleReturnsPayload> {
+): Promise<FuturesStyleDailyPack> {
   const lookbackFrom = shiftDate(from, -320) // need ≥95 trading days warm-up for report CS/rules
 
   // Materials (DB loads) are sector-agnostic — share across sector tabs.
-  type Materials = {
-    prices: Awaited<ReturnType<typeof loadAksharePrices>>
-    contracts: Awaited<ReturnType<typeof loadContractLegs>>
-    warehouse: Awaited<ReturnType<typeof loadWarehouseReceipts>>
-    profit: Awaited<ReturnType<typeof loadEdbIndustryProfit>>
-    socialInv: Awaited<ReturnType<typeof loadEdbCommodityInventory>>
-    commoditySpot: Awaited<ReturnType<typeof loadEdbCommoditySpot>>
-  }
   const materialsKey = `mat:v1:${lookbackFrom}|${to}`
-  let materials = getFuturesStyleMaterialsCache<Materials>(materialsKey)
+  let materials = getFuturesStyleMaterialsCache<FuturesStyleMaterials>(materialsKey)
   if (!materials) {
     const [prices, contracts, warehouse, profit, socialInv, commoditySpot] = await Promise.all([
       loadAksharePrices(lookbackFrom, to),
@@ -3339,12 +3347,12 @@ export async function buildFuturesStyleReturns(
   const { prices, contracts, warehouse, profit, socialInv, commoditySpot } = materials
 
   // Factor daily series are expensive; reuse per sector+window.
-  type DailyPack = {
+  type CachedDaily = {
     allDates: string[]
     dailyFrac: ReturnType<typeof computeDailyFactorReturns>
   }
   const dailyKey = `daily:v1:${lookbackFrom}|${to}|${sector}`
-  let dailyPack = getFuturesStyleDailyFracCache<DailyPack>(dailyKey)
+  let dailyPack = getFuturesStyleDailyFracCache<CachedDaily>(dailyKey)
   if (!dailyPack) {
     const built = buildPanels(prices, contracts, sector)
     attachFundamentals(built.dates, built.panels, warehouse, profit, socialInv, commoditySpot)
@@ -3371,6 +3379,16 @@ export async function buildFuturesStyleReturns(
     }
   }
 
+  return { allDates, dailyFrac, windTable }
+}
+
+export async function buildFuturesStyleReturns(
+  from: string,
+  to: string,
+  sector: FuturesStyleSector,
+  opts?: { auto?: boolean; minDate?: string | null; maxDate?: string | null },
+): Promise<FuturesStyleReturnsPayload> {
+  const { allDates, dailyFrac, windTable } = await loadFuturesStyleDailyFrac(from, to, sector)
 
   const rangeDates = allDates.filter((d) => d >= from && d <= to)
   const rangeIdx = rangeDates.map((d) => allDates.indexOf(d))
@@ -3509,6 +3527,39 @@ export async function buildFuturesStyleReturns(
     cumulative,
     interval,
   }
+}
+
+export type FuturesStylePageFactorDaily = {
+  dates: string[]
+  factors: Array<{ key: string; name: string; returns: Array<number | null> }>
+}
+
+/**
+ * Unrounded daily portfolio returns for the nine factors shown by default on 期货风格因子.
+ * Same series the page compounds into 分因子累计收益 (not the ±3.8 clipped single-day chart).
+ */
+export async function loadFuturesStylePageFactorReturns(
+  from: string,
+  to: string,
+): Promise<FuturesStylePageFactorDaily> {
+  const { allDates, dailyFrac } = await loadFuturesStyleDailyFrac(from, to, "all")
+  let i0 = 0
+  while (i0 < allDates.length && allDates[i0] < from) i0++
+  let i1 = allDates.length
+  while (i1 > i0 && allDates[i1 - 1] > to) i1--
+  const dates = allDates.slice(i0, i1)
+  const factors = FUTURES_STYLE_PAGE_FACTORS.map((factor) => {
+    const series = dailyFrac[factor.key] ?? []
+    return {
+      key: factor.key,
+      name: factor.name,
+      returns: dates.map((_, offset) => {
+        const v = series[i0 + offset]
+        return v == null || !Number.isFinite(v) ? null : v
+      }),
+    }
+  })
+  return { dates, factors }
 }
 
 

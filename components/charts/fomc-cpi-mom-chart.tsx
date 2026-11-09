@@ -38,7 +38,8 @@ export default function FomcCpiMomChart({ monthly, meetings, height = 340 }: Pro
     if (!pts.length) return {}
 
     const t0 = pts[0].t
-    const t1 = Math.max(pts[pts.length - 1].t, toUtc("2026-09-16"))
+    const pendingAt = meetings.filter((m) => m.action === "Pending").map((m) => toUtc(m.decision))
+    const t1 = Math.max(pts[pts.length - 1].t, ...pendingAt, 0)
     const vals = pts.flatMap((p) => [p.mom, p.core ?? p.mom])
     const yMin = Math.min(-0.5, ...vals) - 0.1
     const yMax = Math.max(0.6, ...vals) + 0.15
@@ -46,7 +47,7 @@ export default function FomcCpiMomChart({ monthly, meetings, height = 340 }: Pro
 
     const meetPts = meetings.filter((m) => {
       const t = toUtc(m.decision)
-      return t >= t0 - 20 * 86400000 && t <= toUtc("2026-09-20")
+      return t >= t0 - 20 * 86400000 && t <= t1 + 86400000
     })
     const byAction: Record<Action, Meeting[]> = { Hike: [], Hold: [], Cut: [], Pending: [] }
     for (const m of meetPts) byAction[m.action].push(m)

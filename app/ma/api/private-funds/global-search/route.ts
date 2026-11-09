@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { lookupBeianCodesWithNav } from "@/lib/server/fund-nav-presence"
+import { searchPublicEnhancedIndexFunds } from "@/lib/server/public-enhanced-index-fund"
 import { searchPrivateFundProductsForFastPicker } from "@/lib/server/private-fund-product-search"
 
 export const runtime = "nodejs"
@@ -75,10 +76,14 @@ export async function GET(req: Request) {
   const productPool = 40
 
   try {
-    const [products, managers] = await Promise.all([
+    const [products, publicFunds, managers] = await Promise.all([
       searchPrivateFundProductsForFastPicker(q, productPool).catch((err) => {
         console.error("[private-funds/global-search] products", err)
         return [] as Omit<GlobalSearchProduct, "has_nav">[]
+      }),
+      searchPublicEnhancedIndexFunds(q, limit).catch((err) => {
+        console.error("[private-funds/global-search] public enhanced", err)
+        return [] as GlobalSearchProduct[]
       }),
       searchManagers(q, limit),
     ])
@@ -88,7 +93,10 @@ export async function GET(req: Request) {
       has_nav: present ? present.has(row.beian_hao.trim().toUpperCase()) : null,
     }))
     annotated.sort((a, b) => navPresenceRank(a.has_nav) - navPresenceRank(b.has_nav))
-    return NextResponse.json({ products: annotated.slice(0, limit), managers })
+    const seen = new Set(annotated.map((row) => row.beian_hao.trim().toUpperCase()))
+    const publicHits = publicFunds.filter((row) => !seen.has(row.beian_hao.trim().toUpperCase()))
+    const merged = [...publicHits, ...annotated].slice(0, limit)
+    return NextResponse.json({ products: merged, managers })
   } catch (err) {
     console.error("[private-funds/global-search]", err)
     return NextResponse.json({ error: "db_error" }, { status: 500 })

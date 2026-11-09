@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import MarketPredictionSection from "./market-prediction-section"
 import GlobalFomcSection from "./global-fomc-section"
@@ -19,9 +19,25 @@ const GLOBAL_NAV = [
   { id: "fomc-meetings-section", label: "会议对照 ↓" },
 ]
 
+const DOMESTIC_SECTIONS = new Set(DOMESTIC_NAV.map((item) => item.id))
+
 export default function Page() {
   const [tab, setTab] = useState("domestic")
   const [region, setRegion] = useState("us")
+
+  useEffect(() => {
+    const apply = () => {
+      const hash = window.location.hash.replace(/^#/, "")
+      if (DOMESTIC_SECTIONS.has(hash)) setTab("domestic")
+      if (!hash) return
+      window.setTimeout(() => {
+        document.getElementById(hash)?.scrollIntoView({ block: "start" })
+      }, 50)
+    }
+    apply()
+    window.addEventListener("hashchange", apply)
+    return () => window.removeEventListener("hashchange", apply)
+  }, [])
   const nav = tab === "global" && region === "us" ? GLOBAL_NAV : tab === "domestic" ? DOMESTIC_NAV : []
 
   return (

@@ -7,8 +7,11 @@ import { configureEtlDbTimeout, loadProjectEnvFiles } from "@/lib/server/load-pr
 const execFileAsync = promisify(execFile)
 
 const JOB_KEY = "__macroMarketEtl"
+const US_JOB_KEY = "__usMacroEtl"
 const JOB_TIMEOUT_MS = 90 * 60 * 1000
+const US_JOB_TIMEOUT_MS = 15 * 60 * 1000
 const MIN_RERUN_MS = 20 * 60 * 60 * 1000
+const US_MIN_RERUN_MS = 6 * 60 * 60 * 1000
 
 export type MacroMarketEtlJobStatus = {
   status: "queued" | "running" | "done" | "error"
@@ -31,14 +34,18 @@ function getJobMap(): Map<string, MacroMarketEtlJobStatus> {
   return g.__macroMarketEtlJobs
 }
 
-function getLastSuccessAt(): number | undefined {
-  return (globalThis as typeof globalThis & { __macroMarketEtlLastSuccessAt?: number })
-    .__macroMarketEtlLastSuccessAt
+function successMap(): Record<string, number> {
+  const g = globalThis as typeof globalThis & { __macroMarketEtlLastSuccess?: Record<string, number> }
+  if (!g.__macroMarketEtlLastSuccess) g.__macroMarketEtlLastSuccess = {}
+  return g.__macroMarketEtlLastSuccess
 }
 
-function setLastSuccessAt(ts: number): void {
-  ;(globalThis as typeof globalThis & { __macroMarketEtlLastSuccessAt?: number }).__macroMarketEtlLastSuccessAt =
-    ts
+function getLastSuccessAt(key: string): number | undefined {
+  return successMap()[key]
+}
+
+function setLastSuccessAt(key: string, ts: number): void {
+  successMap()[key] = ts
 }
 
 function pushPythonCandidate(out: PythonInvocation[], executable: string, prefixArgs: string[] = []) {
@@ -118,19 +125,26 @@ export function getMacroMarketEtlJobStatus(): MacroMarketEtlJobStatus | null {
 export function startMacroMarketEtlJob(options?: {
   /** Skip the 20h dedupe guard (manual / ops runs). */
   force?: boolean
+  /** Only refresh the US FOMC / CPI / jobs file. Separate schedule from the full macro group. */
+  usOnly?: boolean
 }): { ok: true } | { ok: false; reason: "already_running" | "recently_ran" | "disabled" } {
+  const jobKey = options?.usOnly ? US_JOB_KEY : JOB_KEY
+  const minRerun = options?.usOnly ? US_MIN_RERUN_MS : MIN_RERUN_MS
+  const timeout = options?.usOnly ? US_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS
+  const scriptArgs = options?.usOnly ? ["--step", "us_macro"] : ["--group", "macro"]
+
   if (process.env.MACRO_ETL_CRON_DISABLED === "1" && !options?.force) {
     return { ok: false, reason: "disabled" }
   }
 
   const jobs = getJobMap()
-  const existing = jobs.get(JOB_KEY)
+  const existing = jobs.get(jobKey)
   if (existing && (existing.status === "queued" || existing.status === "running")) {
     return { ok: false, reason: "already_running" }
   }
 
-  const lastSuccess = getLastSuccessAt()
-  if (!options?.force && lastSuccess && Date.now() - lastSuccess < MIN_RERUN_MS) {
+  const lastSuccess = getLastSuccessAt(jobKey)
+  if (!options?.force && lastSuccess && Date.now() - lastSuccess < minRerun) {
     return { ok: false, reason: "recently_ran" }
   }
 
@@ -139,7 +153,7 @@ export function startMacroMarketEtlJob(options?: {
     message: "准备更新宏观市场数据…",
     startedAt: Date.now(),
   }
-  jobs.set(JOB_KEY, job)
+  jobs.set(jobKey, job)
 
   void (async () => {
     job.status = "running"
@@ -148,14 +162,14 @@ export function startMacroMarketEtlJob(options?: {
     try {
       const { executable, prefixArgs } = await findPython()
       const scriptPath = path.join(process.cwd(), "scripts", "ma", "nightly_etl.py")
-      const args = [...prefixArgs, scriptPath, "--group", "macro"]
+      const args = [...prefixArgs, scriptPath, ...scriptArgs]
 
       console.log("[macro-market-etl] starting:", executable, args.join(" "))
 
       const { stdout, stderr } = await execFileAsync(executable, args, {
         cwd: process.cwd(),
         env: pythonExecEnv(),
-        timeout: JOB_TIMEOUT_MS,
+        timeout,
         maxBuffer: 10 * 1024 * 1024,
       })
 
@@ -166,7 +180,7 @@ export function startMacroMarketEtlJob(options?: {
       job.message = "宏观市场数据已更新"
       job.finishedAt = Date.now()
       job.exitCode = 0
-      setLastSuccessAt(job.finishedAt)
+      setLastSuccessAt(jobKey, job.finishedAt)
       console.log("[macro-market-etl] finished OK in", ((job.finishedAt - job.startedAt) / 1000).toFixed(1), "s")
     } catch (e) {
       const err = e as NodeJS.ErrnoException & { code?: string; killed?: boolean; signal?: string }
@@ -182,6 +196,12 @@ export function startMacroMarketEtlJob(options?: {
   })()
 
   return { ok: true }
+}
+
+/** 08:15 and 22:00 Beijing. US CPI/NFP print near 21:30, FOMC near 03:00. */
+export function runScheduledUsMacroEtl(): void {
+  const result = startMacroMarketEtlJob({ usOnly: true })
+  if (!result.ok) console.log(`[us-macro-etl] skipped: ${result.reason}`)
 }
 
 /** Called from instrumentation cron — daily macro chart refresh. */

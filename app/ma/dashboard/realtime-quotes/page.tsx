@@ -188,10 +188,21 @@ export default function RealtimeQuotesPage() {
   }, [ctp.status?.index_symbols, ctp.symbols, cffex.symbols, candles, quotes])
 
   useLayoutEffect(() => {
-    if (new URLSearchParams(window.location.search).get("view") === "pro") {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("view") === "pro") {
       setProLayout("market")
       setProOpen(true)
     }
+    const basis = params.get("basis")
+    if (basis && CFFEX_CONTRACT_ROLES.some((role) => role.id === basis)) {
+      setBasisRole(basis as CffexContractRole)
+    }
+    const hash = window.location.hash.replace(/^#/, "")
+    if (!hash) return
+    const timer = window.setTimeout(() => {
+      document.getElementById(hash)?.scrollIntoView({ block: "start" })
+    }, 50)
+    return () => window.clearTimeout(timer)
   }, [])
 
   useEffect(() => {
@@ -342,7 +353,7 @@ export default function RealtimeQuotesPage() {
         })}
       </div>
 
-      <div>
+      <div id="section-basis-rate" className="scroll-mt-4">
         <h2 className="text-lg font-semibold tracking-tight">年化基差率</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           四张图共用下方周期、合约月份与缩放。近月 / 远月 / 近季 / 远季对应中金所当月、次月、当季、下季合约。
@@ -447,7 +458,7 @@ export default function RealtimeQuotesPage() {
 
       <AshareTurnoverConcentrationChart />
 
-      <div>
+      <div id="section-iv" className="scroll-mt-4">
         <h2 className="text-lg font-semibold tracking-tight">隐含波动率</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           HO / IO / 500ETF / MO 对应 QVIX（近月 ATM 隐含波动率指数）。日内周期默认当日分钟线，可用横轴天数切换 2/5/10 日回看；日线及以上用历史日线。

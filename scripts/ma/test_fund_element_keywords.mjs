@@ -9,6 +9,10 @@ import {
   extractLockPeriodFromText,
   extractRiskLevelFromText,
   extractShareClassFeeOverrides,
+  feeFieldsForShareClass,
+  planShareClassesFromText,
+  shareClassesDefinedInContract,
+  splitClassLabeledField,
   extractOpenDayFromText,
   extractTemporaryOpenFromText,
   fillMissingElementsFromKeywords,
@@ -553,5 +557,100 @@ assert.equal(fundNameKey("六妙星豪鑫3号私募证券投资基金A类份额"
 assert.equal(fundNameKey("六妙星豪鑫3号A类"), "六妙星豪鑫3号")
 assert.equal(fundNameKey("诚奇睿盈对冲2号私募证券投资基金A类"), "诚奇睿盈对冲2号")
 assert.notEqual(fundNameKey("六妙星豪鑫3号A类"), fundNameKey("六妙星豪鑫6号A类"))
+
+assert.equal(
+  splitClassLabeledField("A类超额计提30%；B类超额计提20%；R=(A-B)/C×100%", "B"),
+  "B类超额计提20%；R=(A-B)/C×100%",
+)
+assert.equal(splitClassLabeledField("A类超额计提30%；B类超额计提20%；R=(A-B)/C×100%", "C"), null)
+assert.equal(
+  splitClassLabeledField("A类计提基准：年化10%；计提比例：50%；B类不计提", "A"),
+  "A类计提基准：年化10%；计提比例：50%",
+)
+
+const sameFeeClasses = `
+本基金设置A类和B类两类份额。
+A类份额年管理费率为1%，每日计提。
+B类份额年管理费率为1%，每日计提。
+开放日为每周三。预警线0.8。
+`
+assert.deepEqual(shareClassesDefinedInContract(sameFeeClasses), ["A", "B"])
+assert.deepEqual(planShareClassesFromText(sameFeeClasses).shareClassOverrides, {})
+assert.deepEqual(
+  shareClassesDefinedInContract("本基金可投资于其他私募基金A类份额和B类份额。本基金年管理费率为1%。"),
+  [],
+)
+
+const classFees = feeFieldsForShareClass(
+  {
+    fee_manage_rate: "1%",
+    fee_manage: "A类年管理费率1%；B类年管理费率0%",
+    fee_pay: "A类超额计提30%；B类超额计提20%；C类不收取",
+    fee_pay_formula: "A类超额计提30%；B类超额计提20%；R=(A-B)/C×100%",
+  },
+  extractShareClassFeeOverrides(multiClassContract),
+  "B",
+)
+assert.ok(classFees.fee_manage_rate === "0%" || classFees.fee_manage?.includes("0%"), JSON.stringify(classFees))
+assert.ok(!classFees.fee_manage?.includes("A类"), classFees.fee_manage)
+assert.ok(classFees.fee_pay?.includes("20%") || classFees.fee_pay?.includes("60%"), classFees.fee_pay)
+assert.ok(!classFees.fee_pay?.includes("A类"), classFees.fee_pay)
+assert.equal(
+  feeFieldsForShareClass(
+    { fee_manage: "年管理费率1%，每日计提，按自然季度支付。", fee_trust: "年托管费率0.02%" },
+    {},
+    "A",
+  ).fee_manage,
+  "年管理费率1%，每日计提，按自然季度支付。",
+)
+assert.equal(
+  feeFieldsForShareClass(
+    { fee_pay: "A类超额计提30%；B类超额计提20%" },
+    {},
+    "C",
+  ).fee_pay,
+  undefined,
+)
+
+const purchaseSplit = `
+本基金设置A类份额和B类份额。
+A类份额申购费率为0%，首次净申购金额应不低于100万元。
+B类份额申购费率为1%，首次净申购金额应不低于500万元。
+`
+const purchasePlan = planShareClassesFromText(purchaseSplit)
+assert.equal(purchasePlan.shareClassOverrides.A?.fee_purchase, "0%")
+assert.equal(purchasePlan.shareClassOverrides.B?.fee_purchase, "1%")
+assert.ok(purchasePlan.shareClassOverrides.A?.add_amount?.includes("100"), purchasePlan.shareClassOverrides.A?.add_amount)
+assert.ok(purchasePlan.shareClassOverrides.B?.add_amount?.includes("500"), purchasePlan.shareClassOverrides.B?.add_amount)
+assert.deepEqual(purchasePlan.shareClasses, ["A", "B"])
+
+// 全额收益计提 + 计提后年化不低于基准。PDF 常把 MIN 括号拆开，比例写在「提取比例（以P代表）为50%」。
+const fullReturnFloor = `
+4、业绩报酬
+（1）业绩报酬的计提原则：
+基金业绩报酬提取比例（计算公式中以P代表）为50%。
+基金份额持有人每笔所持份额在持有期的年化收益率大于业绩报酬计提基准（计算公式中以B代表）（6%）时，对持有期全额收益按【50%】比例进行计提，但计提后基金份额持有人年化收益率不低于业绩报酬计提基准。
+（2）业绩报酬的计算公式
+PFij = 0，当 R < 6%
+MIN R ∗ 50% ∗ HWMij' ∗ Tij / 365 ∗ Fij， (R − 6%) ∗ HWMij' ∗ Tij / 365 ∗ Fij ，当 6% ≤ R
+`
+const floorPay = summarizeFeePayDesc(fullReturnFloor)
+assert.equal(
+  floorPay,
+  "按业绩基准计提，业绩基准6%，全额收益计提比例50%，计提后年化不低于基准。",
+)
+assert.ok(floorPay && !isWeakFeePay(floorPay), floorPay)
+const floorFormula = extractFeePayFormulaFromText(fullReturnFloor)
+assert.ok(floorFormula && floorFormula.includes("基准6%"), floorFormula)
+assert.ok(floorFormula && floorFormula.includes("50%"), floorFormula)
+assert.ok(floorFormula && /MIN\(R×50%,R-6%\)/.test(floorFormula), floorFormula)
+assert.ok(floorFormula && !floorFormula.includes("超额计提"), floorFormula)
+assert.ok(floorFormula && !isWeakFormula(floorFormula), floorFormula)
+const floorFilled = fillMissingElementsFromKeywords(fullReturnFloor, {
+  fee_pay: "基金业绩报酬提取比例（计算公式中以P代表）为50%。业绩报酬提取时点为固定计提确认日、分红确认日、赎回确认日和基金终止确认日。对持有期全额收益按50%比例进行计提，但计提后不低于基准。",
+  fee_pay_formula: null,
+})
+assert.equal(floorFilled.fee_pay, floorPay)
+assert.equal(floorFilled.fee_pay_formula, floorFormula)
 
 console.log("fund-contract-element-keywords: ok")

@@ -93,6 +93,8 @@ function contractLine(mode: "intraday" | "history" | "unavailable", source: stri
 
 const UP_COLOR = "#ef4444"
 const DOWN_COLOR = "#059669"
+// Off the index IV hues (blue, teal, amber, rose) so the overlay stays visible on every product.
+const GK_OVERLAY_COLOR = "#c084fc"
 
 function latestClose(values: Array<number | null>) {
   for (let i = values.length - 1; i >= 0; i -= 1) {
@@ -421,8 +423,8 @@ export function IndexIvChart({
               data: gkValues,
               showSymbol: false,
               connectNulls: !hasInternalGap(gkValues, 20),
-              lineStyle: { width: 1.4, color: "#2dd4bf" },
-              itemStyle: { color: "#2dd4bf" },
+              lineStyle: { width: 1.4, color: GK_OVERLAY_COLOR },
+              itemStyle: { color: GK_OVERLAY_COLOR },
               z: 4,
             }]
           : []),
@@ -506,7 +508,7 @@ export function IndexIvChart({
                   title="把区间波动20按本窗口的中位水平对齐到隐含波动率，两条线共用一个坐标"
                   onClick={() => setCompareGk((on) => !on)}
                   className={compareGk
-                    ? "h-6 rounded border border-[#2dd4bf] bg-[#2dd4bf]/15 px-1.5 text-[11px] text-[#2dd4bf]"
+                    ? "h-6 rounded border border-[#c084fc] bg-[#c084fc]/15 px-1.5 text-[11px] text-[#c084fc]"
                     : pro
                       ? "h-6 rounded border border-[#2a2e39] bg-[#1e222d] px-1.5 text-[11px] text-[#adb3bd] hover:text-white"
                       : "h-6 rounded border bg-background px-1.5 text-[11px] text-muted-foreground hover:text-foreground"}
@@ -527,7 +529,7 @@ export function IndexIvChart({
               <span className={pro ? "font-mono text-[#d1d4dc]" : "font-mono text-foreground"}>{contractText}</span>
             ) : null}
             {compareGk ? (
-              <span className="text-[#2dd4bf]">
+              <span className="text-[#c084fc]">
                 {gkScale == null ? "区间波动20 · 样本不足" : `区间波动20 · 对齐×${gkScale.toFixed(2)}`}
               </span>
             ) : null}

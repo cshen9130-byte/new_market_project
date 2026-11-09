@@ -1089,6 +1089,48 @@ def sell_buckets(opt: pd.DataFrame) -> dict:
     }
 
 
+def four_type_pie(buckets: dict) -> Path:
+    """Share of sell-open lots in the four structures."""
+    prof.configure_matplotlib()
+    names = ["短宽跨式", "短宽跨式加近买", "比率价差", "单边卖权"]
+    sizes = [
+        float(buckets["both_only"]),
+        float(buckets["both_wing"]),
+        float(buckets["one_wing"]),
+        float(buckets["one_naked"]),
+    ]
+    colors = [prof.C_NAVY, prof.C_GOLD, prof.C_TEAL, prof.C_PURPLE]
+    total = sum(sizes)
+    fig, ax = plt.subplots(figsize=(8.2, 4.6))
+    wedges, _texts, autotexts = ax.pie(
+        sizes,
+        colors=colors,
+        startangle=90,
+        counterclock=False,
+        autopct=lambda p: f"{p:.1f}%",
+        pctdistance=0.62,
+        wedgeprops={"edgecolor": "white", "linewidth": 1.2},
+    )
+    for wedge, text, size in zip(wedges, autotexts, sizes):
+        text.set_fontsize(10)
+        text.set_color("white" if size != sizes[1] else prof.C_NAVY)
+    ax.legend(
+        wedges,
+        [f"{name}  {size:.0f} 手" for name, size in zip(names, sizes)],
+        frameon=False,
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        fontsize=9,
+    )
+    ax.set_title(f"四块卖开占全部 {total:.0f} 手")
+    fig.tight_layout()
+    path = OUT / "charts" / "four_type_pie.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
 def _life_move(iv_pct: float, dte: int) -> float:
     """One-standard-deviation price move from an annualized IV over calendar days."""
     if not math.isfinite(iv_pct) or iv_pct <= 0 or dte <= 0:
@@ -1805,6 +1847,669 @@ def fmt_feat(v, feature: str) -> str:
     return f"{v:.2f}"
 
 
+def _expiry_compare_charts() -> dict[str, Path]:
+    """Three charts: finish-at-zero, win and loss size, and the expected result."""
+    prof.configure_matplotlib()
+    labels = ["实值", "0–3%", "3–7%", "7–12%", "12–17%", "17–25%", "25–40%", "40–80%"]
+    x = np.arange(len(labels))
+    w = 0.36
+    call_p = [0.142, 0.668, 0.835, 0.917, 0.954, 0.977, 0.991, 0.994]
+    put_p = [0.120, 0.590, 0.776, 0.907, 0.963, 0.991, 0.998, 1.000]
+    his_p_c = [None, None, None, 1.0, 1.0, 1.0, None, None]
+    his_p_p = [None, None, None, 1.0, 1.0, 1.0, None, None]
+    call_win = [10.15, 1.23, 0.77, 0.53, 0.48, 0.51, 0.26, 0.14]
+    put_win = [6.55, 1.36, 0.63, 0.25, 0.27, 0.21, 0.15, 0.05]
+    call_loss = [-2.24, -5.47, -7.45, -9.67, -11.45, -14.44, -18.89, -22.60]
+    put_loss = [-6.13, -3.98, -4.50, -5.06, -4.40, -4.63, -6.82, None]
+    his_prem_c = [None, None, 0.12, 0.37, 0.53, 0.51, 1.07, 0.48]
+    his_prem_p = [None, None, 1.70, 0.28, 0.27, 0.69, None, None]
+    call_e = [-0.48, -0.99, -0.59, -0.32, -0.07, 0.17, 0.09, 0.00]
+    put_e = [-4.61, -0.83, -0.52, -0.24, 0.10, 0.17, 0.14, 0.05]
+    his_e_c = [None, None, None, 0.06, 0.02, 0.20, None, None]
+    his_e_p = [None, None, None, 0.03, 0.03, 0.24, None, None]
+    out = OUT / "charts"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def _style(ax, title, ylabel):
+        ax.axhline(0, color=prof.C_GRAY, lw=0.6)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_xlabel("行权价离卖出当天期货的距离")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend(frameon=False, ncol=3, fontsize=8, loc="best")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    def _his(ax, values, shift, color):
+        xs, ys = [], []
+        for i, v in enumerate(values):
+            if v is None:
+                continue
+            xs.append(x[i] + shift)
+            ys.append(v)
+        if xs:
+            ax.scatter(xs, ys, s=42, marker="D", facecolor="white", edgecolor=color, linewidths=1.3, zorder=5)
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.4))
+    ax.bar(x - w / 2, call_p, w, color=prof.C_NAVY, label="认购")
+    ax.bar(x + w / 2, put_p, w, color=prof.C_GOLD, label="认沽")
+    _his(ax, his_p_c, -w / 2, prof.C_ORANGE)
+    _his(ax, his_p_p, w / 2, prof.C_ORANGE)
+    ax.scatter([], [], s=42, marker="D", facecolor="white", edgecolor=prof.C_ORANGE, label="RX383 已到期")
+    ax.set_ylim(0, 1.08)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _p: f"{v:.0%}"))
+    _style(ax, "卖出后持有到到期，归零的概率", "到期归零")
+    fig.tight_layout()
+    prob = out / "expiry_prob.png"
+    fig.savefig(prob, dpi=140)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.6))
+    for i in range(len(labels)):
+        ax.plot([x[i] - w / 2, x[i] - w / 2], [call_loss[i], call_win[i]], color=prof.C_NAVY, lw=1.5, label="认购" if i == 0 else None)
+        ax.scatter([x[i] - w / 2, x[i] - w / 2], [call_win[i], call_loss[i]], s=16, color=prof.C_NAVY, zorder=3)
+        if put_loss[i] is not None:
+            ax.plot([x[i] + w / 2, x[i] + w / 2], [put_loss[i], put_win[i]], color=prof.C_GOLD, lw=1.5, label="认沽" if i == 0 else None)
+            ax.scatter([x[i] + w / 2, x[i] + w / 2], [put_win[i], put_loss[i]], s=16, color=prof.C_GOLD, zorder=3)
+        else:
+            ax.scatter([x[i] + w / 2], [put_win[i]], s=16, color=prof.C_GOLD, zorder=3, label="认沽" if i == 0 else None)
+    _his(ax, his_prem_c, -w / 2 + 0.08, prof.C_ORANGE)
+    _his(ax, his_prem_p, w / 2 + 0.08, prof.C_ORANGE)
+    ax.scatter([], [], s=42, marker="D", facecolor="white", edgecolor=prof.C_ORANGE, label="RX383 卖出权利金")
+    _style(ax, "一笔交易赢的幅度和亏的幅度", "期货价格的百分比")
+    fig.tight_layout()
+    amount = out / "expiry_amount.png"
+    fig.savefig(amount, dpi=140)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.4))
+    ax.bar(x - w / 2, call_e, w, color=prof.C_NAVY, label="认购")
+    ax.bar(x + w / 2, put_e, w, color=prof.C_GOLD, label="认沽")
+    _his(ax, his_e_c, -w / 2, prof.C_ORANGE)
+    _his(ax, his_e_p, w / 2, prof.C_ORANGE)
+    ax.scatter([], [], s=42, marker="D", facecolor="white", edgecolor=prof.C_ORANGE, label="RX383 已到期")
+    _style(ax, "概率加权之后的期望", "期货价格的百分比")
+    fig.tight_layout()
+    expect = out / "expiry_expect.png"
+    fig.savefig(expect, dpi=140)
+    plt.close(fig)
+    return {"prob": prob, "amount": amount, "expect": expect}
+
+
+def write_expiry_compare(doc, add_tab, add_fig) -> None:
+    """Hold-to-expiry on the full strike grid, then the same measurement on his short strangles."""
+    lc = option_expiry("LC", "2612")
+    lc_day = _cn_full(lc) if lc else "11 月上旬"
+    pics = _expiry_compare_charts()
+    prof.heading(doc, "七、持有到到期，和他卖出的位置", 1)
+    prof.para(
+        doc,
+        "这一节把「卖出后拿到到期」放到全市场的行权价上，再放到他的短宽跨式上。期货从 2025 年 1 月 1 日起。"
+        "库里至少有两个行权价、因而能读出间距的品种，按这个间距在期货价格下方 30% 到上方 40% 铺开。"
+        "每个合约在到期前 5 到 80 个自然日里，每个有期货行情的交易日都算作卖出一次，持有到该期权到期。"
+        "这样的卖出一共 1,166,228 笔，37 个品种。这不是全部期货品种：价格文件里有 85 个期货，能铺出网格的是这 37 个。",
+    )
+    prof.para(
+        doc,
+        "一笔的结果是：归零概率 × 权利金 + 被行权概率 ×（权利金 − 穿过行权价的距离）。"
+        "归零指期货结算落在行权价的虚值一侧。穿过的距离和权利金都写成卖出当天期货价格的百分比。"
+        "赢的时候留下权利金。输的时候权利金同样留下，再减去结算穿过行权价的幅度。"
+        "网格上很多行权价没有成交，没有自己的收盘价。图和表里的权利金是同一距离档里真正成交过的收盘价平均，归零概率和穿过的距离来自那 1,166,228 笔到期结算。"
+        "橙边菱形是 RX383。归零和期望两张图只画已经到期的手；中间那张图的菱形是他卖出时收进的权利金，还没到期的也算在内。",
+    )
+    add_fig(
+        pics["prob"],
+        "柱子是全市场每个交易日卖出、持有到到期之后归零的概率。菱形是他已经到期的短宽跨式，这些手全部归零。",
+    )
+    add_fig(
+        pics["amount"],
+        "零线上面是赢的一笔留下的权利金，零线下面是被行权时权利金减去穿过行权价的距离。橙边菱形是他卖出的权利金，含还没到期的手。",
+    )
+    add_fig(
+        pics["expect"],
+        "柱子是归零概率乘权利金、再加上被行权概率乘亏损之后的期望。菱形只画他已经到期的手，因为没有被行权，菱形的高度就是他留下的权利金。",
+    )
+    prof.para(
+        doc,
+        "实值档的期望是负的。认购要到离期货 17% 以外，认沽要到 12% 以外，期望才转到正的一边，幅度是零点几个百分点。"
+        "7% 到 12% 这一档，认购大约 8.3% 会被行权，被行权时穿过约 10.2 个百分点；认沽大约 9.3% 被行权，穿过约 5.3 个百分点。"
+        "所以这一档权利金虽然收得回来，期望仍是负的。",
+    )
+    add_tab(
+        ["离期货", "认购归零", "认购期望", "认沽归零", "认沽期望"],
+        [
+            ["实值", "14.2%", "-0.48%", "12.0%", "-4.61%"],
+            ["0–3%", "66.8%", "-0.99%", "59.0%", "-0.83%"],
+            ["3–7%", "83.5%", "-0.59%", "77.6%", "-0.52%"],
+            ["7–12%", "91.7%", "-0.32%", "90.7%", "-0.24%"],
+            ["12–17%", "95.4%", "-0.07%", "96.3%", "+0.10%"],
+            ["17–25%", "97.7%", "+0.17%", "99.1%", "+0.17%"],
+            ["25–40%", "99.1%", "+0.09%", "99.8%", "+0.14%"],
+            ["40–80%", "99.4%", "+0.00%", "100%", "+0.05%"],
+        ],
+        "全市场卖出后持有到到期。期望是期货价格的百分比。正数是平均赚，负数是平均亏。",
+    )
+    prof.para(
+        doc,
+        "他的短宽跨式用同一把尺子。距离是卖开时行权价离当天期货的百分比，权利金是成交价除以当天期货。"
+        "同一个品种、同一个月份既卖过认购也卖过认沽，才算进短宽跨式。对上了期货价格的有 462 手。"
+        "花生和菜粕另有 60 手，卖出前后 10 天没有该期货的打印，距离算不出来，不进下面的表。"
+        "单边卖出的 118 手不是短宽跨式，也不放进来。",
+    )
+    prof.para(
+        doc,
+        "他不卖实值，也不卖离期货 3% 以内。认购从大约 6% 外放到大约 47% 外，认沽从大约 7% 外放到大约 19% 外。"
+        "市场期望最差的实值档和 0–3% 档，他没有卖开。",
+    )
+    prof.para(
+        doc,
+        "到 2026 年 11 月 6 日的行情为止，已经到期又能对上结算的是 109 手：10 月 26 日的铜、镍、锡 11 月期权，以及 "
+        f"{lc_day}到期的碳酸锂 12 月。碳酸锂在他 10 月 19 日到 23 日的卖出日没有期货打印，最近的打印是 10 月 26 日，距离用这一天的期货；到期是否归零用到期结算。"
+        "这 109 手全部到期归零。认购 58 手，留下的权利金是期货的 +0.10%。认沽 51 手，是 +0.06%。"
+        "没有一手被行权，所以他的期望就等于这笔权利金。"
+        "四组、两个到期日，不能把 100% 读成和市场同档 90% 到 98% 不同的概率。"
+        "7% 到 12% 档他到期的权利金只有 0.06% 和 0.03%，低于同档有成交合约的 0.53% 和 0.25%，因为这几笔是到期前一两个星期才卖的。"
+        "12% 到 17% 的认购到期只有 2 手。",
+    )
+    add_tab(
+        ["离期货", "市场认购期望", "他已到期的认购", "市场认沽期望", "他已到期的认沽"],
+        [
+            ["3–7%", "-0.59%", "未到期", "-0.52%", "未到期"],
+            ["7–12%", "-0.32%", "+0.06% · 38手", "-0.24%", "+0.03% · 27手"],
+            ["12–17%", "-0.07%", "+0.02% · 2手", "+0.10%", "+0.03% · 17手"],
+            ["17–25%", "+0.17%", "+0.20% · 18手", "+0.17%", "+0.24% · 7手"],
+            ["25–40%", "+0.09%", "未到期", "+0.14%", "—"],
+            ["40–80%", "+0.00%", "未到期", "+0.05%", "—"],
+        ],
+        "他已到期的短宽跨式，和全市场同一档的期望。他的数字等于权利金，因为这些手全部归零。",
+    )
+    prof.para(
+        doc,
+        "462 手里有 353 手到 11 月 6 日还没到期，不进上一张表的期望。下面是他卖出时实际收进的权利金，未到期的也算在内，对照的是市场同档有成交合约的平均权利金。"
+        "还开着的里面，高于市场同档的是 25% 到 40% 外的认购，他卖在 1.07%，市场同档 0.26%；以及 3% 到 7% 外的认沽，他卖在 1.70%，市场同档 0.63%。这两处都还没走到到期。",
+    )
+    add_tab(
+        ["离期货", "市场认购权利金", "他卖出的认购", "市场认沽权利金", "他卖出的认沽"],
+        [
+            ["3–7%", "0.77%", "0.12% · 30手", "0.63%", "1.70% · 9手"],
+            ["7–12%", "0.53%", "0.37% · 62手", "0.25%", "0.28% · 85手"],
+            ["12–17%", "0.48%", "0.53% · 76手", "0.27%", "0.27% · 32手"],
+            ["17–25%", "0.51%", "0.51% · 43手", "0.21%", "0.69% · 63手"],
+            ["25–40%", "0.26%", "1.07% · 25手", "0.15%", "—"],
+            ["40–80%", "0.14%", "0.48% · 37手", "0.05%", "—"],
+        ],
+        "权利金是期货价格的百分比。他的一列按手数加权，含尚未到期的卖开。",
+    )
+
+
+def _nd1(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def _bs_greeks(fut: float, strike: float, sigma: float, tenor: float, cp: str):
+    """Black-76 price, delta in futures lots, vega per vol point, theta per day."""
+    vol = sigma * math.sqrt(tenor)
+    if vol <= 0 or fut <= 0 or strike <= 0:
+        return None
+    d1 = (math.log(fut / strike) + 0.5 * sigma * sigma * tenor) / vol
+    d2 = d1 - vol
+    dens = _nd1(d1)
+    if cp == "C":
+        price = fut * _ncdf(d1) - strike * _ncdf(d2)
+        delta = _ncdf(d1)
+    else:
+        price = strike * _ncdf(-d2) - fut * _ncdf(-d1)
+        delta = _ncdf(d1) - 1.0
+    vega = fut * dens * math.sqrt(tenor) / 100.0
+    theta = -fut * dens * sigma / (2.0 * math.sqrt(tenor)) / 365.0
+    return price, delta, vega, theta
+
+
+def _cn_name(code: str) -> str:
+    name = prof.pname(code)
+    parts = str(name).split()
+    return parts[-1] if len(parts) > 1 else str(name)
+
+
+def _wan(x: float) -> str:
+    sign = "+" if x > 0 else ""
+    return f"{sign}{x / 10000:.1f}万"
+
+
+def _money(x: float) -> str:
+    return f"{x:+,.0f}"
+
+
+def _gloss(doc, key: str, text: str) -> None:
+    p = prof.para(doc, "", space_after=1, space_before=1)
+    prof.add_text(p, key, size=12, bold=True, color=prof.NAVY)
+    prof.add_text(p, "    " + text, size=11, color=prof.TEXT)
+
+
+def exposure_facts() -> dict:
+    """Yuan risk of the option book through 3 Nov 2026, from Black-76.
+
+    Exchange theta and vega are not in yuan. The amounts here are a reprice:
+    that day's option close against that day's futures, same volatility, no rates.
+    A move is every underlying shifting by the same percent. Gamma is the reprice
+    after the delta piece is taken out.
+    """
+    end = pd.Timestamp("2026-11-03")
+    shocks = (-0.08, -0.05, -0.03, -0.01, 0.01, 0.03, 0.05, 0.08)
+    conn = get_conn()
+    try:
+        raw = base.load_account(conn)
+        opt = base.prof.read_sql(conn, """
+            SELECT trade_date::date AS dt, contract, close::float8 AS px, volume::float8 AS volume
+            FROM raw_options_contracts_daily
+            WHERE trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-06'
+        """)
+        fut = base.prof.read_sql(conn, """
+            SELECT trade_date::date AS dt, contract, COALESCE(clear, close)::float8 AS px
+            FROM raw_futures_contracts_daily
+            WHERE trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-06'
+        """)
+    finally:
+        conn.close()
+    pos = raw["opt_pos"]
+    pos = pos[pos["dt"] <= end].copy()
+    trades = raw["opt_trades"]
+    trades = trades[trades["dt"] <= end]
+    mult = base.multipliers(trades)
+    opt["dt"] = pd.to_datetime(opt["dt"])
+    opt["code"] = opt["contract"].map(base.norm_code)
+    opt["px"] = pd.to_numeric(opt["px"], errors="coerce")
+    opt = opt[opt["px"] > 0].sort_values("volume", ascending=False).drop_duplicates(["dt", "code"])
+    fut["dt"] = pd.to_datetime(fut["dt"])
+    fut["code"] = fut["contract"].map(base.norm_code)
+    fut["px"] = pd.to_numeric(fut["px"], errors="coerce")
+    fut = fut[fut["px"] > 0].drop_duplicates(["dt", "code"])
+    fut_map = {(r.dt, r.code): float(r.px) for r in fut.itertuples(index=False)}
+    pos = pos.merge(opt[["dt", "code", "px"]], on=["dt", "code"], how="left")
+    pos["mark"] = pos["px"]
+    settl = pd.to_numeric(pos["settl"], errors="coerce")
+    miss = pos["mark"].isna() & (settl > 0)
+    pos.loc[miss, "mark"] = settl[miss]
+    both = (pos["long_lots"].fillna(0) > 0) & (pos["short_lots"].fillna(0) > 0)
+    pos = pos.loc[~both].copy()
+    pos["lots"] = pos["long_lots"].fillna(0) + pos["short_lots"].fillna(0)
+    pos["qty"] = np.where(pos["short_lots"].fillna(0) > 0, -pos["lots"], pos["lots"])
+    rows = []
+    for r in pos.itertuples(index=False):
+        mark = float(r.mark) if pd.notna(r.mark) else float("nan")
+        if not (mark > 0):
+            continue
+        fpx = None
+        for k in base.fut_lookup_keys(r.product, r.month):
+            fpx = fut_map.get((r.dt, k))
+            if fpx:
+                break
+        if not fpx:
+            continue
+        exp = option_expiry(r.product, r.month)
+        if exp is None:
+            continue
+        dte = (pd.Timestamp(exp).date() - pd.Timestamp(r.dt).date()).days
+        if dte < 2:
+            continue
+        tenor = dte / 365.0
+        sigma = _implied_vol(fpx, float(r.strike), tenor, mark, r.cp)
+        if not (0.02 < sigma < 3.0):
+            continue
+        g = _bs_greeks(fpx, float(r.strike), sigma, tenor, r.cp)
+        m = float(mult.get(r.product, float("nan")))
+        if g is None or not math.isfinite(m):
+            continue
+        model, delta, vega, theta = g
+        qty = float(r.qty)
+        strike = float(r.strike)
+        shock = {}
+        for s in shocks:
+            moved = _bs_greeks(fpx * (1.0 + s), strike, sigma, tenor, r.cp)
+            full = qty * (moved[0] - model) * m
+            shock[s] = full - qty * delta * (fpx * s) * m
+        wider = _bs_greeks(fpx, strike, sigma + 0.10, tenor, r.cp)
+        rows.append({
+            "dt": pd.Timestamp(r.dt),
+            "product": r.product,
+            "cp": r.cp,
+            "lots": float(r.lots),
+            "fpx": fpx,
+            "strike": strike,
+            "mark": mark,
+            "mult": m,
+            "qty": qty,
+            "sigma": sigma,
+            "tenor": tenor,
+            "delta_lots": qty * delta,
+            "delta_1pct": qty * delta * (fpx * 0.01) * m,
+            "theta_yuan": qty * theta * m,
+            "vega_yuan": qty * vega * m,
+            "prem_yuan": -qty * mark * m,
+            "vol10": qty * (wider[0] - model) * m,
+            "long": qty > 0,
+            **{f"s{int(s * 100)}": shock[s] for s in shocks},
+        })
+    df = pd.DataFrame(rows)
+    last = df["dt"].max()
+    sub = df[df["dt"] == last]
+    held = pos[pos["dt"] == last]
+    held_lots = held.groupby("product")["lots"].sum()
+    priced = sub.groupby("product")["lots"].sum()
+    missing = [_cn_name(p) for p, n in held_lots.items() if n >= 10 and float(priced.get(p, 0)) <= 0]
+    by = sub.groupby("product").agg(opt=("delta_lots", "sum"), lots=("lots", "sum"))
+    fp = raw["fut_pos"].copy()
+    fp["dt"] = pd.to_datetime(fp["dt"])
+    fp = fp[fp["dt"] == last]
+    fp = fp.loc[fp["contract"].map(lambda c: base.parse_contract(c) is None)].copy()
+    fp["product"] = fp["contract"].map(base.prof.product_code)
+    fp["net"] = fp["long_lots"].fillna(0) - fp["short_lots"].fillna(0)
+    fut_px = {r.code: float(r.px) for r in fut[fut["dt"] == last].itertuples(index=False)}
+    fut_rows = []
+    for prod, net in fp.groupby("product")["net"].sum().items():
+        yuan = 0.0
+        m = float(mult.get(prod, float("nan")))
+        for c in fp[fp["product"] == prod].itertuples(index=False):
+            px = fut_px.get(base.norm_code(c.contract))
+            if px and math.isfinite(m):
+                yuan += float(c.net) * px * 0.01 * m
+        fut_rows.append((prod, float(net), yuan))
+    day = df.groupby("dt").agg(
+        theta=("theta_yuan", "sum"),
+        vega=("vega_yuan", "sum"),
+        prem=("prem_yuan", "sum"),
+    ).sort_index()
+    sc = [f"s{int(s * 100)}" for s in shocks]
+    gamma = sub[sc].sum()
+    long = sub[sub["long"]]
+
+    def _expiry_yuan(frame, new_f) -> float:
+        total = 0.0
+        for rec in frame.itertuples(index=False):
+            spot = new_f(rec)
+            if rec.cp == "C":
+                intrinsic = max(0.0, spot - rec.strike)
+            else:
+                intrinsic = max(0.0, rec.strike - spot)
+            total += rec.qty * (intrinsic - rec.mark) * rec.mult
+        return total
+
+    near_call = sub.loc[sub["cp"].eq("C")].groupby("product")["strike"].min()
+    near_put = sub.loc[sub["cp"].eq("P")].groupby("product")["strike"].max()
+    expiry = {
+        "up10": _expiry_yuan(sub, lambda rec: rec.fpx * 1.10),
+        "dn10": _expiry_yuan(sub, lambda rec: rec.fpx * 0.90),
+        "up15": _expiry_yuan(sub, lambda rec: rec.fpx * 1.15),
+        "dn15": _expiry_yuan(sub, lambda rec: rec.fpx * 0.85),
+        "sig1_up": _expiry_yuan(sub, lambda rec: rec.fpx * (1.0 + rec.sigma * math.sqrt(rec.tenor))),
+        "sig2_up": _expiry_yuan(sub, lambda rec: rec.fpx * (1.0 + 2.0 * rec.sigma * math.sqrt(rec.tenor))),
+        "sig2_dn": _expiry_yuan(sub, lambda rec: rec.fpx * (1.0 - 2.0 * rec.sigma * math.sqrt(rec.tenor))),
+        "thru_call": _expiry_yuan(sub, lambda rec: float(near_call.get(rec.product, rec.fpx)) * 1.05),
+        "thru_put": _expiry_yuan(sub, lambda rec: float(near_put.get(rec.product, rec.fpx)) * 0.95),
+    }
+    by_dn = {}
+    for rec in sub.itertuples(index=False):
+        spot = rec.fpx * (1.0 - 2.0 * rec.sigma * math.sqrt(rec.tenor))
+        intrinsic = max(0.0, rec.strike - spot) if rec.cp == "P" else max(0.0, spot - rec.strike)
+        by_dn[rec.product] = by_dn.get(rec.product, 0.0) + rec.qty * (intrinsic - rec.mark) * rec.mult
+    expiry["by_sig2_dn"] = sorted(by_dn.items(), key=lambda kv: kv[1])[:6]
+    facts = {
+        "last": last,
+        "priced_lots": float(sub["lots"].sum()),
+        "held_lots": float(held["lots"].sum()),
+        "missing": "、".join(missing),
+        "opt_delta": float(sub["delta_lots"].sum()),
+        "opt_1pct": float(sub["delta_1pct"].sum()),
+        "by": by,
+        "fut_rows": fut_rows,
+        "fut_1pct": float(sum(y for _p, _n, y in fut_rows)),
+        "theta": float(sub["theta_yuan"].sum()),
+        "theta_long": float(long["theta_yuan"].sum()) if not long.empty else 0.0,
+        "vega": float(sub["vega_yuan"].sum()),
+        "prem": float(sub["prem_yuan"].sum()),
+        "vol10": float(sub["vol10"].sum()),
+        "expiry": expiry,
+        "day": day,
+        "gamma_x": [int(s * 100) for s in shocks],
+        "gamma_y": [float(gamma[c]) for c in sc],
+    }
+    facts["charts"] = _exposure_charts(facts)
+    return facts
+
+
+def _exposure_charts(facts: dict) -> dict[str, Path]:
+    prof.configure_matplotlib()
+    out = OUT / "charts"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def _clean(ax):
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.tick_params(labelsize=9)
+
+    by = facts["by"]
+    fut_map = {p: n for p, n, _y in facts["fut_rows"]}
+    keep = []
+    rest = 0.0
+    for prod, row in by.sort_values("opt", key=lambda s: s.abs(), ascending=False).iterrows():
+        if prod in fut_map or abs(float(row["opt"])) >= 0.4:
+            keep.append(prod)
+        else:
+            rest += float(row["opt"])
+    order = [p for p in keep if p in fut_map] + [p for p in keep if p not in fut_map]
+    labels = [_cn_name(p) for p in order] + ["其余"]
+    opt_v = [float(by.loc[p, "opt"]) for p in order] + [rest]
+    fut_v = [float(fut_map.get(p, 0.0)) for p in order] + [0.0]
+    y = np.arange(len(labels))
+    h = 0.36
+    fig, ax = plt.subplots(figsize=(8.2, 4.6))
+    ax.barh(y + h / 2, opt_v, h, color=prof.C_NAVY, label="期权")
+    ax.barh(y - h / 2, fut_v, h, color=prof.C_GOLD, label="期货")
+    ax.axvline(0, color="#1A202C", lw=0.8)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("净 delta（手）    正数 = 上涨赚钱")
+    ax.set_title("方向：期权很小，期货空头才大")
+    ax.legend(frameon=False, loc="lower right")
+    _clean(ax)
+    fig.tight_layout()
+    delta_path = out / "exposure_delta.png"
+    fig.savefig(delta_path, dpi=140)
+    plt.close(fig)
+
+    day = facts["day"]
+    labels_d = [pd.Timestamp(t).strftime("%m-%d") for t in day.index]
+    x = np.arange(len(day))
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.2))
+    ax.bar(x, day["theta"], color=prof.C_RED, width=0.72)
+    ax.axhline(0, color="#1A202C", lw=0.6)
+    last_i = len(day) - 1
+    ax.annotate(
+        _money(float(day["theta"].iloc[-1])),
+        (last_i, float(day["theta"].iloc[-1])),
+        textcoords="offset points", xytext=(0, 6), ha="center", color=prof.C_RED, fontsize=10,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels_d, rotation=45, ha="right")
+    ax.set_ylabel("元 / 天")
+    ax.set_title("时间：仓位变大，每天收得更多")
+    _clean(ax)
+    fig.tight_layout()
+    theta_path = out / "exposure_theta.png"
+    fig.savefig(theta_path, dpi=140)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.2, 4.2))
+    ax.bar(x, day["vega"], color=prof.C_GREEN, width=0.72)
+    ax.axhline(0, color="#1A202C", lw=0.6)
+    ax.annotate(
+        _money(float(day["vega"].iloc[-1])),
+        (last_i, float(day["vega"].iloc[-1])),
+        textcoords="offset points", xytext=(-8, 8), ha="right", color=prof.C_GREEN, fontsize=10,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels_d, rotation=45, ha="right")
+    ax.set_ylabel("元    隐波上升 1 个点")
+    ax.set_title("波动：隐波升 1 个点就亏")
+    _clean(ax)
+    fig.tight_layout()
+    vega_path = out / "exposure_vega.png"
+    fig.savefig(vega_path, dpi=140)
+    plt.close(fig)
+
+    xs = [0] + facts["gamma_x"]
+    ys = [0.0] + facts["gamma_y"]
+    order_i = np.argsort(xs)
+    xs = [xs[i] for i in order_i]
+    ys = [ys[i] for i in order_i]
+    fig, ax = plt.subplots(figsize=(8.2, 4.4))
+    ax.fill_between(xs, ys, 0, color=prof.C_GREEN, alpha=0.25)
+    ax.plot(xs, ys, color=prof.C_NAVY, lw=2.2, marker="o", markersize=5)
+    ax.axhline(0, color="#1A202C", lw=0.8)
+    for pct in (-5, 5):
+        yv = ys[xs.index(pct)]
+        ax.annotate(_wan(yv), (pct, yv), textcoords="offset points", xytext=(0, -16), ha="center", fontsize=11, color=prof.C_NAVY, fontweight="bold")
+    ax.set_xlabel("每个品种的期货，同向变动 %")
+    ax.set_ylabel("元    已去掉方向")
+    ax.set_title("加速度：涨也亏，跌也亏，动得越大亏得越快")
+    _clean(ax)
+    fig.tight_layout()
+    gamma_path = out / "exposure_gamma.png"
+    fig.savefig(gamma_path, dpi=140)
+    plt.close(fig)
+    rank_path = _exposure_rank_chart(facts, out)
+    return {
+        "delta": delta_path,
+        "theta": theta_path,
+        "vega": vega_path,
+        "gamma": gamma_path,
+        "rank": rank_path,
+    }
+
+
+def _exposure_rank_chart(facts: dict, out: Path) -> Path:
+    """Four bars, one yuan scale. The longest bar is the largest exposure.
+
+    Delta is the account: option delta plus the futures shorts, for a 1% rise.
+    Gamma is only the bend in that same 1% move. Vega is a 1-point vol rise.
+    Theta is one calendar day.
+    """
+    g = dict(zip(facts["gamma_x"], facts["gamma_y"]))
+    delta = facts["fut_1pct"] + facts["opt_1pct"]
+    rows = [
+        ("Delta", delta),
+        ("Theta", facts["theta"]),
+        ("Vega", facts["vega"]),
+        ("Gamma", g[1]),
+    ]
+    facts["rank_rows"] = rows
+    facts["delta_1pct_net"] = delta
+    facts["gamma_1"] = g[1]
+    facts["delta_5"] = delta * 5
+    facts["gamma_5"] = g[5]
+    labels = [name for name, _v in rows]
+    vals = [v for _n, v in rows]
+    y = np.arange(len(rows))
+    fig, ax = plt.subplots(figsize=(8.2, 4.4))
+    colors = [prof.C_RED if v > 0 else prof.C_GREEN for v in vals]
+    ax.barh(y, vals, color=colors, height=0.55)
+    span = max(abs(v) for v in vals)
+    ax.set_xlim(-span * 1.45, span * 0.85)
+    for i, v in enumerate(vals):
+        ax.annotate(
+            _wan(v),
+            (v, i),
+            textcoords="offset points",
+            xytext=(6 if v >= 0 else -6, 0),
+            va="center",
+            ha="left" if v >= 0 else "right",
+            fontsize=13,
+            fontweight="bold",
+            color=colors[i],
+        )
+    ax.axvline(0, color="#1A202C", lw=0.8)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=16, fontweight="bold")
+    ax.invert_yaxis()
+    ax.set_xlabel("元     左是亏，右是赚")
+    ax.set_title("Delta    Theta    Vega    Gamma")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(axis="x", labelsize=9)
+    fig.tight_layout()
+    path = out / "exposure_rank.png"
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    return path
+
+
+def write_exposure(doc, add_fig, add_tab) -> None:
+    """Opening: what he is paid, and the size of each greek. Charts carry the logic."""
+    f = exposure_facts()
+    fut_bits = "，".join(f"{_cn_name(p)} {n:+.0f} 手" for p, n, _y in f["fut_rows"])
+    g = dict(zip(f["gamma_x"], f["gamma_y"]))
+    prof.heading(doc, "他在赚哪一种钱", 1)
+    _gloss(doc, "赚", "权利金")
+    _gloss(doc, "方向", "期权两翼对掉。下跌在期货空头")
+    _gloss(doc, "时间", "正 theta。标的不动，他就收费")
+    _gloss(doc, "风险", "短 vega。短 gamma")
+    add_tab(
+        ["项目", "怎么暴露", "11 月 3 日"],
+        [
+            ["Delta  方向", "卖远翼，两翼对掉", f"期权 {f['opt_delta']:+.1f} 手"],
+            ["", "期货另做空", "，".join(f"{n:+.0f} {_cn_name(p)}" for p, n, _y in f["fut_rows"])],
+            ["Theta  时间", "卖出期权，时间掉价", f"{f['theta']:+,.0f} 元/天"],
+            ["Vega  波动", "卖出波动，隐波变贵", f"{f['vega']:+,.0f} 元 / 升1点"],
+            ["Gamma  加速度", "卖在区间外，走远亏加速", f"{g[-5]:+,.0f} / {g[5]:+,.0f}"],
+        ],
+        "11 月 3 日的四项。金额是元。加速度一行先是同向跌 5%，再是同向涨 5%。",
+    )
+    prof.heading(doc, "哪一项最大", 2)
+    add_fig(
+        f["charts"]["rank"],
+        "四根柱：Delta、Theta、Vega、Gamma。红是赚，绿是亏。柱越长，这一项越大。"
+        "Delta 是价格涨 1%，含期货空头。Vega 是隐波升 1 点。Theta 是过 1 天。Gamma 是这 1% 里面的弯曲。",
+    )
+    _gloss(doc, "最大", f"Delta。涨 1% {_wan(f['delta_1pct_net'])}。含期货空头。")
+    _gloss(doc, "其次", f"Vega。隐波升 1 点 {_wan(f['vega'])}。")
+    _gloss(doc, "进账", f"Theta。过 1 天 {_wan(f['theta'])}。")
+    _gloss(doc, "类型", f"方向空头。Gamma 只有 {_wan(f['gamma_1'])}。走到 5%，Gamma {_wan(f['gamma_5'])}，Delta {_wan(f['delta_5'])}，仍是 Delta。")
+    prof.heading(doc, "Delta · 方向", 2)
+    _gloss(doc, "手段", "卖远翼。认购的空和认沽的多对掉。")
+    _gloss(doc, "另外", "碳酸锂、生猪另有期货空头。这是下跌敞口。")
+    add_fig(f["charts"]["delta"], "11 月 3 日的方向。海军蓝是期权，金色是期货。单位是手。")
+    _gloss(doc, "数字", f"期权 {f['opt_delta']:+.1f} 手。期货 {fut_bits}。")
+    _gloss(doc, "涨 1%", f"期权 {_wan(f['opt_1pct'])}。期货 {_wan(f['fut_1pct'])}。")
+
+    prof.heading(doc, "Theta · 时间", 2)
+    _gloss(doc, "手段", "空头拿着。时间过去，权利金掉进账户。")
+    add_fig(f["charts"]["theta"], "每天收进的时间价值。红柱是进账。")
+    wing = abs(f["theta_long"])
+    _gloss(doc, "数字", f"11 月 3 日 {f['theta']:+,.0f} 元。买近翼减掉 {wing:,.0f} 元，减完仍是正的。")
+
+    prof.heading(doc, "Vega · 波动", 2)
+    _gloss(doc, "手段", "卖出的是波动。隐波上升，空头变贵。")
+    add_fig(f["charts"]["vega"], "隐含波动上升 1 个点的盈亏。绿柱是亏。")
+    _gloss(doc, "数字", f"11 月 3 日 {f['vega']:+,.0f} 元。")
+
+    prof.heading(doc, "Gamma · 加速度", 2)
+    _gloss(doc, "手段", "卖在两个行权价外面。走远以后亏加速，不封顶。")
+    _gloss(doc, "买翼", "更近、更少。封不住卖出腿。")
+    add_fig(f["charts"]["gamma"], "11 月 3 日，各品种期货同向变动。方向已经去掉，只留弯曲。绿区是亏。")
+    _gloss(doc, "数字", f"同向 5%。跌 {_wan(g[-5])}，涨 {_wan(g[5])}。")
+    _gloss(doc, "不含", "期货。期货空头在下跌时是赚的，那一截在方向那张图。")
+    prof.para(
+        doc,
+        f"计价用 Black-76。当天期权收盘，对当天期货价。11 月 3 日持仓 {f['held_lots']:.0f} 手，算进 {f['priced_lots']:.0f} 手。"
+        + (f"{f['missing']}当天没有期货价。" if f["missing"] else "")
+        + "样本到 11 月 3 日。",
+        size=9, color=prof.MUTED, space_after=8,
+    )
+
+
 def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, fut_lots, fut_sell, fut_buy, example, buckets, cases, dte, logic, opt) -> None:
     doc = Document()
     sec = doc.sections[0]
@@ -1848,6 +2553,8 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
     yuan = strike.get("prem_yuan") or {}
     delta = strike.get("abs_delta") or {}
     ex = strangle_payoff()
+
+    write_exposure(doc, add_fig, add_tab)
 
     prof.heading(doc, "结论", 1)
     prof.para(
@@ -1978,6 +2685,10 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
         f"{CAT_RATIO} {buckets['one_wing']:.0f} 手；"
         f"{CAT_NAKED} {buckets['one_naked']:.0f} 手，其中认购 {buckets['one_call']:.0f} 手、认沽 {buckets['one_put']:.0f} 手。"
         "行权价卡的是虚值距离，不是一张固定的权利金。",
+    )
+    add_fig(
+        four_type_pie(buckets),
+        "四块卖开手数占全部卖开的比例。四块相加等于全部卖开。",
     )
     if buckets.get("buy_nearer") and buckets.get("buy_smaller"):
         prof.para(
@@ -2400,6 +3111,7 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
         "选品种的模型打中三成，高于随机，还不能按名单逐个下单。"
         + intraday_close,
     )
+    write_expiry_compare(doc, add_tab, add_fig)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         doc.save(path)

@@ -177,12 +177,8 @@ export async function runNanhuaPostcloseEtl(options?: { force?: boolean }): Prom
     if (stdout?.trim()) console.log("[nanhua-postclose-etl]", stdout.slice(-2000))
     if (stderr?.trim()) console.warn("[nanhua-postclose-etl]", stderr.slice(-2000))
 
-    // Drop stale MOM briefing / signal caches so 持仓截面 tracks new NHCI+positions.
-    clearTodayMomCache("quant-vs-subjective")
-    clearTodayMomCache("warm-cache")
-    // Rolling-vol chart reads these; omitting them left NHCI truncated after ETL.
-    clearTodayMomCache("benchmark")
-    clearTodayMomCache("product-nav")
+    // Drop today's MOM chart cache so 持仓 / VaR / 净值 rebuild against the new session.
+    clearTodayMomCache()
 
     job.status = "done"
     job.finishedAt = Date.now()
@@ -191,7 +187,7 @@ export async function runNanhuaPostcloseEtl(options?: { force?: boolean }): Prom
     // Otherwise afternoon retries (15:35/16:30/17:45/19:00) must keep running —
     // EmQuant often publishes after the first post-close attempt.
     try {
-      const asOf = await loadMomNhciAsOf()
+      const asOf = await loadMomNhciAsOf({ bypassCache: true })
       if (nhciLagsPosition(asOf)) {
         job.message = `partial: NHCI ${asOf.nhciAsOf || "null"} lags positions ${asOf.positionAsOf || "null"}`
         // Do NOT setLastSuccessAt — allow next cron tick to retry within 4h.

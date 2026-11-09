@@ -12,6 +12,16 @@ import {
   Upload,
   X,
 } from "lucide-react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 type ExtractedFundElements = {
   fund_name: string | null
@@ -475,6 +485,9 @@ export function OperationsElementExtractBatchPanel() {
   const [savingExtracted, setSavingExtracted] = useState(false)
   const [unregisteredName, setUnregisteredName] = useState("")
   const [unregisteredBeian, setUnregisteredBeian] = useState("")
+  const [deleteTarget, setDeleteTarget] = useState<ExtractJob | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const activeJob = useMemo(
     () => jobs.find((job) => job.id === activeJobId) ?? null,
@@ -703,6 +716,33 @@ export function OperationsElementExtractBatchPanel() {
     await loadJobs()
   }
 
+  function askDeleteJob(job: ExtractJob) {
+    setDeleteError(null)
+    setDeleteTarget(job)
+  }
+
+  async function confirmDeleteJob() {
+    if (!deleteTarget || deleting) return
+    const job = deleteTarget
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      const res = await fetch(`/ma/api/ops/fund-elements/jobs/${job.id}`, { method: "DELETE" })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || json.error) throw new Error(json.error || "删除失败")
+      if (activeJobId === job.id) {
+        setActiveJobId(null)
+        cancelEditExtracted()
+      }
+      setDeleteTarget(null)
+      await loadJobs()
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "删除失败")
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   function cancelEditExtracted() {
     setEditingExtracted(false)
     setEditDraft(null)
@@ -825,7 +865,7 @@ export function OperationsElementExtractBatchPanel() {
       })
       const json = await res.json()
       if (!res.ok || json.error) throw new Error(json.error || "写入失败")
-      setApplyMessage(`已写入并保存合同到「${selectedFund.product_name}」`)
+      setApplyMessage(`已写入「${selectedFund.product_name}」。共同要素已同步到母基金和各份额；合同中的分级费率按份额分别写入。`)
       await Promise.all([loadJobs(), loadCoverage()])
     } catch (err) {
       setApplyMessage(err instanceof Error ? err.message : "写入失败")
@@ -1065,7 +1105,7 @@ export function OperationsElementExtractBatchPanel() {
             <PlusCircle className="h-10 w-10 text-muted-foreground/40 mb-2" strokeWidth={1} />
             <span className="text-sm text-foreground mb-1">将文件拖到此处，或点击上传（可多选）</span>
             <span className="text-xs text-muted-foreground">
-              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份。内容相同的文件会直接跳过，不另建任务。上传后后台提取并写入空缺要素。
+              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 20MB，最多 {MAX_FILES} 份。内容相同的文件会直接跳过，不另建任务。上传后后台提取并写入空缺要素。共同要素写入母基金和 A/B/C 份额；合同没有分级费率时，仍把共同要素写入各份额。
             </span>
             <input
               ref={fileInputRef}
@@ -1225,7 +1265,7 @@ export function OperationsElementExtractBatchPanel() {
                   <td className="px-3 py-2 text-xs text-muted-foreground truncate max-w-[240px]" title={jobRemark(job)}>
                     {jobRemark(job)}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       {job.beian_hao ? (
                         <a
@@ -1271,6 +1311,16 @@ export function OperationsElementExtractBatchPanel() {
                           {job.status === "applied" ? "重新提取" : "重试"}
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          askDeleteJob(job)
+                        }}
+                        className="text-xs text-red-600 hover:underline"
+                      >
+                        删除
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -1514,6 +1564,39 @@ export function OperationsElementExtractBatchPanel() {
           </div>
         </div>
       )}
+
+      <AlertDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !deleting) {
+            setDeleteTarget(null)
+            setDeleteError(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除这条提取任务？</AlertDialogTitle>
+            <AlertDialogDescription>
+              「{deleteTarget?.original_filename || "未命名文件"}」会从列表中移除，对应的上传文件也会删除。已经写入产品的要素和合同资料会保留。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError ? <p className="text-sm text-red-600">{deleteError}</p> : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 hover:bg-red-700"
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault()
+                void confirmDeleteJob()
+              }}
+            >
+              {deleting ? "删除中…" : "删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

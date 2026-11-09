@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useTheme } from "next-themes"
 import { ChevronDown, ChevronRight, ChevronUp, Folder, FolderOpen, GripVertical, Plus, Search, X } from "lucide-react"
 
 import { AccountAvatarCard } from "@/components/ma/account-avatar-card"
+import { NotificationSettingsPanel } from "@/components/ma/notification-settings-panel"
 import { AccountChartSlot } from "@/components/ma/account-chart-slot"
 import { AccountShortcutsCard } from "@/components/ma/account-shortcuts-card"
 import { UserAvatar } from "@/components/ma/user-avatar"
@@ -121,13 +123,21 @@ function saveLabel(state: SaveState): string {
   return ""
 }
 
+type AccountSection = "general" | "notifications"
+
 export default function AccountDashboardPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const { setTheme } = useTheme()
   const [user, setUser] = useState<User | null>(null)
   const [prefs, setPrefs] = useState<AccountDashboardPrefs | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<SaveState>("idle")
   const [tab, setTab] = useState("board")
+  const [accountSection, setAccountSection] = useState<AccountSection>("general")
+  const urlSection = searchParams.get("section") === "notifications" ? "notifications" : null
+  const shownTab = searchParams.get("tab") === "account" || urlSection === "notifications" ? "account" : tab
+  const shownSection: AccountSection = urlSection ?? accountSection
   const [editingLayout, setEditingLayout] = useState(false)
   const [chartQuery, setChartQuery] = useState("")
   const chartSearchRef = useRef<HTMLInputElement>(null)
@@ -439,7 +449,20 @@ export default function AccountDashboardPage() {
       ) : !prefs ? (
         <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">正在读取这个账号的看板…</div>
       ) : (
-        <Tabs value={tab} onValueChange={setTab}>
+        <Tabs
+          value={shownTab}
+          onValueChange={(next) => {
+            setTab(next)
+            if (next !== "account") {
+              if (searchParams.get("tab") || searchParams.get("section")) router.replace("/ma/dashboard/account")
+              return
+            }
+            const params = new URLSearchParams()
+            params.set("tab", "account")
+            if (accountSection === "notifications") params.set("section", "notifications")
+            router.replace(`/ma/dashboard/account?${params.toString()}`)
+          }}
+        >
           <TabsList>
             <TabsTrigger value="board">看板</TabsTrigger>
             <TabsTrigger value="charts">图表订阅</TabsTrigger>
@@ -985,7 +1008,38 @@ export default function AccountDashboardPage() {
             />
           </TabsContent>
 
-          <TabsContent value="account" className="mt-4 space-y-6">
+          <TabsContent value="account" className="mt-4">
+            <div className="flex items-start gap-8">
+              <nav className="w-36 shrink-0 space-y-1">
+                {([
+                  ["general", "通用设置"],
+                  ["notifications", "提醒设置"],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      setAccountSection(id)
+                      const params = new URLSearchParams(window.location.search)
+                      params.set("tab", "account")
+                      if (id === "notifications") params.set("section", "notifications")
+                      else params.delete("section")
+                      router.replace(`/ma/dashboard/account?${params.toString()}`)
+                    }}
+                    className={cn(
+                      "w-full rounded-md px-3 py-2 text-left text-sm",
+                      shownSection === id ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/60",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </nav>
+              <div className="min-w-0 flex-1">
+                {shownSection === "notifications" ? (
+                  <NotificationSettingsPanel />
+                ) : (
+                  <div className="space-y-6">
             <AccountShortcutsCard
               user={user}
               shortcuts={prefs.shortcuts}
@@ -1055,7 +1109,11 @@ export default function AccountDashboardPage() {
                 </Button>
                 {passwordMsg && <span className="text-xs text-muted-foreground">{passwordMsg}</span>}
               </div>
-            </section>
+              </section>
+            </div>
+                  </div>
+                )}
+              </div>
             </div>
           </TabsContent>
         </Tabs>

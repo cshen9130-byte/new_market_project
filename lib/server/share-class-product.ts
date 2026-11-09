@@ -494,3 +494,44 @@ export async function ensureShareClassBeianProduct(beianHao: string): Promise<{
 
   return null
 }
+
+function productRowIsShareClass(beian: string, productName: string): boolean {
+  if (/[ABC]类(?:份额)?$/u.test(productName.trim())) return true
+  return /[ABC]$/u.test(beian.trim().toUpperCase())
+}
+
+/** Parent filing behind a share-class code. A share row is not used as the parent. */
+async function resolveFamilyMainBeian(beianHao: string): Promise<string | null> {
+  const raw = String(beianHao ?? "").trim()
+  if (!raw) return null
+  const candidates = [...new Set([raw, ...shareClassParentBeianCodes(raw)])]
+  for (const code of candidates) {
+    const main = await loadMainProduct(code)
+    if (!main) continue
+    if (!productRowIsShareClass(main.beian_hao, main.product_name)) return main.beian_hao
+  }
+  return null
+}
+
+/**
+ * Materialize A/B/C rows for classes the contract defines, so 要素提取 can fill them
+ * together with the mother fund. Existing rows are left in place.
+ */
+export async function ensureFamilyShareClasses(
+  beianHao: string,
+  letters: ShareClassLetter[],
+): Promise<void> {
+  const wanted = [...new Set(letters)].filter((letter): letter is ShareClassLetter =>
+    SHARE_CLASS_OPTIONS.includes(letter),
+  )
+  if (!wanted.length) return
+  const mainCode = await resolveFamilyMainBeian(beianHao)
+  if (!mainCode) return
+  for (const letter of wanted) {
+    const result = await createShareClassProduct({
+      main_beian_hao: mainCode,
+      share_class: letter,
+    })
+    if ("error" in result && result.error === "main_not_found") return
+  }
+}

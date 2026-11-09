@@ -754,6 +754,22 @@ export default function FuturesMarketPage({ part }: { part?: FuturesChartPart } 
 
   useEffect(() => { reloadChoiceHeatmap(true) }, [])
 
+  useEffect(() => {
+    const hash = window.location.hash.replace(/^#/, "")
+    if (!hash) return
+    let stopped = false
+    const scroll = () => {
+      if (stopped) return
+      document.getElementById(hash)?.scrollIntoView({ block: "start" })
+    }
+    scroll()
+    const timers = [300, 800, 1600, 2800].map((ms) => window.setTimeout(scroll, ms))
+    return () => {
+      stopped = true
+      timers.forEach((id) => window.clearTimeout(id))
+    }
+  }, [])
+
   useEffect(() => { reloadFutLatest(true) }, [])
   const show = (id: FuturesChartPart) => !part || part === id
   const forcedTab = part ? (EQUITY_PARTS.has(part) ? "equity" : "commodity") : null
@@ -1843,7 +1859,7 @@ export default function FuturesMarketPage({ part }: { part?: FuturesChartPart } 
       </div>}
       </div>}
 
-      {show("amount") && <div className="w-full">
+      {show("amount") && <div id="section-futures-amount" className="w-full scroll-mt-4">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">

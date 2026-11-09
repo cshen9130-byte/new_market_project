@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { isWeekendIsoDate } from "@/lib/nav-trading-day"
 import { getCustomFundByCode, tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
+import { publicEnhancedIndexDetailResponse } from "@/lib/server/public-enhanced-index-fund"
 import { ensureCustomFundNavFresh } from "@/lib/server/custom-fund-nav-daily-refresh"
 import { isChinaTradingDay, countChinaTradingDaysInclusive } from "@/lib/server/china-trading-calendar"
 import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-nav-query"
@@ -387,6 +388,9 @@ export async function GET(
       refreshNav: phase !== "header",
     })
     if (customEarly) return customEarly
+
+    const publicEnhanced = await publicEnhancedIndexDetailResponse(rawId)
+    if (publicEnhanced) return publicEnhanced
 
     if (!canonicalizeFundRouteId(rawId)) {
       return NextResponse.json({ error: "Fund not found" }, { status: 404 })

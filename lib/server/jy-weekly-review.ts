@@ -158,7 +158,34 @@ export const BENCH_BY_BUCKET: Record<string, string[]> = {
   高换手: ["000905.SH", "000905"],
   中换手: ["000905.SH", "000905"],
   低换手: ["000905.SH", "000905"],
+  // 公募指增周报 uses these. The stock weekly methodology lists only EQUITY_WEEKLY_BENCH_KEYS.
+  国证2000指增: ["399303.SZ", "399303", "932000.CSI"],
+  上证50指增: ["000016.SH", "000016"],
+  创业板指增: ["399006.SZ", "399006"],
+  创业板综指增: ["399102.SZ", "399102", "399006.SZ"],
+  科创50指增: ["000688.SH", "000688"],
+  科创100指增: ["000698.SH", "000698", "000688.SH"],
+  科创综指指增: ["000680.SH", "000680", "000688.SH"],
+  科创创业50指增: ["931643.CSI", "931643", "000688.SH"],
+  中证800指增: ["000906.SH", "000906"],
+  中证全指指增: ["000985.SH", "000985"],
+  北证50指增: ["899050.BJ", "899050"],
 }
+
+/** Buckets explained on the stock weekly 口径 sheet. Public-fund buckets stay out of that note. */
+const EQUITY_WEEKLY_BENCH_KEYS = [
+  "500指增",
+  "1000指增",
+  "2000指增",
+  "2000指增T0",
+  "指增T0",
+  "300指增",
+  "A500指增",
+  "指数增强",
+  "高换手",
+  "中换手",
+  "低换手",
+] as const
 
 function isoFromLocalDate(d: Date): string {
   const y = d.getFullYear()
@@ -1119,6 +1146,28 @@ const BENCH_CODE_NAME: Record<string, string> = {
   "000300": "沪深300",
   "000510.SH": "中证A500",
   "000510": "中证A500",
+  "399303.SZ": "国证2000",
+  "399303": "国证2000",
+  "000016.SH": "上证50",
+  "000016": "上证50",
+  "399006.SZ": "创业板指",
+  "399006": "创业板指",
+  "399102.SZ": "创业板综",
+  "399102": "创业板综",
+  "000688.SH": "科创50",
+  "000688": "科创50",
+  "000698.SH": "科创100",
+  "000698": "科创100",
+  "000680.SH": "科创综指",
+  "000680": "科创综指",
+  "931643.CSI": "科创创业50",
+  "931643": "科创创业50",
+  "000906.SH": "中证800",
+  "000906": "中证800",
+  "000985.SH": "中证全指",
+  "000985": "中证全指",
+  "899050.BJ": "北证50",
+  "899050": "北证50",
 }
 
 function describeBenchCodes(codes: string[]): string {
@@ -1142,10 +1191,10 @@ type MethodologyRow =
 
 /** Reader-facing notes for the weekly workbook. Wording tracks the calculators above. */
 export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: string, poolsInput?: unknown): MethodologyRow[] {
-  const benchRows: MethodologyRow[] = Object.entries(BENCH_BY_BUCKET).map(([bucket, codes]) => ({
+  const benchRows: MethodologyRow[] = EQUITY_WEEKLY_BENCH_KEYS.map((bucket) => ({
     kind: "pair" as const,
     label: bucket,
-    text: describeBenchCodes(codes),
+    text: describeBenchCodes(BENCH_BY_BUCKET[bucket] ?? []),
   }))
   return [
     { kind: "title", text: `口径说明（统计区间 ${fmtSlashDate(weekStart)} ~ ${fmtSlashDate(weekEnd)}，截止日 ${weekEnd}）` },

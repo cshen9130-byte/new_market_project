@@ -126,6 +126,16 @@ export async function POST(request: Request) {
 
       proc.on("close", async (code: number | null) => {
         clearTimeout(timer)
+        // Drop today's MOM chart files before warm-cache refills them. The ETL
+        // script does this too; doing it here covers a run that died after the
+        // rows were committed and before that cleanup line.
+        try {
+          const { clearTodayMomCache } = await import("@/lib/server/mom-cache")
+          clearTodayMomCache()
+          send("[cache] 已清除今日 MOM 图表缓存")
+        } catch (e) {
+          send(`[cache] 清除 MOM 图表缓存失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+        }
         if (code === 0) {
           if (renameFolders && renameFolders.length > 0) {
             send(`[rename] ETL 完成，开始标准化命名（${renameFolders.length} 个文件夹）…`)

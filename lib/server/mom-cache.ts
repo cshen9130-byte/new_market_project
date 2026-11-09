@@ -4,10 +4,12 @@
  * and are automatically ignored on a different calendar day.
  */
 
+import { createHash } from "crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
 import { join } from "path"
 import { NextResponse } from "next/server"
 import { ensureAccountRiskSchema } from "@/lib/db"
+import { momNhciFreshnessToken } from "@/lib/server/mom-nhci-freshness"
 import { momSubAccountAlsRun, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { parseSourceFromRequest, riskSourceAls } from "@/lib/server/risk-data-source"
 
@@ -73,6 +75,18 @@ export function clearAccountSourceCache(): void {
   }
 }
 
+/** Short stable suffix so a mid-day settlement date change misses today's file cache. */
+export function freshnessCacheSuffix(token: string): string {
+  const trimmed = token.trim()
+  if (!trimmed) return ""
+  const digest = createHash("sha1").update(trimmed).digest("hex").slice(0, 12)
+  return `__fresh=${digest}`
+}
+
+function isAccountRiskCacheFile(name: string): boolean {
+  return name.includes("account__") || name.includes("source=account")
+}
+
 /** Drop all of today's MOM file-cache entries (e.g. after NHCI / position ETL advances). */
 export function clearTodayMomCache(routeKeySubstring?: string): void {
   try {
@@ -80,6 +94,7 @@ export function clearTodayMomCache(routeKeySubstring?: string): void {
     const prefix = `${todayStr()}_`
     for (const f of readdirSync(CACHE_DIR)) {
       if (!f.startsWith(prefix)) continue
+      if (isAccountRiskCacheFile(f)) continue
       if (routeKeySubstring && !f.includes(routeKeySubstring)) continue
       try { unlinkSync(join(CACHE_DIR, f)) } catch { /* ignore */ }
     }
@@ -128,18 +143,24 @@ export function withMomCache(
       }
 
       const noCache = url.searchParams.get("nocache") === "1"
+      // MOM charts default to the settlement/NHCI as-of token. Without it, a file
+      // written before today's upload keeps serving Friday's 持仓 through midnight.
+      const freshnessFn = options?.freshness ?? (source === "mom" ? momNhciFreshnessToken : undefined)
       let fresh = ""
-      if (options?.freshness) {
+      let freshnessFailed = false
+      if (freshnessFn) {
         try {
-          fresh = String((await options.freshness(req)) || "").trim()
+          fresh = String((await freshnessFn(req)) || "").trim()
         } catch {
-          fresh = ""
+          freshnessFailed = true
         }
       }
-      const freshSuffix = fresh ? `__fresh=${fresh}` : ""
-      const key = `${source}__${routeKey}${paramKey(url.searchParams)}${freshSuffix}`
+      // Never fall back to the unsuffixed file when the as-of check was required.
+      // That file is the snapshot from before the latest upload.
+      const cacheable = !freshnessFailed && (!freshnessFn || fresh.length > 0)
+      const key = `${source}__${routeKey}${paramKey(url.searchParams)}${freshnessCacheSuffix(fresh)}`
 
-      if (!noCache) {
+      if (!noCache && cacheable) {
         const cached = readCache(key)
         if (cached !== null) {
           // no-cache: browser always revalidates; ETag/304 handled by Next.js
@@ -149,8 +170,8 @@ export function withMomCache(
 
       const resp = await handler(req)
 
-      // Only cache 200 responses
-      if (resp.status === 200) {
+      // Only cache 200 responses, and only under a key that tracks the as-of date.
+      if (resp.status === 200 && cacheable) {
         try {
           const body = await resp.json()
           writeCache(key, body)

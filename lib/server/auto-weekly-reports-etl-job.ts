@@ -128,6 +128,16 @@ job.status = "done"
       jobs.set(JOB_KEY, { ...job })
       if (result.failed === 0 && mineFailed === 0) setLastSuccessAt(Date.now())
       console.log(`[auto-weekly-etl] ${job.message}`)
+      void import("./system-notifications")
+        .then((mod) => mod.notifyManagedSystemWeeklyIfReady("auto-weekly-etl"))
+        .then((managed) => {
+          console.log(
+            `[managed-weekly-notify] after etl ${managed.reason} ${managed.current}/${managed.total} sent=${managed.sent}`,
+          )
+        })
+        .catch((notifyError) => {
+          console.error("[managed-weekly-notify] after etl:", notifyError)
+        })
     } catch (err) {
       job.status = "error"
       job.message = err instanceof Error ? err.message : String(err)

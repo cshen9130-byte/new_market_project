@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Download, FileText, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import {
@@ -11,6 +12,7 @@ import {
   type WeeklyReviewPoolKey,
 } from "@/lib/ma/weekly-review-pools"
 import { WeeklyReviewDataStatus } from "./WeeklyReviewDataStatus"
+import { PublicEnhancedWeeklyPerformance } from "./PublicEnhancedWeeklyPerformance"
 
 type GroupPreview = {
   bucket: string
@@ -52,7 +54,7 @@ function slashDate(iso: string): string {
   return `${y}/${Number(m)}/${Number(d)}`
 }
 
-type WeeklyReviewVariant = "equity" | "futures"
+type WeeklyReviewVariant = "equity" | "futures" | "public-enhanced"
 
 const POOL_CHOICES: Array<{ key: "all" | WeeklyReviewPoolKey; label: string }> = [
   { key: "all", label: "全部" },
@@ -84,11 +86,29 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
     generateUrl: "/ma/api/tracking-funds/weekly-review/futures/generate",
     statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/futures/generate?id=${encodeURIComponent(jobId)}`,
   },
+  "public-enhanced": {
+    title: () => "公募指增 · 周度回顾",
+    description: () => "按 Choice 公募增强指数型产品生成周报 Excel：股票市场回顾 + 按跟踪基准分组的超额收益表。同一产品的 A/C 份额合并为一行。债券指数增强和量化选股不进入。",
+    excelName: (weekEnd) => `公募指增周度回顾 - ${weekEnd}.xlsx`,
+    previewUrl: (date) => `/ma/api/tracking-funds/weekly-review/public-enhanced/preview?week_end=${encodeURIComponent(date)}`,
+    generateUrl: "/ma/api/tracking-funds/weekly-review/public-enhanced/generate",
+    statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/public-enhanced/generate?id=${encodeURIComponent(jobId)}`,
+  },
+}
+
+function weekEndFromSearch(params: { get(name: string): string | null }): string {
+  const raw = params.get("week_end")?.slice(0, 10) ?? ""
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : defaultWeekEnd()
 }
 
 export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyReviewVariant }) {
+  const searchParams = useSearchParams()
   const copy = VARIANT_COPY[variant]
-  const [weekEnd, setWeekEnd] = useState(defaultWeekEnd)
+  const [weekEnd, setWeekEnd] = useState(() => weekEndFromSearch(searchParams))
+  useEffect(() => {
+    const fromUrl = searchParams.get("week_end")?.slice(0, 10) ?? ""
+    if (/^\d{4}-\d{2}-\d{2}$/.test(fromUrl)) setWeekEnd(fromUrl)
+  }, [searchParams])
   const [pools, setPools] = useState<WeeklyReviewPoolKey[]>([...DEFAULT_WEEKLY_REVIEW_POOLS])
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
@@ -253,6 +273,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
+          {variant !== "public-enhanced" && (
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 shrink-0">产品池</span>
             <div className="inline-flex flex-wrap items-center gap-1" role="group" aria-label="产品池">
@@ -276,6 +297,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
               })}
             </div>
           </div>
+          )}
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 shrink-0">报告周截止日</span>
             <DateInput
@@ -287,7 +309,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
           </div>
           <div className="text-xs text-muted-foreground">
             统计区间：<span className="text-foreground font-medium">{rangeLabel}</span>
-            {preview ? ` · ${preview.fund_count} 只产品 · ${preview.groups.length} 个策略分组` : null}
+            {preview ? ` · ${preview.fund_count} 只产品 · ${preview.groups.length} 个${variant === "public-enhanced" ? "基准" : "策略"}分组` : null}
             。近一周只计入该区间内有净值的产品，没有则留空。
           </div>
         </div>
@@ -306,12 +328,16 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
         )}
       </div>
 
+      {variant === "public-enhanced" ? (
+        <PublicEnhancedWeeklyPerformance weekEnd={weekEnd} />
+      ) : (
       <WeeklyReviewDataStatus
         embedded
         variant={variant}
         pools={pools}
         weekEnd={weekEnd}
       />
+      )}
     </div>
   )
 }

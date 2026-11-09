@@ -5,6 +5,7 @@ import { Download } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import { authService } from "@/lib/auth"
 import { downloadFundDataApiGuide } from "@/lib/ma/fund-data-api-guide"
+import { copyTextToClipboard } from "@/lib/copy-text"
 import {
   FUND_DATA_API_BASE,
   FUND_DATA_MCP_URL,
@@ -28,9 +29,11 @@ function CodeBlock({ text }: { text: string }) {
         type="button"
         className="absolute top-2 right-2 text-[11px] px-2 py-0.5 border rounded bg-background/90 hover:bg-muted"
         onClick={() => {
-          void navigator.clipboard.writeText(text)
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1200)
+          void copyTextToClipboard(text).then((ok) => {
+            if (!ok) return
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1200)
+          })
         }}
       >
         {copied ? "已复制" : "复制"}

@@ -19,7 +19,7 @@ import {
   type FactorSensitivityColumn,
   type FactorSensitivityTrend,
 } from "@/lib/style-attribution"
-import { CalcExplanationButton } from "./AttributionCalcExplanation"
+import { CalcExplanationButton, type ExplanationBlock } from "./AttributionCalcExplanation"
 
 const INTERVAL_COLOR = "#2563eb"
 
@@ -57,6 +57,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
   loading,
   factorDefs = STYLE_FACTOR_DEFS.map((f) => ({ key: f.key, name: f.name })),
   factorModel = "commodity-cta",
+  formulaOverride,
 }: {
   productName: string
   dateFrom: string
@@ -65,6 +66,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
   loading: boolean
   factorDefs?: FactorDef[]
   factorModel?: AttributionFactorModel
+  formulaOverride?: ExplanationBlock
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [periodMode, setPeriodMode] = useState<"annual" | "quarterly">("annual")
@@ -126,7 +128,7 @@ export const FactorSensitivityTrendPanel = memo(function FactorSensitivityTrendP
         <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
           <span className="inline-block w-1 self-stretch rounded-full bg-red-500" />
           因子敏感度趋势
-          <CalcExplanationButton section="sensitivity" factorModel={factorModel} label="因子敏感度趋势说明" />
+          <CalcExplanationButton section="sensitivity" factorModel={factorModel} formulaOverride={formulaOverride} label="因子敏感度趋势说明" />
         </div>
         <div className="flex items-center gap-2">
           <div className="inline-flex text-xs border border-zinc-200 rounded overflow-hidden">

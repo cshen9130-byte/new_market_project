@@ -163,7 +163,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     )
   }
 
-  const headerUser = { email: user.email, full_name: user.name, avatar_url: user.avatar_url }
+  const headerUser = { id: user.id, email: user.email, full_name: user.name, avatar_url: user.avatar_url }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

@@ -1,17 +1,7 @@
-/** Style factor definitions for commodity CTA nav attribution. */
-export const STYLE_FACTOR_DEFS = [
-  { key: "liquidity", name: "流动性因子" },
-  { key: "ts_mom_long", name: "长期时间序列动量" },
-  { key: "skew", name: "偏度因子" },
-  { key: "ts_mom_short", name: "短期时间序列动量" },
-  { key: "cs_mom_short", name: "短期截面动量" },
-  { key: "basis_mom", name: "基差动量" },
-  { key: "position_chg", name: "持仓变化因子" },
-  { key: "vol_short", name: "短期波动因子" },
-  { key: "term_structure", name: "期限结构因子" },
-  { key: "price_breakout", name: "均价突破因子" },
-  { key: "basis", name: "基差因子" },
-] as const
+import { FUTURES_STYLE_PAGE_FACTORS } from "@/lib/futures-style-page-factors"
+
+/** Commodity CTA nav attribution uses the 期货风格因子 page's default nine books. */
+export const STYLE_FACTOR_DEFS = FUTURES_STYLE_PAGE_FACTORS
 
 export type StyleFactorKey = (typeof STYLE_FACTOR_DEFS)[number]["key"]
 
@@ -105,60 +95,6 @@ export interface FactorSensitivityColumn {
 export interface FactorSensitivityTrend {
   annualColumns: FactorSensitivityColumn[]
   quarterlyColumns: FactorSensitivityColumn[]
-}
-
-function dailyReturns(closes: number[]): number[] {
-  const out: number[] = []
-  for (let i = 1; i < closes.length; i++) {
-    const prev = closes[i - 1]
-    out.push(prev > 0 ? closes[i] / prev - 1 : 0)
-  }
-  return out
-}
-
-function rollingMean(values: number[], window: number, endIdx: number): number {
-  const start = Math.max(0, endIdx - window + 1)
-  const slice = values.slice(start, endIdx + 1)
-  if (!slice.length) return 0
-  return slice.reduce((a, b) => a + b, 0) / slice.length
-}
-
-function rollingStd(values: number[], window: number, endIdx: number): number {
-  const start = Math.max(0, endIdx - window + 1)
-  const slice = values.slice(start, endIdx + 1)
-  if (slice.length < 2) return 0
-  const mean = slice.reduce((a, b) => a + b, 0) / slice.length
-  const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / (slice.length - 1)
-  return Math.sqrt(Math.max(variance, 0))
-}
-
-function rollingSkew(values: number[], window: number, endIdx: number): number {
-  const start = Math.max(0, endIdx - window + 1)
-  const slice = values.slice(start, endIdx + 1)
-  if (slice.length < 3) return 0
-  const mean = slice.reduce((a, b) => a + b, 0) / slice.length
-  const std = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / slice.length)
-  if (std < 1e-12) return 0
-  const m3 = slice.reduce((a, b) => a + ((b - mean) / std) ** 3, 0) / slice.length
-  return m3
-}
-
-function rollingReturn(closes: number[], window: number, endIdx: number): number {
-  const startIdx = endIdx - window
-  if (startIdx < 0) return 0
-  const start = closes[startIdx]
-  const end = closes[endIdx]
-  return start > 0 ? end / start - 1 : 0
-}
-
-function zScoreAt(values: number[], idx: number, window: number): number {
-  const start = Math.max(0, idx - window + 1)
-  const slice = values.slice(start, idx + 1)
-  if (slice.length < 2) return 0
-  const mean = slice.reduce((a, b) => a + b, 0) / slice.length
-  const std = rollingStd(slice, slice.length, slice.length - 1)
-  if (std < 1e-12) return 0
-  return (values[idx] - mean) / std
 }
 
 function pearson(x: number[], y: number[]): number {
@@ -331,115 +267,43 @@ function runOls(y: number[], X: number[][]): OlsOutput | null {
   }
 }
 
-function alignSeriesByDate(
-  main: DailyCloseSeries[],
-  others: Record<string, DailyCloseSeries[]>,
-): {
-  dates: string[]
-  mainCloses: number[]
-  otherCloses: Record<string, number[]>
-} {
-  const dateSet = new Set(main.map((p) => p.date))
-  for (const series of Object.values(others)) {
-    for (const p of series) dateSet.add(p.date)
-  }
-  const dates = [...dateSet].sort()
-  const mainMap = new Map(main.map((p) => [p.date, p.close]))
-  const otherMaps = Object.fromEntries(
-    Object.entries(others).map(([key, series]) => [key, new Map(series.map((p) => [p.date, p.close]))]),
-  )
+/**
+ * Compound each factor's daily portfolio return over (navDates[i-1], navDates[i]].
+ * Daily NAVs pick up that day's factor return; weekly NAVs span the days in between.
+ * Null days are skipped, matching how 期货风格因子 compounds its cumulative charts.
+ */
+export function compoundFactorReturnsToNavDates(
+  factorDates: string[],
+  series: Record<string, Array<number | null>>,
+  navDates: string[],
+): Record<string, number[]> {
+  const n = Math.max(0, navDates.length - 1)
+  const keys = Object.keys(series)
+  const out: Record<string, number[]> = Object.fromEntries(keys.map((k) => [k, Array(n).fill(0)]))
+  if (n === 0 || factorDates.length === 0) return out
 
-  let lastMain = main[0]?.close ?? 1
-  const lastOther: Record<string, number> = {}
-  for (const key of Object.keys(otherMaps)) {
-    const first = others[key]?.[0]?.close
-    lastOther[key] = first ?? 1
-  }
-
-  const mainCloses: number[] = []
-  const otherCloses: Record<string, number[]> = Object.fromEntries(
-    Object.keys(otherMaps).map((k) => [k, [] as number[]]),
-  )
-
-  for (const d of dates) {
-    if (mainMap.has(d)) lastMain = mainMap.get(d)!
-    mainCloses.push(lastMain)
-    for (const [key, map] of Object.entries(otherMaps)) {
-      if (map.has(d)) lastOther[key] = map.get(d)!
-      otherCloses[key].push(lastOther[key])
+  let cursor = 0
+  for (let i = 1; i < navDates.length; i++) {
+    const prev = navDates[i - 1]
+    const cur = navDates[i]
+    while (cursor < factorDates.length && factorDates[cursor] <= prev) cursor++
+    let end = cursor
+    while (end < factorDates.length && factorDates[end] <= cur) end++
+    for (const key of keys) {
+      const arr = series[key]
+      let acc = 1
+      let any = false
+      for (let j = cursor; j < end; j++) {
+        const v = arr?.[j]
+        if (v != null && Number.isFinite(v)) {
+          acc *= 1 + v
+          any = true
+        }
+      }
+      out[key][i - 1] = any ? acc - 1 : 0
     }
+    cursor = end
   }
-
-  return { dates, mainCloses, otherCloses }
-}
-
-/** Build daily factor return matrix aligned to trading dates. */
-export function buildFactorReturns(
-  indexSeries: Record<string, DailyCloseSeries[]>,
-  dates: string[],
-): Record<StyleFactorKey, number[]> {
-  const main = indexSeries["NHCI.NH"] ?? []
-  const { dates: alignedDates, mainCloses, otherCloses } = alignSeriesByDate(main, {
-    NHAI: indexSeries["NHAI.NH"] ?? [],
-    NHECI: indexSeries["NHECI.NH"] ?? [],
-    NHFI: indexSeries["NHFI.NH"] ?? [],
-    NHPMI: indexSeries["NHPMI.NH"] ?? [],
-    NHNFI: indexSeries["NHNFI.NH"] ?? [],
-  })
-
-  const dateIdx = new Map(alignedDates.map((d, i) => [d, i]))
-  const n = dates.length
-  const out = Object.fromEntries(STYLE_FACTOR_DEFS.map((f) => [f.key, Array(n).fill(0)])) as Record<
-    StyleFactorKey,
-    number[]
-  >
-
-  const mainRets = dailyReturns(mainCloses)
-  const sectorKeys = ["NHAI", "NHECI", "NHFI", "NHPMI", "NHNFI"] as const
-
-  for (let di = 0; di < n; di++) {
-    const ai = dateIdx.get(dates[di])
-    if (ai === undefined || ai < 1) continue
-    const retIdx = ai - 1
-
-    const vol20 = rollingStd(mainRets, 20, retIdx)
-    const liqProxy = vol20 > 1e-8 ? -zScoreAt(mainRets.map((r) => Math.abs(r)), retIdx, 60) : 0
-    out.liquidity[di] = liqProxy
-
-    out.ts_mom_long[di] = rollingReturn(mainCloses, 60, ai)
-    out.skew[di] = rollingSkew(mainRets, 20, retIdx)
-    out.ts_mom_short[di] = rollingReturn(mainCloses, 20, ai)
-
-    const csRets = sectorKeys
-      .map((k) => {
-        const closes = otherCloses[k]
-        return closes ? rollingReturn(closes, 20, ai) : 0
-      })
-      .filter((v) => Number.isFinite(v))
-    const csMean = csRets.length ? csRets.reduce((a, b) => a + b, 0) / csRets.length : 0
-    out.cs_mom_short[di] = csMean - out.ts_mom_short[di]
-
-    const nheci = otherCloses.NHECI
-    const nhai = otherCloses.NHAI
-    if (nheci && nhai) {
-      const spread = nheci[ai] / Math.max(nhai[ai], 1e-8)
-      const spreadPrev = nheci[ai - 1] / Math.max(nhai[ai - 1], 1e-8)
-      out.basis_mom[di] = spreadPrev > 0 ? spread / spreadPrev - 1 : 0
-      out.basis[di] = spread - 1
-    }
-
-    out.position_chg[di] = retIdx >= 1 ? mainRets[retIdx] - mainRets[retIdx - 1] : 0
-    out.vol_short[di] = vol20
-
-    const nhf = otherCloses.NHFI
-    if (nhf) {
-      out.term_structure[di] = rollingReturn(nhf, 20, ai) - out.ts_mom_short[di]
-    }
-
-    const ma60 = rollingMean(mainCloses, 60, ai)
-    out.price_breakout[di] = ma60 > 0 ? mainCloses[ai] / ma60 - 1 : 0
-  }
-
   return out
 }
 
@@ -490,7 +354,7 @@ export function marketCodesForModel(model: AttributionFactorModel): string[] {
   if (model === "multi-asset") {
     return MULTI_ASSET_FACTOR_DEFS.map((f) => f.code)
   }
-  return ["NHCI.NH", "NHAI.NH", "NHECI.NH", "NHFI.NH", "NHPMI.NH", "NHNFI.NH"]
+  return []
 }
 
 function cumulativeReturnPct(returns: number[]): number {

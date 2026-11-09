@@ -191,6 +191,14 @@ export function startFof99FridayAfternoonEtlJob(options?: {
         ((job.finishedAt - job.startedAt) / 1000).toFixed(1),
         "s",
       )
+      void import("./system-notifications")
+        .then((mod) => mod.notifyWeeklyStrategyExcelIfReady("fof99-friday"))
+        .then((result) => {
+          console.log(`[weekly-excel-notify] after fof99 ${result.reason} sent=${result.sent}`)
+        })
+        .catch((notifyError) => {
+          console.error("[weekly-excel-notify] after fof99:", notifyError)
+        })
     } catch (error) {
       const err = error as { message?: string; code?: number | string; stdout?: string; stderr?: string }
       job.status = "error"

@@ -11,30 +11,29 @@ import {
 } from "@/components/ui/dialog"
 import type { AttributionFactorModel } from "@/lib/style-attribution"
 
-type ExplanationBlock = {
+export type ExplanationBlock = {
   title: string
   paragraphs: string[]
   bullets?: string[]
 }
 
 const CTA_FACTOR_FORMULAS: ExplanationBlock = {
-  title: "商品CTA风格因子如何构造",
+  title: "期货风格因子如何进入回归",
   paragraphs: [
-    "因子日序列由南华商品指数收盘价对齐到产品净值日期后计算，作为回归自变量（非真实期货风格因子组合）。",
-    "指数输入：主指数 NHCI；板块 NHAI / NHECI / NHFI / NHPMI / NHNFI。适用于期货/CTA 策略，不适合 FOF/权益产品。",
+    "自变量是「私募基金 → 市场 → 期货风格因子」页默认展示的 9 个全市场因子，与该页同一套多空组合日收益。",
+    "用的是未四舍五入、未截断的日收益。该页「分因子累计收益」也是把这串日收益复利出来的；单日图上的 ±3.8 截断只用于画图，不进入回归。",
+    "产品净值若不是每个交易日都有，则把相邻两个净值日之间的因子日收益复利，得到与这段净值收益对齐的因子收益。",
   ],
   bullets: [
-    "流动性因子：−zscore(|NHCI 日收益|, 60 日窗口)；波动越大得分越低",
-    "长期时间序列动量：NHCI 60 日滚动收益 close_t / close_{t-60} − 1",
-    "偏度因子：NHCI 日收益 20 日滚动偏度",
-    "短期时间序列动量：NHCI 20 日滚动收益",
-    "短期截面动量：五个板块各自 20 日收益的均值 − NHCI 20 日收益",
-    "基差动量：spread = NHECI / NHAI，取 spread 的日变动 spread_t / spread_{t-1} − 1",
-    "持仓变化因子：NHCI 日收益的一阶差分 r_t − r_{t-1}",
-    "短期波动因子：NHCI 日收益 20 日滚动标准差",
-    "期限结构因子：NHFI 20 日收益 − NHCI 20 日收益",
-    "均价突破因子：NHCI / MA60 − 1",
-    "基差因子：NHECI / NHAI − 1",
+    "基差",
+    "长期截面",
+    "库存",
+    "量价相关性",
+    "长期规则",
+    "利润",
+    "期限基差",
+    "基差动量",
+    "中期动量",
   ],
 }
 
@@ -59,9 +58,19 @@ function factorFormulas(model: AttributionFactorModel): ExplanationBlock {
   return model === "multi-asset" ? MULTI_ASSET_FACTOR_FORMULAS : CTA_FACTOR_FORMULAS
 }
 
-function buildExplanations(model: AttributionFactorModel) {
-  const formulas = factorFormulas(model)
-  const modelLabel = model === "multi-asset" ? "多资产大类" : "商品CTA风格"
+export const UPLOADED_FACTOR_FORMULAS: ExplanationBlock = {
+  title: "上传的因子如何进入回归",
+  paragraphs: [
+    "Excel 里读到的是因子收盘价（指数点位）。回归用的是相邻两个有效收盘价之间的收益：r_t = P_t / P_{t-1} − 1。",
+    "0 和空单元格当成缺失，不当成价格。万得公式在终端没打开时，Excel 常把格子重算成 0。",
+    "产品净值若不是每个交易日都有，则把相邻两个净值日之间的因子日收益复利，再和这段净值收益对齐。",
+    "文件只用于这一次计算，不会保存。",
+  ],
+}
+
+function buildExplanations(model: AttributionFactorModel, formulaOverride?: ExplanationBlock) {
+  const formulas = formulaOverride ?? factorFormulas(model)
+  const modelLabel = formulaOverride ? "上传因子" : model === "multi-asset" ? "多资产大类" : "期货风格因子"
 
   return {
     regression: {
@@ -167,15 +176,17 @@ export type AttributionCalcKey = keyof ReturnType<typeof buildExplanations>
 export function CalcExplanationButton({
   section,
   factorModel = "commodity-cta",
+  formulaOverride,
   label,
   className,
 }: {
   section: AttributionCalcKey
   factorModel?: AttributionFactorModel
+  formulaOverride?: ExplanationBlock
   label?: string
   className?: string
 }) {
-  const content = buildExplanations(factorModel)[section]
+  const content = buildExplanations(factorModel, formulaOverride)[section]
 
   return (
     <Dialog>

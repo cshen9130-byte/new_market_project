@@ -56,7 +56,14 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
         setLagMeta(bj.meta ?? null)
         // If API reports lag, force a nocache re-read once in case file cache was
         // written before NHCI advanced (freshness token should usually prevent this).
-        if (bj.meta?.lagging) {
+        const meta = bj.meta as NhciLagMeta | null
+        const staleLagFlag =
+          !!meta?.lagging &&
+          !!meta.nhciAsOf &&
+          !!meta.positionAsOf &&
+          meta.nhciAsOf >= meta.positionAsOf &&
+          meta.nhciAsOf >= productTo
+        if (meta?.lagging && !staleLagFlag) {
           const fresh = await (await fetch(`/ma/api/mom-analysis/benchmark?${params}&nocache=1`)).json()
           if (cancelled) return
           const s2 = fresh.series?.[0]
@@ -164,10 +171,11 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
 
   const latestNav = navData.at(-1)?.date
   const latestBm = bmData.at(-1)?.date
-  const showLag =
-    !!lagMeta?.lagging ||
-    (!!latestNav && !!latestBm && latestBm < latestNav) ||
-    (!!latestNav && bmData.length > 0 && !latestBm)
+  const nhciBehindProduct = !!latestNav && !!latestBm && latestBm < latestNav
+  const nhciBehindPosition = !!lagMeta?.positionAsOf && (
+    !latestBm || latestBm < lagMeta.positionAsOf
+  )
+  const showLag = nhciBehindProduct || nhciBehindPosition
 
   return (
     <Card>

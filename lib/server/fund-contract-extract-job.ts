@@ -15,7 +15,10 @@ import {
   softenWeakExtractedFields,
   type ExtractedFundElements,
 } from "@/lib/server/fund-contract-element-extract"
-import { extractShareClassFeeOverrides } from "@/lib/server/fund-contract-element-keywords"
+import {
+  planShareClassesFromText,
+  type ShareClassWritePlan,
+} from "@/lib/server/fund-contract-element-keywords"
 import {
   claimNextElementExtractJob,
   countQueuedElementExtractJobs,
@@ -179,6 +182,16 @@ function sanitizeExtractedForDocument(
   return { ...extracted, inception_date: null, puton_date: null }
 }
 
+async function loadShareClassPlan(buffer: Buffer, fileName: string): Promise<ShareClassWritePlan> {
+  try {
+    const text = await readFundContractText(buffer, fileName)
+    return planShareClassesFromText(text)
+  } catch (err) {
+    console.error("[contract-extract] share-class plan failed", err)
+    return { shareClassOverrides: {}, shareClasses: [] }
+  }
+}
+
 async function attachContractAndApply(
   job: ElementExtractJobRow,
   buffer: Buffer,
@@ -187,6 +200,7 @@ async function attachContractAndApply(
   extracted: NonNullable<ElementExtractJobRow["extracted_json"]>,
   matchedFunds: NonNullable<ElementExtractJobRow["matched_funds"]>,
   textPreview: string,
+  plan?: ShareClassWritePlan,
 ): Promise<"applied" | "needs_review"> {
   const ensured = await ensureShareClassBeianProduct(beianHao)
   const resolvedBeian = ensured?.beian_hao || beianHao
@@ -218,9 +232,10 @@ async function attachContractAndApply(
       uploadedAt: row.uploaded_at,
     }))
   const useLatest = isLatestContractDocument(currentRecency, otherRecencies)
+  const sharePlan = plan ?? await loadShareClassPlan(buffer, job.original_filename)
   const fields = useLatest
-    ? await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted)
-    : await writeFillEmptyElementsAcrossShareClasses(resolvedBeian, productName, extracted)
+    ? await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted, sharePlan)
+    : await writeFillEmptyElementsAcrossShareClasses(resolvedBeian, productName, extracted, sharePlan)
 
   const pendingUnregistered = await getUnregisteredProductByJobId(job.id)
   const keepUnregisteredNote =
@@ -292,6 +307,11 @@ async function processOneJob(
           }
         : null)
     const extracted = adoptMatchedRegisterNumber(stripped, matched)
+    const stillThere = await getElementExtractJobById(job.id)
+    if (!stillThere) {
+      console.log(`[contract-extract] job ${job.id} was deleted before write, skipping`)
+      return "failed"
+    }
     if (!matched) {
       await updateElementExtractJob(job.id, {
         status: "needs_review",
@@ -326,6 +346,9 @@ async function processOneJob(
       extracted,
       result.matched_funds,
       result.text_preview,
+      "share_classes" in result && result.share_classes
+        ? { shareClasses: result.share_classes, shareClassOverrides: result.share_class_fees ?? {} }
+        : undefined,
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : "要素提取失败"
@@ -564,12 +587,12 @@ export async function backfillKeywordFieldsFromStoredContracts(options?: {
         ...(job.extracted_json ?? {}),
         fee_manage_rate: job.extracted_json?.fee_manage_rate || current?.fee_manage_rate || null,
       } as ExtractedFundElements)
-      const shareClassOverrides = extractShareClassFeeOverrides(text)
+      const sharePlan = planShareClassesFromText(text)
       const fields = await writeFillEmptyElementsAcrossShareClasses(
         beian,
         extracted.fund_name || productName,
         extracted,
-        { shareClassOverrides },
+        sharePlan,
       )
       await updateElementExtractJob(job.id, {
         extracted_json: extracted,
@@ -617,18 +640,18 @@ export async function fanoutAppliedElementsToShareClasses(options?: {
         result.skipped += 1
         continue
       }
-      let shareClassOverrides = {}
+      let sharePlan: ShareClassWritePlan = { shareClassOverrides: {}, shareClasses: [] }
       try {
         const corpus = await readBeianContractCorpus(beian, allJobs)
-        if (corpus.trim()) shareClassOverrides = extractShareClassFeeOverrides(corpus)
+        if (corpus.trim()) sharePlan = planShareClassesFromText(corpus)
       } catch {
-        // corpus may not be available; proceed without overrides
+        // corpus may not be available; proceed without class-specific fees
       }
       const fields = await writeFillEmptyElementsAcrossShareClasses(
         beian,
         productName,
         softenWeakExtractedFields(source),
-        { shareClassOverrides },
+        sharePlan,
       )
       if (fields.length) result.filled += 1
       else result.skipped += 1
@@ -870,13 +893,19 @@ export async function applyElementExtractJobManually(input: {
   }
 
   const extracted = normalizeExtractedElementsPatch(input.fields, job.extracted_json)
+  let sharePlan: ShareClassWritePlan = { shareClassOverrides: {}, shareClasses: [] }
+  try {
+    sharePlan = await loadShareClassPlan(buffer, job.original_filename)
+  } catch (err) {
+    console.error("[contract-extract] share-class plan on manual apply failed", err)
+  }
   let fields: string[] = []
   if (input.fields) {
     const writeBody = { beian_hao: resolvedBeian, ...input.fields }
-    await writeFundElementsAcrossShareClasses(writeBody)
+    await writeFundElementsAcrossShareClasses(writeBody, sharePlan)
     fields = appliedFieldKeys(writeBody)
   } else {
-    fields = await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted)
+    fields = await writeOverwriteElementsAcrossShareClasses(resolvedBeian, productName, extracted, sharePlan)
   }
 
   const pendingUnregistered = await getUnregisteredProductByJobId(job.id)

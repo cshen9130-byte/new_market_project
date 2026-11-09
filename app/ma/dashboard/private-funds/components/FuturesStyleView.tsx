@@ -8,32 +8,20 @@ import {
 } from "@/lib/client/futures-style-returns-cache"
 import ReactECharts from "echarts-for-react"
 import { Menu } from "lucide-react"
+import { FUTURES_STYLE_PAGE_FACTORS } from "@/lib/futures-style-page-factors"
 import { FuturesStyleCalcHelp, FuturesStyleFactorHelp, FuturesStyleFactorHelpPanel } from "./FuturesStyleCalcHelp"
 
 /** localStorage key for Futures Style factor visibility prefs */
 const VISIBLE_FACTORS_STORAGE_KEY = "futures_style_visible_factor_keys"
 
 /**
- * 国君 CTA 周报六因子展示顺序/配色（与国君截图一致）:
+ * 国君 CTA 周报六因子展示顺序（与国君截图一致）:
  * 基差 / 长期截面 / 库存 / 量价相关性 / 长期规则 / 利润
- * + 期限基差、基差动量、中期动量排在其后 → 默认共 9 个
+ * + 期限基差、基差动量、中期动量排在其后 → 默认共 9 个。
+ * 与净值归因共用 lib/futures-style-page-factors.ts。
  */
-/** Core CTA set matching 国君 6-factor order (期限基差 is after these six). Prefs key report_basis kept stable. */
-const GUOJUN_CTA_SIX_KEYS = [
-  "report_basis_spot",  // 基差 — red
-  "report_cs_long",     // 长期截面 — blue
-  "report_inventory",   // 库存 — green
-  "report_pv_corr",     // 量价相关性 — gold
-  "report_long_rule",   // 长期规则 — purple
-  "report_profit",      // 利润 — teal
-] as const
-
-const DEFAULT_VISIBLE_FACTOR_KEYS: string[] = [
-  ...GUOJUN_CTA_SIX_KEYS,
-  "report_basis",       // 期限基差 — after the six
-  "report_basis_mom",
-  "report_mid_mom",
-]
+const DEFAULT_VISIBLE_FACTOR_KEYS: string[] = FUTURES_STYLE_PAGE_FACTORS.map((factor) => factor.key)
+const GUOJUN_CTA_SIX_KEYS = DEFAULT_VISIBLE_FACTOR_KEYS.slice(0, 6)
 
 function loadVisibleFactorKeys(): string[] {
   if (typeof window === "undefined") return [...DEFAULT_VISIBLE_FACTOR_KEYS]

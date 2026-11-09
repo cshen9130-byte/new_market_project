@@ -18,6 +18,11 @@
  */
 
 import { query } from "@/lib/db"
+import { getRiskSource } from "@/lib/server/risk-data-source"
+
+/** Coalesce the parallel chart requests on one page load. Short enough that a refresh after ETL sees the new date. */
+const ASOF_TTL_MS = 3_000
+const asOfCache = new Map<string, { at: number; value: Promise<MomNhciAsOf> }>()
 
 export type MomNhciAsOf = {
   /** max(daily_reports, position_details) — used for lag UX vs NHCI. */
@@ -28,6 +33,14 @@ export type MomNhciAsOf = {
   positionDetailsAsOf: string | null
   /** Max confirmation_date in mom_fund_transactions (capital flows). */
   capitalFlowAsOf: string | null
+  /** Other settlement tables charts read. A new day can land in one of these
+   *  while daily_reports / position_details are already on that day. */
+  futuresPositionAsOf: string | null
+  optionsPositionAsOf: string | null
+  futuresTradeAsOf: string | null
+  tradeDetailsAsOf: string | null
+  summaryAsOf: string | null
+  closeAsOf: string | null
   nhciAsOf: string | null
   /** Max usable close for NHCI.NH in raw_nanhua_indices_daily (chart source). */
   nanhuaNhciAsOf: string | null
@@ -61,12 +74,18 @@ async function maxDateText(sql: string): Promise<string | null> {
   }
 }
 
-export async function loadMomNhciAsOf(): Promise<MomNhciAsOf> {
+async function loadMomNhciAsOfUncached(): Promise<MomNhciAsOf> {
   // Query each source independently so one missing table cannot blank the token.
   const [
     dailyReportsAsOf,
     positionDetailsAsOf,
     capitalFlowAsOf,
+    futuresPositionAsOf,
+    optionsPositionAsOf,
+    futuresTradeAsOf,
+    tradeDetailsAsOf,
+    summaryAsOf,
+    closeAsOf,
     nanhuaNhciAsOf,
     rawNhciAsOf,
   ] = await Promise.all([
@@ -78,6 +97,24 @@ export async function loadMomNhciAsOf(): Promise<MomNhciAsOf> {
     ),
     maxDateText(
       `SELECT MAX(confirmation_date::date)::text AS d FROM mom_fund_transactions WHERE confirmation_date IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_futures_position_details WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_options_position_details WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_futures_trade_details WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_trade_details WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_summary_details WHERE "交易日期" IS NOT NULL`,
+    ),
+    maxDateText(
+      `SELECT MAX("交易日期"::date)::text AS d FROM mom_close_details WHERE "交易日期" IS NOT NULL`,
     ),
     maxDateText(
       `SELECT MAX(trade_date)::text AS d FROM raw_nanhua_indices_daily WHERE code = 'NHCI.NH' AND close IS NOT NULL AND close > 0`,
@@ -94,10 +131,33 @@ export async function loadMomNhciAsOf(): Promise<MomNhciAsOf> {
     dailyReportsAsOf,
     positionDetailsAsOf,
     capitalFlowAsOf,
+    futuresPositionAsOf,
+    optionsPositionAsOf,
+    futuresTradeAsOf,
+    tradeDetailsAsOf,
+    summaryAsOf,
+    closeAsOf,
     nhciAsOf,
     nanhuaNhciAsOf,
     rawNhciAsOf,
   }
+}
+
+export async function loadMomNhciAsOf(opts?: { bypassCache?: boolean }): Promise<MomNhciAsOf> {
+  if (opts?.bypassCache) {
+    asOfCache.delete(getRiskSource())
+    return loadMomNhciAsOfUncached()
+  }
+  const source = getRiskSource()
+  const hit = asOfCache.get(source)
+  if (hit && Date.now() - hit.at < ASOF_TTL_MS) return hit.value
+  const value = loadMomNhciAsOfUncached().catch((err) => {
+    const current = asOfCache.get(source)
+    if (current?.value === value) asOfCache.delete(source)
+    throw err
+  })
+  asOfCache.set(source, { at: Date.now(), value })
+  return value
 }
 
 /**
@@ -112,6 +172,12 @@ export async function momNhciFreshnessToken(_req?: Request): Promise<string> {
     a.positionDetailsAsOf || "",
     a.capitalFlowAsOf || "",
     a.nanhuaNhciAsOf || a.rawNhciAsOf || "",
+    a.futuresPositionAsOf || "",
+    a.optionsPositionAsOf || "",
+    a.futuresTradeAsOf || "",
+    a.tradeDetailsAsOf || "",
+    a.summaryAsOf || "",
+    a.closeAsOf || "",
   ].join("_")
 }
 
@@ -141,9 +207,10 @@ export function buildNhciLagMeta(
 ): NhciLagMeta {
   const to = requestedTo ? String(requestedTo).slice(0, 10) : null
   const seriesEnd = asOf.nhciAsOf
-  const lagsPos = nhciLagsPosition(asOf)
-  const lagsTo = !!(to && seriesEnd && seriesEnd < to)
-  const lagging = lagsPos || lagsTo || (!!to && !seriesEnd)
+  // Charts request through calendar today so a newer NHCI bar is not clipped.
+  // That window is not a missing session: lag only when NHCI is strictly
+  // behind the latest position day (or missing while positions exist).
+  const lagging = nhciLagsPosition(asOf)
   let lagReason: string | null = null
   if (lagging) {
     lagReason =

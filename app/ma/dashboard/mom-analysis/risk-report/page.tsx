@@ -1,7 +1,12 @@
 ﻿"use client"
 
+import { Suspense } from "react"
 import { RiskReportApp } from "@/components/ma/risk-report-app"
 
 export default function RiskReportNewPage() {
-  return <RiskReportApp variant="mom" />
+  return (
+    <Suspense fallback={null}>
+      <RiskReportApp variant="mom" />
+    </Suspense>
+  )
 }

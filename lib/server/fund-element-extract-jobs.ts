@@ -634,6 +634,25 @@ export async function listAppliedExtractJobsByBeiAns(beiAns: string[]): Promise<
   return rows.map(mapJobRow)
 }
 
+/** Remove one extract task and its uploaded file. Product elements already written stay. */
+export async function deleteElementExtractJob(id: number): Promise<boolean> {
+  await ensureElementExtractJobsTable()
+  if (!Number.isFinite(id) || id <= 0) return false
+  const doomed = await query<{ storage_filename: string }>(
+    `DELETE FROM ops_element_extract_jobs
+     WHERE id = $1
+     RETURNING storage_filename`,
+    [id],
+  )
+  const row = doomed[0]
+  if (!row) return false
+  const safeName = path.basename(row.storage_filename || "")
+  if (safeName && safeName === row.storage_filename) {
+    await fs.unlink(extractJobFilePath(safeName)).catch(() => undefined)
+  }
+  return true
+}
+
 export async function getElementExtractJobById(id: number): Promise<ElementExtractJobRow | null> {
   await ensureElementExtractJobsTable()
   if (!Number.isFinite(id)) return null

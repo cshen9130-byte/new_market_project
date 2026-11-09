@@ -98,9 +98,8 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit)
-  // plus 期货市场 Nanhua / vol-corr / 成交额 tables. Frontend charts poll
-  // APIs every minute; this job updates the underlying DB.
+  // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit,
+  // and the US FOMC/CPI file) plus 期货市场 Nanhua / vol-corr / 成交额 tables.
   // Linux cron may also run nightly_etl at 01:00 — the 20h dedupe guard avoids double work.
   cron.schedule("30 2 * * *", () => {
     void (async () => {
@@ -112,6 +111,22 @@ cron.schedule("30 18 * * 1-5", () => {
       }
     })()
   })
+
+  // US macro prints: CPI and payrolls around 21:30 Beijing, FOMC around 03:00.
+  // The 02:30 full macro group can still be inside earlier futures steps at 03:00,
+  // so these two ticks refresh only the US file.
+  for (const expr of ["0 22 * * *", "15 8 * * *"] as const) {
+    cron.schedule(expr, () => {
+      void (async () => {
+        try {
+          const { runScheduledUsMacroEtl } = await import("./macro-market-etl-job")
+          runScheduledUsMacroEtl()
+        } catch (e) {
+          console.error("[us-macro-etl] scheduler error:", e)
+        }
+      })()
+    }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+  }
 
   // Sunday and Monday 08:10 Beijing. Yingmi's daily MCP credit resets at 00:00.
   // Sunday starts or resumes the weekly 代销私募 crawl; if that day's credit stops
@@ -213,6 +228,97 @@ cron.schedule("30 18 * * 1-5", () => {
         }
       } catch (e) {
         console.error("[fof99-friday-etl] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
+  // Once the latest complete 周度回顾 week has NAV, tell every account.
+  // Mon–Thu 16:30 covers the week the page is showing (last Friday), after the
+  // Tue–Thu 14:00 火富牛 list. Friday evening covers the week the 16:00 job
+  // just filled, because that Friday's own week is usually still thin.
+  // A week already sent returns before rebuilding the status.
+  for (const expr of ["30 16 * * 1-4", "30 18 * * 5", "30 21 * * 5"] as const) {
+    cron.schedule(expr, () => {
+      void (async () => {
+        try {
+          const { notifyManagedSystemWeeklyIfReady, notifyWeeklyStrategyExcelIfReady } = await import(
+            "./system-notifications"
+          )
+          const result = await notifyWeeklyStrategyExcelIfReady("friday-cron")
+          console.log(`[weekly-excel-notify] ${expr} ${result.reason} sent=${result.sent}`)
+          const managed = await notifyManagedSystemWeeklyIfReady("weekday-cron")
+          console.log(
+            `[managed-weekly-notify] ${expr} ${managed.reason} ${managed.current}/${managed.total} sent=${managed.sent}`,
+          )
+        } catch (e) {
+          console.error("[weekly-excel-notify] scheduler error:", e)
+        }
+      })()
+    }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+  }
+
+  // 08:00 Beijing: US CPI and non-farm payrolls, on the Beijing day of the
+  // release. An 21:30 print is already in the bell that morning. Fed meetings
+  // are not included. A quiet day sends nothing.
+  cron.schedule("0 8 * * *", () => {
+    void (async () => {
+      try {
+        const { notifyFeatureLaunches, notifyUsMacroBellForBeijingDay } = await import("./system-notifications")
+        const result = await notifyUsMacroBellForBeijingDay("morning")
+        console.log(`[us-macro-bell] ${result.reason} events=${result.events} sent=${result.sent}`)
+        const launches = await notifyFeatureLaunches("morning")
+        console.log(`[feature-launch] ${launches.reason} pending=${launches.pending} sent=${launches.sent}`)
+        const { notifyMomDecisionSignals, notifyMomVarBudget, notifyMomVarConcentration } = await import("./system-notifications")
+        const momVar = await notifyMomVarConcentration("morning")
+        console.log(`[mom-var-bell] ${momVar.reason} ${momVar.date} sent=${momVar.sent}`)
+        const momBudget = await notifyMomVarBudget("morning")
+        console.log(`[mom-var-budget] ${momBudget.reason} ${momBudget.date} sent=${momBudget.sent}`)
+        const momDecision = await notifyMomDecisionSignals("morning")
+        console.log(`[mom-decision-bell] ${momDecision.reason} ${momDecision.date} sent=${momDecision.sent}`)
+        const { notifyMacroRecovery } = await import("./system-notifications")
+        const recovery = await notifyMacroRecovery("morning")
+        console.log(`[macro-recovery-bell] ${recovery.reason} ${recovery.date} cluster=${recovery.cluster} sent=${recovery.sent}`)
+        const { notifyIndexQuarterBasis } = await import("./system-notifications")
+        const quarterBasis = await notifyIndexQuarterBasis("morning")
+        console.log(`[index-quarter-basis] ${quarterBasis.reason} ${quarterBasis.date} sent=${quarterBasis.sent}`)
+        const { notifyIndexAtmIvSpikes } = await import("./system-notifications")
+        const ivSpike = await notifyIndexAtmIvSpikes("morning")
+        console.log(`[index-atm-iv-spike] ${ivSpike.reason} products=${ivSpike.products.join(",") || "-"} sent=${ivSpike.sent}`)
+        const { notifyFuturesTopSector } = await import("./system-notifications")
+        const topSector = await notifyFuturesTopSector("morning")
+        console.log(`[futures-top-sector] ${topSector.reason} ${topSector.date} sent=${topSector.sent}`)
+      } catch (e) {
+        console.error("[us-macro-bell] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
+  // 18:30 Beijing weekdays: the latest MOM book is usually in by then.
+  // Variety share above the account's limit, or sector share above its limit.
+  cron.schedule("30 18 * * 1-5", () => {
+    void (async () => {
+      try {
+        const { notifyMomDecisionSignals, notifyMomVarBudget, notifyMomVarConcentration } = await import("./system-notifications")
+        const momVar = await notifyMomVarConcentration("evening")
+        console.log(`[mom-var-bell] ${momVar.reason} ${momVar.date} sent=${momVar.sent}`)
+        const momBudget = await notifyMomVarBudget("evening")
+        console.log(`[mom-var-budget] ${momBudget.reason} ${momBudget.date} sent=${momBudget.sent}`)
+        const momDecision = await notifyMomDecisionSignals("evening")
+        console.log(`[mom-decision-bell] ${momDecision.reason} ${momDecision.date} sent=${momDecision.sent}`)
+        const { notifyMacroRecovery } = await import("./system-notifications")
+        const recovery = await notifyMacroRecovery("evening")
+        console.log(`[macro-recovery-bell] ${recovery.reason} ${recovery.date} cluster=${recovery.cluster} sent=${recovery.sent}`)
+        const { notifyIndexQuarterBasis } = await import("./system-notifications")
+        const quarterBasis = await notifyIndexQuarterBasis("evening")
+        console.log(`[index-quarter-basis] ${quarterBasis.reason} ${quarterBasis.date} sent=${quarterBasis.sent}`)
+        const { notifyIndexAtmIvSpikes } = await import("./system-notifications")
+        const ivSpike = await notifyIndexAtmIvSpikes("evening")
+        console.log(`[index-atm-iv-spike] ${ivSpike.reason} products=${ivSpike.products.join(",") || "-"} sent=${ivSpike.sent}`)
+        const { notifyFuturesTopSector } = await import("./system-notifications")
+        const topSector = await notifyFuturesTopSector("evening")
+        console.log(`[futures-top-sector] ${topSector.reason} ${topSector.date} sent=${topSector.sent}`)
+      } catch (e) {
+        console.error("[mom-var-bell] scheduler error:", e)
       }
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })

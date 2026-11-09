@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
+import { useSearchParams } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw, Droplets, FileText, Printer, Download, Upload } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -7370,6 +7371,7 @@ function RiskReportAppCore({
     cacheResetRef.current = true
   }
 
+  const searchParams = useSearchParams()
   const [activeTab, setActiveTab] = useState<TabKey>(() => {
     if (forceEmbed) return "briefing"
     if (typeof window === "undefined") return "overview"
@@ -7380,6 +7382,26 @@ function RiskReportAppCore({
     if (tab && baseSubNavItems.some((item) => item.key === tab)) return tab as TabKey
     return "overview"
   })
+  useEffect(() => {
+    if (forceEmbed) return
+    const tab = searchParams.get("tab")
+    if (tab && baseSubNavItems.some((item) => item.key === tab)) setActiveTab(tab as TabKey)
+  }, [forceEmbed, searchParams])
+  useEffect(() => {
+    const hash = window.location.hash.replace(/^#/, "")
+    if (!hash || activeTab !== "intraday") return
+    let stopped = false
+    const scroll = () => {
+      if (stopped) return
+      document.getElementById(hash)?.scrollIntoView({ block: "start" })
+    }
+    scroll()
+    const timers = [300, 800, 1600, 2800].map((ms) => window.setTimeout(scroll, ms))
+    return () => {
+      stopped = true
+      timers.forEach((id) => window.clearTimeout(id))
+    }
+  }, [activeTab])
   const isEmbed = (() => {
     if (forceEmbed) return true
     if (typeof window === "undefined") return false
