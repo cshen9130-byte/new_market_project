@@ -2249,11 +2249,14 @@ def exposure_facts() -> dict:
         "thru_put": _expiry_yuan(sub, lambda rec: float(near_put.get(rec.product, rec.fpx)) * 0.95),
     }
     by_dn = {}
+    move = {}
     for rec in sub.itertuples(index=False):
         spot = rec.fpx * (1.0 - 2.0 * rec.sigma * math.sqrt(rec.tenor))
         intrinsic = max(0.0, rec.strike - spot) if rec.cp == "P" else max(0.0, spot - rec.strike)
         by_dn[rec.product] = by_dn.get(rec.product, 0.0) + rec.qty * (intrinsic - rec.mark) * rec.mult
+        move[rec.product] = 2.0 * rec.sigma * math.sqrt(rec.tenor)
     expiry["by_sig2_dn"] = sorted(by_dn.items(), key=lambda kv: kv[1])[:6]
+    expiry["move2"] = {k: move[k] for k in ("LH", "LC", "SN", "I", "RU")}
     facts = {
         "last": last,
         "priced_lots": float(sub["lots"].sum()),

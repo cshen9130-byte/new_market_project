@@ -13,6 +13,7 @@ print("theta", round(theta), "vega1", round(f["vega"]), "vol10", round(f["vol10"
 print("fut1", round(f["fut_1pct"]), "fut10", round(f["fut_1pct"] * 10))
 print("opt1", round(f["opt_1pct"]))
 print("by sig2 down", [(k, round(v)) for k, v in f["expiry"]["by_sig2_dn"]])
+print("move2", {k: round(v, 3) for k, v in f["expiry"]["move2"].items()})
 for k, v in f["expiry"].items():
     if not isinstance(v, float):
         continue
