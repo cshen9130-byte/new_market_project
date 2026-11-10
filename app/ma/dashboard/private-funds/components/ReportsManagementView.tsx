@@ -363,6 +363,42 @@ function sourceLabel(source?: string | null): string {
   return ""
 }
 
+function AutoWeeklyBulkTemplateBar({
+  count,
+  filtered,
+  disabled,
+  value,
+  onChange,
+  onApply,
+}: {
+  count: number
+  filtered: boolean
+  disabled?: boolean
+  value: string
+  onChange: (templateId: string) => void
+  onApply: () => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="text-xs text-zinc-500 shrink-0">全部设为</div>
+      <AutoWeeklyTemplateSelect value={value} disabled={disabled || count === 0} onChange={onChange} />
+      <button
+        type="button"
+        disabled={disabled || count === 0}
+        onClick={onApply}
+        className="h-8 px-3 rounded-md border border-border bg-background text-xs hover:bg-muted disabled:opacity-50"
+      >
+        应用
+      </button>
+      <div className="text-[11px] text-zinc-400">
+        {filtered
+          ? `将应用到当前筛选出的 ${count} 个产品`
+          : `将应用到全部 ${count} 个产品`}
+      </div>
+    </div>
+  )
+}
+
 function MineAddProductDialog({
   open,
   products,
@@ -371,6 +407,7 @@ function MineAddProductDialog({
   onAdd,
   onRemove,
   onSetTemplate,
+  onSetTemplates,
   onRefreshGenerate,
 }: {
   open: boolean
@@ -380,12 +417,14 @@ function MineAddProductDialog({
   onAdd: (opt: ProductOption, templateId: string) => Promise<void>
   onRemove: (p: MineProduct) => Promise<void>
   onSetTemplate: (p: MineProduct, templateId: string) => Promise<void>
+  onSetTemplates: (products: MineProduct[], templateId: string) => Promise<void>
   onRefreshGenerate: () => Promise<void>
 }) {
   const [query, setQuery] = useState("")
   const [options, setOptions] = useState<ProductOption[]>([])
   const [searching, setSearching] = useState(false)
   const [addTemplateId, setAddTemplateId] = useState(AUTO_WEEKLY_TEMPLATE_ID)
+  const [bulkTemplateId, setBulkTemplateId] = useState(AUTO_WEEKLY_TEMPLATE_ID)
   const wrapRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -393,6 +432,7 @@ function MineAddProductDialog({
       setQuery("")
       setOptions([])
       setAddTemplateId(AUTO_WEEKLY_TEMPLATE_ID)
+      setBulkTemplateId(AUTO_WEEKLY_TEMPLATE_ID)
       return
     }
   }, [open])
@@ -513,8 +553,20 @@ function MineAddProductDialog({
         </div>
 
         <div className="px-4 py-3 flex-1 min-h-0 overflow-auto">
-          <div className="text-xs font-medium text-zinc-500 mb-2">
-            已添加（{products.length}）
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div className="text-xs font-medium text-zinc-500">
+              已添加（{products.length}）
+            </div>
+            {products.length > 0 ? (
+              <AutoWeeklyBulkTemplateBar
+                count={products.length}
+                filtered={false}
+                disabled={busy}
+                value={bulkTemplateId}
+                onChange={setBulkTemplateId}
+                onApply={() => void onSetTemplates(products, bulkTemplateId)}
+              />
+            ) : null}
           </div>
           {products.length === 0 ? (
             <div className="text-xs text-zinc-400 py-6 text-center">尚未添加产品</div>
@@ -584,6 +636,7 @@ function TeamTemplateDialog({
   message,
   onClose,
   onSetTemplate,
+  onSetTemplates,
 }: {
   open: boolean
   products: TeamTemplateProduct[]
@@ -591,11 +644,16 @@ function TeamTemplateDialog({
   message: string | null
   onClose: () => void
   onSetTemplate: (p: TeamTemplateProduct, templateId: string) => Promise<void>
+  onSetTemplates: (products: TeamTemplateProduct[], templateId: string) => Promise<void>
 }) {
   const [query, setQuery] = useState("")
+  const [bulkTemplateId, setBulkTemplateId] = useState(AUTO_WEEKLY_TEMPLATE_ID)
 
   useEffect(() => {
-    if (!open) setQuery("")
+    if (!open) {
+      setQuery("")
+      setBulkTemplateId(AUTO_WEEKLY_TEMPLATE_ID)
+    }
   }, [open])
 
   if (!open) return null
@@ -625,7 +683,7 @@ function TeamTemplateDialog({
           </button>
         </div>
 
-        <div className="px-4 py-3 border-b">
+        <div className="px-4 py-3 border-b space-y-2">
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
             <input
@@ -635,6 +693,14 @@ function TeamTemplateDialog({
               className="w-full h-9 pl-8 pr-3 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          <AutoWeeklyBulkTemplateBar
+            count={filtered.length}
+            filtered={Boolean(query.trim())}
+            disabled={busy}
+            value={bulkTemplateId}
+            onChange={setBulkTemplateId}
+            onApply={() => void onSetTemplates(filtered, bulkTemplateId)}
+          />
         </div>
 
         <div className="px-4 py-3 flex-1 min-h-0 overflow-auto">
@@ -1008,6 +1074,11 @@ export function ReportsManagementView() {
 
 
   async function handleSetMineTemplate(p: MineProduct, templateId: string) {
+    await handleSetMineTemplates([p], templateId)
+  }
+
+  async function handleSetMineTemplates(targets: MineProduct[], templateId: string) {
+    if (targets.length === 0) return
     setMineBusy(true)
     setMineMessage(null)
     try {
@@ -1015,19 +1086,27 @@ export function ReportsManagementView() {
         method: "PATCH",
         headers: { ...userFetchHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
-          product_name: p.product_name,
-          beian_hao: p.beian_hao,
           templateId,
+          products: targets.map((p) => ({
+            product_name: p.product_name,
+            beian_hao: p.beian_hao,
+          })),
         }),
       })
       const json = (await resp.json().catch(() => ({}))) as {
         error?: string
         products?: MineProduct[]
+        updated?: number
       }
       if (!resp.ok) throw new Error(json.error || "保存模板失败")
       setMineProducts(json.products || [])
       const name = resolveAutoWeeklyTemplate(templateId).name
-      setMineMessage(`已将 ${p.product_name} 的订阅模板设为「${name}」`)
+      const n = json.updated ?? targets.length
+      setMineMessage(
+        n <= 1 && targets[0]
+          ? `已将 ${targets[0].product_name} 的订阅模板设为「${name}」`
+          : `已将 ${n} 个产品的订阅模板设为「${name}」`,
+      )
     } catch (err) {
       setMineMessage(err instanceof Error ? err.message : "保存模板失败")
     } finally {
@@ -1036,6 +1115,11 @@ export function ReportsManagementView() {
   }
 
   async function handleSetTeamTemplate(p: TeamTemplateProduct, templateId: string) {
+    await handleSetTeamTemplates([p], templateId)
+  }
+
+  async function handleSetTeamTemplates(targets: TeamTemplateProduct[], templateId: string) {
+    if (targets.length === 0) return
     setTeamTemplateBusy(true)
     setTeamTemplateMessage(null)
     try {
@@ -1043,19 +1127,27 @@ export function ReportsManagementView() {
         method: "PATCH",
         headers: { ...userFetchHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
-          product_name: p.product_name,
-          beian_hao: p.beian_hao,
           templateId,
+          products: targets.map((p) => ({
+            product_name: p.product_name,
+            beian_hao: p.beian_hao,
+          })),
         }),
       })
       const json = (await resp.json().catch(() => ({}))) as {
         error?: string
         data?: TeamTemplateProduct[]
+        updated?: number
       }
       if (!resp.ok) throw new Error(json.error || "保存模板失败")
       setTeamTemplateProducts(json.data || [])
       const name = resolveAutoWeeklyTemplate(templateId).name
-      setTeamTemplateMessage(`已将 ${p.product_name} 的订阅模板设为「${name}」`)
+      const n = json.updated ?? targets.length
+      setTeamTemplateMessage(
+        n <= 1 && targets[0]
+          ? `已将 ${targets[0].product_name} 的订阅模板设为「${name}」`
+          : `已将 ${n} 个产品的订阅模板设为「${name}」`,
+      )
     } catch (err) {
       setTeamTemplateMessage(err instanceof Error ? err.message : "保存模板失败")
     } finally {
@@ -1239,6 +1331,7 @@ export function ReportsManagementView() {
         onAdd={handleAddMineProduct}
         onRemove={handleRemoveMineProduct}
         onSetTemplate={handleSetMineTemplate}
+        onSetTemplates={handleSetMineTemplates}
         onRefreshGenerate={handleMineRegenerate}
       />
 
@@ -1249,6 +1342,7 @@ export function ReportsManagementView() {
         message={teamTemplateMessage}
         onClose={() => setTeamTemplateOpen(false)}
         onSetTemplate={handleSetTeamTemplate}
+        onSetTemplates={handleSetTeamTemplates}
       />
 
       {activeError && (

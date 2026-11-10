@@ -9,6 +9,7 @@ import {
   listMineWeeklyProducts,
   removeMineWeeklyProduct,
   setMineWeeklyProductTemplate,
+  setMineWeeklyProductTemplates,
 } from "@/lib/server/auto-weekly-mine-reports"
 import { getRequestUser } from "@/lib/server/users"
 
@@ -112,44 +113,70 @@ export async function DELETE(req: Request) {
   })
 }
 
-/** Body: { product_name: string, beian_hao?: string | null, templateId: string } */
+/**
+ * Body:
+ *   { product_name: string, beian_hao?: string | null, templateId: string }
+ *   or { templateId: string, products: Array<{ product_name: string, beian_hao?: string | null }> }
+ */
 export async function PATCH(req: Request) {
   const user = await getRequestUser(req)
   if (!user?.id) {
     return NextResponse.json({ error: "请先登录", code: "unauthorized" }, { status: 401 })
   }
 
-  let body: { product_name?: string; beian_hao?: string | null; templateId?: string } = {}
+  let body: {
+    product_name?: string
+    beian_hao?: string | null
+    templateId?: string
+    products?: Array<{ product_name?: string; beian_hao?: string | null }>
+  } = {}
   try {
     body = (await req.json()) as typeof body
   } catch {
     body = {}
   }
 
-  const product_name = (body.product_name || "").trim()
   const templateId = (body.templateId || "").trim()
-  if (!product_name) {
-    return NextResponse.json({ error: "product_name 必填" }, { status: 400 })
-  }
   if (!templateId) {
     return NextResponse.json({ error: "templateId 必填" }, { status: 400 })
   }
 
+  const targets = Array.isArray(body.products)
+    ? body.products.map((row) => ({
+        product_name: (row.product_name || "").trim(),
+        beian_hao: row.beian_hao ?? null,
+      }))
+    : body.product_name
+      ? [{ product_name: body.product_name.trim(), beian_hao: body.beian_hao ?? null }]
+      : []
+
+  if (targets.length === 0) {
+    return NextResponse.json({ error: "product_name 或 products 必填" }, { status: 400 })
+  }
+
   try {
-    const product = setMineWeeklyProductTemplate(
-      user.id,
-      { product_name, beian_hao: body.beian_hao ?? null },
-      templateId,
-    )
+    if (targets.length === 1) {
+      const product = setMineWeeklyProductTemplate(user.id, targets[0], templateId)
+      return NextResponse.json({
+        ok: true,
+        product,
+        updated: 1,
+        products: listMineWeeklyProducts(user.id),
+      })
+    }
+    const result = setMineWeeklyProductTemplates(user.id, targets, templateId)
     return NextResponse.json({
       ok: true,
-      product,
-      products: listMineWeeklyProducts(user.id),
+      updated: result.updated,
+      products: result.products,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     const status =
-      message.includes("不支持") || message.includes("不能为空") || message.includes("未加入")
+      message.includes("不支持") ||
+      message.includes("不能为空") ||
+      message.includes("未加入") ||
+      message.includes("请选择")
         ? 400
         : 500
     return NextResponse.json({ error: message }, { status })

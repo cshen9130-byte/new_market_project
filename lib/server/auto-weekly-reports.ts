@@ -536,23 +536,45 @@ export function getTeamAutoWeeklyTemplate(
   return findTeamTemplatePref(product_name, beian_hao)
 }
 
-export function setTeamAutoWeeklyTemplate(
-  product: { product_name: string; beian_hao?: string | null },
+export function setTeamAutoWeeklyTemplates(
+  products: Array<{ product_name: string; beian_hao?: string | null }>,
   templateId: string,
 ) {
   if (!isAutoWeeklyTemplateId(templateId)) {
     throw new Error("不支持的周报模板")
   }
-  const product_name = (product.product_name || "").trim()
-  if (!product_name) throw new Error("产品名称不能为空")
-  const beian_hao = (product.beian_hao || "").trim() || null
-  const data = readTeamTemplatePrefs()
-  const key = productKey(product_name, beian_hao)
   const now = new Date().toISOString()
-  const next = data.products.filter((row) => productKey(row.product_name, row.beian_hao) !== key)
-  next.push({ product_name, beian_hao, templateId, updatedAt: now })
+  const data = readTeamTemplatePrefs()
+  const next = data.products.slice()
+  const indexByKey = new Map(
+    next.map((row, index) => [productKey(row.product_name, row.beian_hao), index] as const),
+  )
+  let updated = 0
+  for (const product of products) {
+    const product_name = (product.product_name || "").trim()
+    if (!product_name) continue
+    const beian_hao = (product.beian_hao || "").trim() || null
+    const key = productKey(product_name, beian_hao)
+    const row = { product_name, beian_hao, templateId, updatedAt: now }
+    const existing = indexByKey.get(key)
+    if (existing == null) {
+      indexByKey.set(key, next.length)
+      next.push(row)
+    } else {
+      next[existing] = row
+    }
+    updated += 1
+  }
+  if (updated === 0) throw new Error("请选择要设置的产品")
   writeTeamTemplatePrefs({ version: 1, updatedAt: now, products: next })
-  return resolveAutoWeeklyTemplate(templateId)
+  return { template: resolveAutoWeeklyTemplate(templateId), updated }
+}
+
+export function setTeamAutoWeeklyTemplate(
+  product: { product_name: string; beian_hao?: string | null },
+  templateId: string,
+) {
+  return setTeamAutoWeeklyTemplates([product], templateId).template
 }
 
 export async function listTeamAutoWeeklyTemplateSubscriptions(): Promise<

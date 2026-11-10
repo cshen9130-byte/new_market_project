@@ -188,29 +188,53 @@ export function addMineWeeklyProduct(
   return row
 }
 
+export function setMineWeeklyProductTemplates(
+  userId: string,
+  products: Array<{ product_name: string; beian_hao?: string | null }>,
+  templateId: string,
+): { products: MineWeeklyProduct[]; updated: number } {
+  if (!isAutoWeeklyTemplateId(templateId)) {
+    throw new Error("不支持的周报模板")
+  }
+  const data = readProducts(userId)
+  let updated = 0
+  const missing: string[] = []
+  for (const product of products) {
+    const product_name = (product.product_name || "").trim()
+    if (!product_name) continue
+    const beian_hao = (product.beian_hao || "").trim() || null
+    const key = autoWeeklyProductKey(product_name, beian_hao)
+    const existing = data.products.find(
+      (row) => autoWeeklyProductKey(row.product_name, row.beian_hao) === key,
+    )
+    if (!existing) {
+      missing.push(product_name)
+      continue
+    }
+    existing.templateId = templateId
+    updated += 1
+  }
+  if (updated === 0) {
+    throw new Error(missing.length ? "产品未加入我的报告" : "请选择要设置的产品")
+  }
+  writeProducts(userId, data)
+  return { products: listMineWeeklyProducts(userId), updated }
+}
+
 export function setMineWeeklyProductTemplate(
   userId: string,
   product: { product_name: string; beian_hao?: string | null },
   templateId: string,
 ): MineWeeklyProduct {
-  if (!isAutoWeeklyTemplateId(templateId)) {
-    throw new Error("不支持的周报模板")
-  }
+  const result = setMineWeeklyProductTemplates(userId, [product], templateId)
   const product_name = (product.product_name || "").trim()
-  if (!product_name) throw new Error("产品名称不能为空")
   const beian_hao = (product.beian_hao || "").trim() || null
   const key = autoWeeklyProductKey(product_name, beian_hao)
-  const data = readProducts(userId)
-  const existing = data.products.find(
-    (p) => autoWeeklyProductKey(p.product_name, p.beian_hao) === key,
+  const row = result.products.find(
+    (item) => autoWeeklyProductKey(item.product_name, item.beian_hao) === key,
   )
-  if (!existing) throw new Error("产品未加入我的报告")
-  existing.templateId = templateId
-  writeProducts(userId, data)
-  return {
-    ...existing,
-    templateId: resolveAutoWeeklyTemplate(templateId).id,
-  }
+  if (!row) throw new Error("产品未加入我的报告")
+  return row
 }
 
 export function removeMineWeeklyProduct(
