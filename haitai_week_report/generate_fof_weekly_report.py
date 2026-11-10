@@ -986,8 +986,58 @@ def load_report_variant_file(path: str | None) -> dict:
     }
 
 
+def _donut_label_font(fp, size: float) -> FontProperties:
+    if fp is not None and fp.get_file():
+        return FontProperties(fname=fp.get_file(), size=size)
+    if fp is not None:
+        return FontProperties(family=fp.get_name(), size=size)
+    return FontProperties(size=size)
+
+
+def _label_width_inches(text: str, font_size: float) -> float:
+    """Approximate rendered width; CJK characters count as one em."""
+    width_pt = 0.0
+    for ch in text:
+        width_pt += font_size if ord(ch) > 0x2E7F else font_size * 0.55
+    return width_pt / 72.0
+
+
+def _pack_label_ys(desired: list[float], y_min: float, y_max: float, min_gap: float) -> list[float]:
+    """Spread already top-to-bottom ys so neighbors stay at least min_gap apart."""
+    n = len(desired)
+    if n == 0:
+        return []
+    if n == 1:
+        return [min(y_max, max(y_min, desired[0]))]
+    span = max(0.0, y_max - y_min)
+    gap = min_gap if (n - 1) * min_gap <= span else span / (n - 1)
+    out = list(desired)
+    out[0] = min(out[0], y_max)
+    for i in range(1, n):
+        out[i] = min(out[i], out[i - 1] - gap)
+    out[-1] = max(out[-1], y_min)
+    for i in range(n - 2, -1, -1):
+        out[i] = max(out[i], out[i + 1] + gap)
+    if out[0] > y_max:
+        shift = out[0] - y_max
+        out = [y - shift for y in out]
+    if out[-1] < y_min:
+        shift = y_min - out[-1]
+        out = [y + shift for y in out]
+        if out[0] > y_max:
+            # Still does not fit: compress into [y_min, y_max].
+            if n == 1:
+                out = [(y_min + y_max) / 2.0]
+            else:
+                out = [y_max - i * (span / (n - 1)) for i in range(n)]
+    return out
+
+
 def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
-    """Donut of 二级策略 weights, legend with name and pie share. Stays inside rect."""
+    """Donut of 二级策略 weights with on-chart name+percent labels and leader lines.
+
+    The bottom color legend is omitted so labels have room in the compact card.
+    """
     left, bottom, width, height = rect
     if width <= 0 or height <= 0 or not slices:
         return
@@ -996,22 +1046,13 @@ def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
     names = [str(item["name"]) for item in slices]
     total = sum(values) or 1.0
     colors = [strategy_slice_color(name, i) for i, name in enumerate(names)]
-    labels = [f"{name}  {value / total * 100:.1f}%" for name, value in zip(names, values)]
+    labels = [f"{name} {value / total * 100:.1f}%" for name, value in zip(names, values)]
 
-    n_cols = 2 if len(slices) > 3 else 1
-    n_rows = int(np.ceil(len(slices) / n_cols))
-    legend_frac = min(0.42, max(0.30, 0.12 + n_rows * 0.06))
-    legend_h = height * legend_frac
-    pie_h = height - legend_h
-    fig_w, fig_h = fig.get_size_inches()
-    pie_w = min(width, pie_h * fig_h / fig_w) if fig_w else width
-    pie_x = left + (width - pie_w) / 2
-    pie_y = bottom + legend_h
+    ax = fig.add_axes([left, bottom, width, height])
+    ax.set_facecolor("none")
+    ax.axis("off")
 
-    pie_ax = fig.add_axes([pie_x, pie_y, pie_w, pie_h])
-    pie_ax.set_facecolor("none")
-    pie_ax.axis("off")
-    wedges, _ = pie_ax.pie(
+    wedges, _ = ax.pie(
         values,
         colors=colors,
         startangle=90,
@@ -1020,35 +1061,120 @@ def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
         radius=1.0,
         center=(0, 0),
     )
-    pie_ax.set_xlim(-1.18, 1.18)
-    pie_ax.set_ylim(-1.18, 1.18)
-    pie_ax.set_aspect("equal")
 
-    leg_ax = fig.add_axes([left, bottom, width, legend_h])
-    leg_ax.set_facecolor("none")
-    leg_ax.axis("off")
-    legend_font = None
-    if fp is not None and fp.get_file():
-        legend_font = FontProperties(fname=fp.get_file(), size=7)
-    elif fp is not None:
-        legend_font = fp
-    legend_kwargs = dict(
-        loc="center",
-        bbox_to_anchor=(0.5, 0.58),
-        ncol=n_cols,
-        frameon=False,
-        handlelength=0.8,
-        handleheight=0.55,
-        columnspacing=0.9,
-        labelspacing=0.28,
-        borderaxespad=0.0,
-    )
-    if legend_font is not None:
-        legend_kwargs["prop"] = legend_font
-    else:
-        legend_kwargs["fontsize"] = 7
-    leg_ax.legend(wedges, labels, **legend_kwargs)
+    fig_w, fig_h = fig.get_size_inches()
+    ax_w_in = width * fig_w
+    ax_h_in = height * fig_h
+    if ax_w_in <= 0 or ax_h_in <= 0:
+        return
 
+    n_slices = len(slices)
+    font_size = 7.0 if n_slices <= 5 else 6.5 if n_slices <= 8 else 6.0
+    line_in = 0.20
+    text_pad_in = 0.04
+    edge_pad_in = 0.03
+    min_side_in = 0.28
+
+    # Pre-assign sides from mid-angles so each side only reserves the width it needs.
+    theta = 90.0
+    side_labels = {"left": [], "right": []}
+    for value, label in zip(values, labels):
+        extent = 360.0 * value / total
+        mid = np.deg2rad(theta - extent / 2.0)
+        side_labels["right" if np.cos(mid) >= 0 else "left"].append(label)
+        theta -= extent
+
+    def side_need(texts: list[str], size: float) -> float:
+        if not texts:
+            return min_side_in
+        widest = max(_label_width_inches(text, size) for text in texts)
+        return max(min_side_in, line_in + text_pad_in + edge_pad_in + widest)
+
+    left_need = right_need = min_side_in
+    ipu = 0.45
+    for size in (7.0, 6.5, 6.0, 5.5):
+        left_need = side_need(side_labels["left"], size)
+        right_need = side_need(side_labels["right"], size)
+        cand_w = (ax_w_in - left_need - right_need) / 2.0
+        cand_h = ax_h_in / 2.0 / 1.06
+        cand = min(cand_w, cand_h)
+        if cand >= 0.45 or size == 5.5:
+            font_size = size
+            ipu = max(0.36, cand)
+            break
+
+    half_h = (ax_h_in / 2.0) / ipu
+    # Asymmetric x window: donut stays at 0, extra width goes to the heavier label side.
+    ax.set_xlim(-(1.0 + left_need / ipu), 1.0 + right_need / ipu)
+    ax.set_ylim(-half_h, half_h)
+    ax.set_aspect("equal")
+
+    r_out = 1.0
+    length1 = line_in * 0.55 / ipu
+    length2 = line_in * 0.45 / ipu
+    font = _donut_label_font(fp, font_size)
+    min_gap = max(0.11, (font_size + 1.6) / 72.0 / ipu)
+    y_top = half_h * 0.96
+    y_bot = -half_h * 0.96
+    text_color = "#52525b"
+
+    placed: list[dict] = []
+    for wedge, label, color in zip(wedges, labels, colors):
+        mid = np.deg2rad((wedge.theta1 + wedge.theta2) / 2.0)
+        c, s = float(np.cos(mid)), float(np.sin(mid))
+        x1, y1 = c * r_out, s * r_out
+        x2, y2 = c * (r_out + length1), s * (r_out + length1)
+        side = "right" if c >= 0 else "left"
+        placed.append({
+            "label": label,
+            "color": color,
+            "side": side,
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+            "width_in": _label_width_inches(label, font_size),
+        })
+
+    for side, sign in (("right", 1.0), ("left", -1.0)):
+        group = [item for item in placed if item["side"] == side]
+        if not group:
+            continue
+        group.sort(key=lambda item: -item["y2"])
+        ys = _pack_label_ys([item["y2"] for item in group], y_bot, y_top, min_gap)
+        # Keep a consistent text column just outside the elbows, inside the axes.
+        elbows = [abs(item["x2"]) for item in group]
+        gap = text_pad_in / ipu
+        side_edge = (1.0 + (right_need if sign > 0 else left_need) / ipu)
+        # Align labels in one column, kept inside that side of the axes.
+        x_col = max(elbows) + length2
+        x_fit = min(side_edge - edge_pad_in / ipu - item["width_in"] / ipu - gap for item in group)
+        x_col = min(x_col, max(max(elbows) + 0.06, x_fit))
+        for item, y in zip(group, ys):
+            x_text = sign * x_col
+            item["x3"] = x_text
+            item["y3"] = y
+            ax.plot(
+                [item["x1"], item["x2"], x_text],
+                [item["y1"], item["y2"], y],
+                color=item["color"],
+                linewidth=0.85,
+                solid_capstyle="round",
+                solid_joinstyle="round",
+                clip_on=False,
+                zorder=3,
+            )
+            ax.text(
+                x_text + sign * gap,
+                y,
+                item["label"],
+                fontproperties=font,
+                color=text_color,
+                ha="left" if sign > 0 else "right",
+                va="center",
+                clip_on=False,
+                zorder=4,
+            )
 
 def ret_color(val: float) -> str:
     if val > 0:

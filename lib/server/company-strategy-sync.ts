@@ -7,6 +7,7 @@
  */
 
 import { query } from "@/lib/db"
+import { strategyFamilyLookupCodes } from "@/lib/server/fund-holding-code"
 import { invalidateDetailResponseMemoryCache } from "@/lib/server/fund-detail-response-memory-cache"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 import { invalidateTrackingPoolListCaches } from "@/lib/server/tracking-pool-membership"
@@ -131,6 +132,7 @@ async function patchInvestmentOverviewCaches(update: CompanyStrategyUpdate): Pro
 async function patchValuationSnapshotStrategies(update: CompanyStrategyUpdate): Promise<void> {
   const code = update.beian_hao.trim().toUpperCase()
   if (!code) return
+  const codes = strategyFamilyLookupCodes(code)
   const fundStrategy =
     update.strategy_l1 && update.strategy_l2
       ? `${update.strategy_l1}/${update.strategy_l2}`
@@ -146,8 +148,8 @@ async function patchValuationSnapshotStrategies(update: CompanyStrategyUpdate): 
          COALESCE((
            SELECT jsonb_agg(
              CASE
-               WHEN UPPER(BTRIM(COALESCE(elem->>'valuationCode', elem->>'beianHao', ''))) = $1
-                 OR UPPER(BTRIM(COALESCE(elem->>'beianHao', ''))) = $1
+               WHEN UPPER(BTRIM(COALESCE(elem->>'valuationCode', elem->>'beianHao', ''))) = ANY($1::text[])
+                 OR UPPER(BTRIM(COALESCE(elem->>'beianHao', ''))) = ANY($1::text[])
                THEN (elem - 'strategyL1' - 'strategyL2' - 'strategyL3' - 'fundStrategy')
                  || jsonb_build_object(
                       'strategyL1', COALESCE(to_jsonb($2::text), 'null'::jsonb),
@@ -163,9 +165,9 @@ async function patchValuationSnapshotStrategies(update: CompanyStrategyUpdate): 
        ),
        computed_at = NOW()
        WHERE c.cache_key = 'snapshot'
-         AND c.data::text ILIKE '%' || $1 || '%'
+         AND c.data::text ILIKE ANY (SELECT '%' || x || '%' FROM unnest($1::text[]) AS x)
        RETURNING c.beian_hao`,
-      [code, update.strategy_l1, update.strategy_l2, update.strategy_l3, fundStrategy],
+      [codes, update.strategy_l1, update.strategy_l2, update.strategy_l3, fundStrategy],
     )
     const parentCodes = [...new Set(patched.map((r) => r.beian_hao))]
     // Drop in-process memory for parents we patched (keep DB rows — they are already fixed).

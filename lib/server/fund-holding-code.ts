@@ -5,7 +5,10 @@
 
 import { query } from "@/lib/db"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
-import { canonicalizeShareClassBeianCode } from "@/lib/server/share-class-product"
+import {
+  canonicalizeShareClassBeianCode,
+  shareClassFamilyBeianCodes,
+} from "@/lib/server/share-class-product"
 import {
   isValuationStockCostSubjectName,
   stripValuationSubjectPathPrefix,
@@ -208,6 +211,31 @@ export function strategyMatchCodes(...codes: Array<string | null | undefined>): 
     if (alias) push(alias)
   }
   for (const code of codes) push(code)
+  return out
+}
+
+
+/**
+ * Codes that should be tried when resolving 团队策略 for a holding.
+ * Includes custodian aliases (strategyMatchCodes) plus the AMAC parent /
+ * share-class family (GG136A ↔ SGG136, ALF51B ↔ SALF51).
+ * Do not reuse this list for NAV lookups: parent and share-class NAVs can differ.
+ */
+export function strategyFamilyLookupCodes(...codes: Array<string | null | undefined>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (value: string | null | undefined) => {
+    const key = String(value ?? "").trim().toUpperCase()
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    out.push(key)
+  }
+  for (const code of strategyMatchCodes(...codes)) {
+    push(code)
+    // 6-digit listed tickers are not AMAC share-class families.
+    if (/^\d{6}$/.test(code)) continue
+    for (const variant of shareClassFamilyBeianCodes(code)) push(variant)
+  }
   return out
 }
 

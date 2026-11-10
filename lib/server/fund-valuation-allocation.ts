@@ -34,6 +34,7 @@ import {
   lookupFundCodeByProductName,
   resolveFofValuationCodeAlias,
   resolveFundHoldingCode,
+  strategyFamilyLookupCodes,
   strategyMatchCodes,
 } from "@/lib/server/fund-holding-code"
 import {
@@ -1598,7 +1599,7 @@ function lookupStrategyRow(
   codes: Array<string | null | undefined>,
   name?: string | null,
 ): CompanyStrategyRow | undefined {
-  for (const code of strategyMatchCodes(...codes)) {
+  for (const code of strategyFamilyLookupCodes(...codes)) {
     const hit = map.get(code)
     if (hit && (hit.l1 || hit.l2 || hit.l3)) return hit
   }
@@ -1641,7 +1642,7 @@ async function loadCompanyStrategyBatch(
   productNames: string[],
 ): Promise<Map<string, CompanyStrategyRow>> {
   const out = new Map<string, CompanyStrategyRow>()
-  const codes = [...new Set(beianCodes.map((c) => c.trim()).filter(Boolean))]
+  const codes = [...new Set(strategyFamilyLookupCodes(...beianCodes))]
   if (codes.length > 0) {
     const rows = await query<{ register_number: string; l1: string | null; l2: string | null; l3: string | null }>(
       `SELECT DISTINCT ON (register_number)
@@ -1656,7 +1657,7 @@ async function loadCompanyStrategyBatch(
     )
     for (const r of rows) {
       const row = { key: r.register_number, l1: r.l1, l2: r.l2, l3: r.l3 }
-      for (const code of strategyMatchCodes(r.register_number)) {
+      for (const code of strategyFamilyLookupCodes(r.register_number)) {
         if (!out.has(code)) out.set(code, row)
       }
     }
