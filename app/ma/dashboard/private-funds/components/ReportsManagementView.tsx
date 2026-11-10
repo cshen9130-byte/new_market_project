@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   Inbox,
   LayoutList,
+  LayoutTemplate,
   Plus,
   Search,
   Trash2,
@@ -16,6 +17,11 @@ import JSZip from "jszip"
 import { NewReportDialog } from "./NewReportDialog"
 import { authService, type User } from "@/lib/auth"
 import { canAccessPfInvestmentPool } from "@/lib/permissions"
+import {
+  AUTO_WEEKLY_TEMPLATE_ID,
+  AUTO_WEEKLY_TEMPLATE_OPTIONS,
+  resolveAutoWeeklyTemplate,
+} from "@/lib/ma/auto-weekly-templates"
 
 type ScopeTab = "team" | "mine"
 type ViewMode = "table" | "images"
@@ -51,6 +57,15 @@ type MineProduct = {
   product_name: string
   beian_hao: string | null
   addedAt: string
+  templateId?: string
+}
+
+type TeamTemplateProduct = {
+  product_name: string
+  beian_hao: string | null
+  source?: "managed" | "extra" | "mine"
+  templateId: string
+  templateName?: string
 }
 
 type ProductOption = {
@@ -311,6 +326,43 @@ function parsePickerOptions(json: unknown, source: ProductOption["source"], sour
   return out
 }
 
+
+const AUTO_WEEKLY_TEMPLATE_HINT =
+  "模板用于之后自动生成的周报，已生成的报告不会改写。"
+
+function AutoWeeklyTemplateSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value?: string | null
+  disabled?: boolean
+  onChange: (templateId: string) => void
+}) {
+  return (
+    <select
+      value={resolveAutoWeeklyTemplate(value).id}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-8 max-w-[220px] shrink-0 rounded-md border border-border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+      title="自动周报模板"
+    >
+      {AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item) => (
+        <option key={item.id} value={item.id}>
+          {item.name}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function sourceLabel(source?: string | null): string {
+  if (source === "managed") return "在管产品"
+  if (source === "extra") return "补充产品"
+  if (source === "mine") return "我的跟踪"
+  return ""
+}
+
 function MineAddProductDialog({
   open,
   products,
@@ -318,25 +370,29 @@ function MineAddProductDialog({
   onClose,
   onAdd,
   onRemove,
+  onSetTemplate,
   onRefreshGenerate,
 }: {
   open: boolean
   products: MineProduct[]
   busy: boolean
   onClose: () => void
-  onAdd: (opt: ProductOption) => Promise<void>
+  onAdd: (opt: ProductOption, templateId: string) => Promise<void>
   onRemove: (p: MineProduct) => Promise<void>
+  onSetTemplate: (p: MineProduct, templateId: string) => Promise<void>
   onRefreshGenerate: () => Promise<void>
 }) {
   const [query, setQuery] = useState("")
   const [options, setOptions] = useState<ProductOption[]>([])
   const [searching, setSearching] = useState(false)
+  const [addTemplateId, setAddTemplateId] = useState(AUTO_WEEKLY_TEMPLATE_ID)
   const wrapRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) {
       setQuery("")
       setOptions([])
+      setAddTemplateId(AUTO_WEEKLY_TEMPLATE_ID)
       return
     }
   }, [open])
@@ -401,13 +457,13 @@ function MineAddProductDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div
         ref={wrapRef}
-        className="w-full max-w-xl rounded-xl border border-border bg-background shadow-xl flex flex-col max-h-[85vh]"
+        className="w-full max-w-2xl rounded-xl border border-border bg-background shadow-xl flex flex-col max-h-[85vh]"
       >
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <div>
             <div className="text-sm font-semibold">添加跟踪产品</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              加入后按与团队报告相同的周报逻辑自动生成，仅你可见
+              加入后按与团队报告相同的周报逻辑自动生成，仅你可见。{AUTO_WEEKLY_TEMPLATE_HINT}
             </div>
           </div>
           <button type="button" className="p-1 rounded hover:bg-muted" onClick={onClose} aria-label="关闭">
@@ -416,6 +472,10 @@ function MineAddProductDialog({
         </div>
 
         <div className="px-4 py-3 border-b space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs text-zinc-500 shrink-0">新增产品订阅模板</div>
+            <AutoWeeklyTemplateSelect value={addTemplateId} disabled={busy} onChange={setAddTemplateId} />
+          </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
             <input
@@ -436,7 +496,7 @@ function MineAddProductDialog({
                   key={`${opt.source}-${opt.beian_hao || ""}-${opt.product_name}`}
                   type="button"
                   disabled={busy}
-                  onClick={() => void onAdd(opt)}
+                  onClick={() => void onAdd(opt, addTemplateId)}
                   className="w-full text-left px-3 py-2 text-sm hover:bg-muted/50 disabled:opacity-50 flex items-center justify-between gap-2"
                 >
                   <span className="min-w-0 truncate">
@@ -472,15 +532,22 @@ function MineAddProductDialog({
                       {new Date(p.addedAt).toLocaleString("zh-CN", { hour12: false })}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void onRemove(p)}
-                    className="shrink-0 inline-flex items-center gap-1 text-xs text-red-600 hover:underline disabled:opacity-50"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    移除
-                  </button>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <AutoWeeklyTemplateSelect
+                      value={p.templateId}
+                      disabled={busy}
+                      onChange={(templateId) => void onSetTemplate(p, templateId)}
+                    />
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void onRemove(p)}
+                      className="shrink-0 inline-flex items-center gap-1 text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      移除
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -509,6 +576,110 @@ function MineAddProductDialog({
   )
 }
 
+
+function TeamTemplateDialog({
+  open,
+  products,
+  busy,
+  message,
+  onClose,
+  onSetTemplate,
+}: {
+  open: boolean
+  products: TeamTemplateProduct[]
+  busy: boolean
+  message: string | null
+  onClose: () => void
+  onSetTemplate: (p: TeamTemplateProduct, templateId: string) => Promise<void>
+}) {
+  const [query, setQuery] = useState("")
+
+  useEffect(() => {
+    if (!open) setQuery("")
+  }, [open])
+
+  if (!open) return null
+
+  const filtered = query.trim()
+    ? products.filter((p) => {
+        const hay = [p.product_name, p.beian_hao, p.templateName, sourceLabel(p.source)]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+        return hay.includes(query.trim().toLowerCase())
+      })
+    : products
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-xl border border-border bg-background shadow-xl flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <div>
+            <div className="text-sm font-semibold">团队报告订阅模板</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              为每个自动生成的团队周报选择模板。未设置的产品默认使用「跟踪产品（通用曲线版）」。{AUTO_WEEKLY_TEMPLATE_HINT}
+            </div>
+          </div>
+          <button type="button" className="p-1 rounded hover:bg-muted" onClick={onClose} aria-label="关闭">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 border-b">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索产品名称 / 备案号…"
+              className="w-full h-9 pl-8 pr-3 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        </div>
+
+        <div className="px-4 py-3 flex-1 min-h-0 overflow-auto">
+          {message ? <div className="mb-2 text-xs text-sky-600 dark:text-sky-400">{message}</div> : null}
+          {filtered.length === 0 ? (
+            <div className="text-xs text-zinc-400 py-6 text-center">暂无自动周报产品</div>
+          ) : (
+            <ul className="space-y-1">
+              {filtered.map((p) => (
+                <li
+                  key={`${p.source || ""}-${p.beian_hao || ""}-${p.product_name}`}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{p.product_name}</div>
+                    <div className="text-[11px] text-zinc-400">
+                      {p.beian_hao || "无备案号"}
+                      {sourceLabel(p.source) ? ` · ${sourceLabel(p.source)}` : ""}
+                    </div>
+                  </div>
+                  <AutoWeeklyTemplateSelect
+                    value={p.templateId}
+                    disabled={busy}
+                    onChange={(templateId) => void onSetTemplate(p, templateId)}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="px-4 py-3 border-t flex items-center justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 px-3 rounded-md bg-red-600 text-white text-sm hover:bg-red-700"
+          >
+            完成
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ReportsManagementView() {
   const [scopeTab, setScopeTab] = useState<ScopeTab>("team")
   const [keyword, setKeyword] = useState("")
@@ -517,6 +688,10 @@ export function ReportsManagementView() {
   const [titleNameMode, setTitleNameMode] = useState<TitleNameMode>("short")
   const [newReportOpen, setNewReportOpen] = useState(false)
   const [addProductOpen, setAddProductOpen] = useState(false)
+  const [teamTemplateOpen, setTeamTemplateOpen] = useState(false)
+  const [teamTemplateProducts, setTeamTemplateProducts] = useState<TeamTemplateProduct[]>([])
+  const [teamTemplateBusy, setTeamTemplateBusy] = useState(false)
+  const [teamTemplateMessage, setTeamTemplateMessage] = useState<string | null>(null)
 
   const [teamReports, setTeamReports] = useState<WeeklyReportRow[]>([])
   const [mineReports, setMineReports] = useState<WeeklyReportRow[]>([])
@@ -643,6 +818,24 @@ export function ReportsManagementView() {
     }
   }, [])
 
+  const refreshTeamTemplates = useCallback(async () => {
+    try {
+      const resp = await fetch("/ma/api/reports/auto-weekly/templates", {
+        headers: userFetchHeaders(),
+        cache: "no-store",
+      })
+      const json = (await resp.json().catch(() => ({}))) as {
+        data?: TeamTemplateProduct[]
+        error?: string
+      }
+      if (!resp.ok) throw new Error(json.error || "加载团队模板失败")
+      setTeamTemplateProducts(json.data || [])
+    } catch (err) {
+      setTeamTemplateProducts([])
+      setTeamTemplateMessage(err instanceof Error ? err.message : "加载团队模板失败")
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -723,7 +916,7 @@ export function ReportsManagementView() {
     }
   }
 
-  async function handleAddMineProduct(opt: ProductOption) {
+  async function handleAddMineProduct(opt: ProductOption, templateId: string) {
     setMineBusy(true)
     setMineMessage(null)
     try {
@@ -733,6 +926,7 @@ export function ReportsManagementView() {
         body: JSON.stringify({
           product_name: opt.product_name,
           beian_hao: opt.beian_hao,
+          templateId,
           generate: true,
         }),
       })
@@ -809,6 +1003,63 @@ export function ReportsManagementView() {
       setMineMessage(err instanceof Error ? err.message : "生成失败")
     } finally {
       setMineBusy(false)
+    }
+  }
+
+
+  async function handleSetMineTemplate(p: MineProduct, templateId: string) {
+    setMineBusy(true)
+    setMineMessage(null)
+    try {
+      const resp = await fetch("/ma/api/reports/auto-weekly/mine/products", {
+        method: "PATCH",
+        headers: { ...userFetchHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_name: p.product_name,
+          beian_hao: p.beian_hao,
+          templateId,
+        }),
+      })
+      const json = (await resp.json().catch(() => ({}))) as {
+        error?: string
+        products?: MineProduct[]
+      }
+      if (!resp.ok) throw new Error(json.error || "保存模板失败")
+      setMineProducts(json.products || [])
+      const name = resolveAutoWeeklyTemplate(templateId).name
+      setMineMessage(`已将 ${p.product_name} 的订阅模板设为「${name}」`)
+    } catch (err) {
+      setMineMessage(err instanceof Error ? err.message : "保存模板失败")
+    } finally {
+      setMineBusy(false)
+    }
+  }
+
+  async function handleSetTeamTemplate(p: TeamTemplateProduct, templateId: string) {
+    setTeamTemplateBusy(true)
+    setTeamTemplateMessage(null)
+    try {
+      const resp = await fetch("/ma/api/reports/auto-weekly/templates", {
+        method: "PATCH",
+        headers: { ...userFetchHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_name: p.product_name,
+          beian_hao: p.beian_hao,
+          templateId,
+        }),
+      })
+      const json = (await resp.json().catch(() => ({}))) as {
+        error?: string
+        data?: TeamTemplateProduct[]
+      }
+      if (!resp.ok) throw new Error(json.error || "保存模板失败")
+      setTeamTemplateProducts(json.data || [])
+      const name = resolveAutoWeeklyTemplate(templateId).name
+      setTeamTemplateMessage(`已将 ${p.product_name} 的订阅模板设为「${name}」`)
+    } catch (err) {
+      setTeamTemplateMessage(err instanceof Error ? err.message : "保存模板失败")
+    } finally {
+      setTeamTemplateBusy(false)
     }
   }
 
@@ -935,6 +1186,20 @@ export function ReportsManagementView() {
               </button>
             </>
           )}
+          {scopeTab === "team" && canSeeSystem && (
+            <button
+              type="button"
+              onClick={() => {
+                setTeamTemplateOpen(true)
+                setTeamTemplateMessage(null)
+                void refreshTeamTemplates()
+              }}
+              className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-border bg-background hover:bg-muted text-sm font-medium transition-colors"
+            >
+              <LayoutTemplate className="mr-1.5 h-4 w-4" />
+              订阅模板
+            </button>
+          )}
           {scopeTab === "mine" && (
             <button
               type="button"
@@ -973,7 +1238,17 @@ export function ReportsManagementView() {
         onClose={() => setAddProductOpen(false)}
         onAdd={handleAddMineProduct}
         onRemove={handleRemoveMineProduct}
+        onSetTemplate={handleSetMineTemplate}
         onRefreshGenerate={handleMineRegenerate}
+      />
+
+      <TeamTemplateDialog
+        open={teamTemplateOpen}
+        products={teamTemplateProducts}
+        busy={teamTemplateBusy}
+        message={teamTemplateMessage}
+        onClose={() => setTeamTemplateOpen(false)}
+        onSetTemplate={handleSetTeamTemplate}
       />
 
       {activeError && (

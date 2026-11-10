@@ -7,8 +7,6 @@ import { randomUUID } from "crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "fs"
 import path from "path"
 import {
-  AUTO_WEEKLY_TEMPLATE_ID,
-  AUTO_WEEKLY_TEMPLATE_NAME,
   autoWeeklyProductKey,
   enrichAutoWeeklyListItem,
   lookupAutoWeeklyTitleNames,
@@ -20,6 +18,10 @@ import {
   type AutoWeeklyReportRecord,
   type AutoWeeklyTargetProduct,
 } from "@/lib/server/auto-weekly-reports"
+import {
+  isAutoWeeklyTemplateId,
+  resolveAutoWeeklyTemplate,
+} from "@/lib/ma/auto-weekly-templates"
 import { resolveLatestAvailableDataWeek } from "@/lib/server/auto-weekly-report-week"
 import {
   generateFofWeeklyReport,
@@ -35,6 +37,8 @@ export type MineWeeklyProduct = {
   product_name: string
   beian_hao: string | null
   addedAt: string
+  /** Weekly template used for future auto-generated 我的报告. Defaults to curve. */
+  templateId?: string
 }
 
 type MineProductsFile = {
@@ -138,32 +142,75 @@ function upsertRecord(userId: string, record: AutoWeeklyReportRecord): void {
 }
 
 export function listMineWeeklyProducts(userId: string): MineWeeklyProduct[] {
-  return readProducts(userId).products.slice().sort((a, b) =>
-    a.product_name.localeCompare(b.product_name, "zh"),
-  )
+  return readProducts(userId)
+    .products.map((row) => {
+      const template = resolveAutoWeeklyTemplate(row.templateId)
+      return {
+        ...row,
+        templateId: template.id,
+      }
+    })
+    .slice()
+    .sort((a, b) => a.product_name.localeCompare(b.product_name, "zh"))
 }
 
 export function addMineWeeklyProduct(
   userId: string,
-  product: { product_name: string; beian_hao?: string | null },
+  product: { product_name: string; beian_hao?: string | null; templateId?: string | null },
 ): MineWeeklyProduct {
   const product_name = (product.product_name || "").trim()
   if (!product_name) throw new Error("产品名称不能为空")
   const beian_hao = (product.beian_hao || "").trim() || null
+  const template = resolveAutoWeeklyTemplate(product.templateId)
   const data = readProducts(userId)
   const key = autoWeeklyProductKey(product_name, beian_hao)
   const existing = data.products.find(
     (p) => autoWeeklyProductKey(p.product_name, p.beian_hao) === key,
   )
-  if (existing) return existing
+  if (existing) {
+    if (product.templateId && existing.templateId !== template.id) {
+      existing.templateId = template.id
+      writeProducts(userId, data)
+    }
+    return {
+      ...existing,
+      templateId: resolveAutoWeeklyTemplate(existing.templateId).id,
+    }
+  }
   const row: MineWeeklyProduct = {
     product_name,
     beian_hao,
     addedAt: new Date().toISOString(),
+    templateId: template.id,
   }
   data.products.push(row)
   writeProducts(userId, data)
   return row
+}
+
+export function setMineWeeklyProductTemplate(
+  userId: string,
+  product: { product_name: string; beian_hao?: string | null },
+  templateId: string,
+): MineWeeklyProduct {
+  if (!isAutoWeeklyTemplateId(templateId)) {
+    throw new Error("不支持的周报模板")
+  }
+  const product_name = (product.product_name || "").trim()
+  if (!product_name) throw new Error("产品名称不能为空")
+  const beian_hao = (product.beian_hao || "").trim() || null
+  const key = autoWeeklyProductKey(product_name, beian_hao)
+  const data = readProducts(userId)
+  const existing = data.products.find(
+    (p) => autoWeeklyProductKey(p.product_name, p.beian_hao) === key,
+  )
+  if (!existing) throw new Error("产品未加入我的报告")
+  existing.templateId = templateId
+  writeProducts(userId, data)
+  return {
+    ...existing,
+    templateId: resolveAutoWeeklyTemplate(templateId).id,
+  }
 }
 
 export function removeMineWeeklyProduct(
@@ -278,6 +325,13 @@ export async function ensureMineWeeklyReportForProduct(
     }
 
     const title = displayName
+    const mineProducts = listMineWeeklyProducts(userId)
+    const displayKey = autoWeeklyProductKey(displayName, range.beian_hao || beian)
+    const sourceKey = autoWeeklyProductKey(product_name, beian)
+    const subscribed =
+      mineProducts.find((row) => autoWeeklyProductKey(row.product_name, row.beian_hao) === displayKey) ??
+      mineProducts.find((row) => autoWeeklyProductKey(row.product_name, row.beian_hao) === sourceKey)
+    const template = resolveAutoWeeklyTemplate(subscribed?.templateId)
     const result = await generateFofWeeklyReport({
       product_name: displayName,
       beian_hao: range.beian_hao || beian || undefined,
@@ -286,6 +340,7 @@ export async function ensureMineWeeklyReportForProduct(
       report_title: title,
       benchmark_key: "IF",
       nav_frequency: "weekly",
+      report_variant: template.variant,
     })
 
     persistAutoWeeklyReportFiles(result.reportId)
@@ -300,8 +355,8 @@ export async function ensureMineWeeklyReportForProduct(
       weekEnd: result.weekEnd || week.weekEnd,
       latestNavDate: range.latest_nav_date || null,
       title: result.reportTitle || title,
-      templateId: AUTO_WEEKLY_TEMPLATE_ID,
-      templateName: AUTO_WEEKLY_TEMPLATE_NAME,
+      templateId: template.id,
+      templateName: template.name,
       creator: creatorName || "我",
       type: "mine_weekly",
       typeLabel: MINE_WEEKLY_TYPE_LABEL,
@@ -367,7 +422,7 @@ export async function runMineWeeklyReportsEtl(
 export async function addMineWeeklyProductAndGenerate(
   userId: string,
   creatorName: string,
-  product: { product_name: string; beian_hao?: string | null },
+  product: { product_name: string; beian_hao?: string | null; templateId?: string | null },
 ): Promise<{ product: MineWeeklyProduct; etl: AutoWeeklyEtlItem }> {
   const row = addMineWeeklyProduct(userId, product)
   const etl = await ensureMineWeeklyReportForProduct(

@@ -23,9 +23,14 @@ import {
   listAllCustomFundRecords,
 } from "@/lib/server/custom-funds"
 import { getServerStoragePath } from "@/lib/server/storage"
+import {
+  AUTO_WEEKLY_TEMPLATE_ID,
+  AUTO_WEEKLY_TEMPLATE_NAME,
+  isAutoWeeklyTemplateId,
+  resolveAutoWeeklyTemplate,
+} from "@/lib/ma/auto-weekly-templates"
 
-export const AUTO_WEEKLY_TEMPLATE_ID = "weekly-track-curve"
-export const AUTO_WEEKLY_TEMPLATE_NAME = "跟踪产品（通用曲线版）"
+export { AUTO_WEEKLY_TEMPLATE_ID, AUTO_WEEKLY_TEMPLATE_NAME }
 export const AUTO_WEEKLY_CREATOR = "系统"
 export const AUTO_WEEKLY_TYPE_LABEL = "系统周报"
 
@@ -459,6 +464,119 @@ function upsertRecord(record: AutoWeeklyReportRecord): void {
   writeIndex({ version: 1, updatedAt: new Date().toISOString(), reports: next })
 }
 
+
+type TeamTemplatePrefsFile = {
+  version: 1
+  updatedAt: string
+  products: Array<{
+    product_name: string
+    beian_hao: string | null
+    templateId: string
+    updatedAt: string
+  }>
+}
+
+function prefsPath(): string {
+  return path.join(indexDir(), "template-prefs.json")
+}
+
+function emptyTeamTemplatePrefs(): TeamTemplatePrefsFile {
+  return { version: 1, updatedAt: new Date().toISOString(), products: [] }
+}
+
+function readTeamTemplatePrefs(): TeamTemplatePrefsFile {
+  mkdirSync(indexDir(), { recursive: true })
+  const file = prefsPath()
+  if (!existsSync(file)) return emptyTeamTemplatePrefs()
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as TeamTemplatePrefsFile
+    if (!parsed || !Array.isArray(parsed.products)) return emptyTeamTemplatePrefs()
+    return {
+      version: 1,
+      updatedAt: parsed.updatedAt || new Date().toISOString(),
+      products: parsed.products,
+    }
+  } catch {
+    return emptyTeamTemplatePrefs()
+  }
+}
+
+function writeTeamTemplatePrefs(data: TeamTemplatePrefsFile): void {
+  mkdirSync(indexDir(), { recursive: true })
+  data.updatedAt = new Date().toISOString()
+  writeFileSync(prefsPath(), JSON.stringify(data, null, 2), "utf8")
+}
+
+function findTeamTemplatePref(
+  product_name: string,
+  beian_hao?: string | null,
+  displayName?: string,
+) {
+  const data = readTeamTemplatePrefs()
+  const keys = [
+    productKey(displayName || product_name, beian_hao),
+    productKey(product_name, beian_hao),
+    productKey(displayName || product_name, null),
+    productKey(product_name, null),
+  ]
+  const seen = new Set<string>()
+  for (const key of keys) {
+    if (seen.has(key)) continue
+    seen.add(key)
+    const hit = data.products.find((row) => productKey(row.product_name, row.beian_hao) === key)
+    if (hit) return resolveAutoWeeklyTemplate(hit.templateId)
+  }
+  return resolveAutoWeeklyTemplate(null)
+}
+
+export function getTeamAutoWeeklyTemplate(
+  product_name: string,
+  beian_hao?: string | null,
+) {
+  return findTeamTemplatePref(product_name, beian_hao)
+}
+
+export function setTeamAutoWeeklyTemplate(
+  product: { product_name: string; beian_hao?: string | null },
+  templateId: string,
+) {
+  if (!isAutoWeeklyTemplateId(templateId)) {
+    throw new Error("不支持的周报模板")
+  }
+  const product_name = (product.product_name || "").trim()
+  if (!product_name) throw new Error("产品名称不能为空")
+  const beian_hao = (product.beian_hao || "").trim() || null
+  const data = readTeamTemplatePrefs()
+  const key = productKey(product_name, beian_hao)
+  const now = new Date().toISOString()
+  const next = data.products.filter((row) => productKey(row.product_name, row.beian_hao) !== key)
+  next.push({ product_name, beian_hao, templateId, updatedAt: now })
+  writeTeamTemplatePrefs({ version: 1, updatedAt: now, products: next })
+  return resolveAutoWeeklyTemplate(templateId)
+}
+
+export async function listTeamAutoWeeklyTemplateSubscriptions(): Promise<
+  Array<{
+    product_name: string
+    beian_hao: string | null
+    source: AutoWeeklyTargetProduct["source"]
+    templateId: string
+    templateName: string
+  }>
+> {
+  const products = await listAutoWeeklyTargetProducts()
+  return products.map((product) => {
+    const template = findTeamTemplatePref(product.product_name, product.beian_hao)
+    return {
+      product_name: product.product_name,
+      beian_hao: product.beian_hao,
+      source: product.source,
+      templateId: template.id,
+      templateName: template.name,
+    }
+  })
+}
+
 export async function ensureAutoWeeklyReportForProduct(
   product: AutoWeeklyTargetProduct,
 ): Promise<AutoWeeklyEtlItem> {
@@ -529,6 +647,7 @@ export async function ensureAutoWeeklyReportForProduct(
     }
 
     const title = displayName
+    const template = findTeamTemplatePref(product_name, range.beian_hao || beian, displayName)
     const result = await generateFofWeeklyReport({
       product_name: displayName,
       beian_hao: range.beian_hao || beian || undefined,
@@ -537,6 +656,7 @@ export async function ensureAutoWeeklyReportForProduct(
       report_title: title,
       benchmark_key: "IF",
       nav_frequency: "weekly",
+      report_variant: template.variant,
     })
 
     persistReportFiles(result.reportId)
@@ -551,8 +671,8 @@ export async function ensureAutoWeeklyReportForProduct(
       weekEnd: result.weekEnd || week.weekEnd,
       latestNavDate: range.latest_nav_date || null,
       title: result.reportTitle || title,
-      templateId: AUTO_WEEKLY_TEMPLATE_ID,
-      templateName: AUTO_WEEKLY_TEMPLATE_NAME,
+      templateId: template.id,
+      templateName: template.name,
       creator: AUTO_WEEKLY_CREATOR,
       type: "system_weekly",
       typeLabel: AUTO_WEEKLY_TYPE_LABEL,
