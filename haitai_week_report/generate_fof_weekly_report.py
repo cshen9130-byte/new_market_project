@@ -987,34 +987,55 @@ def load_report_variant_file(path: str | None) -> dict:
 
 
 def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
-    """Donut of 二级策略 weights, legend with name and pie share."""
-    ax = fig.add_axes(rect)
-    ax.set_facecolor("none")
-    ax.axis("off")
+    """Donut of 二级策略 weights, legend with name and pie share. Stays inside rect."""
+    left, bottom, width, height = rect
+    if width <= 0 or height <= 0 or not slices:
+        return
+
     values = [float(item["value"]) for item in slices]
     names = [str(item["name"]) for item in slices]
     total = sum(values) or 1.0
     colors = [strategy_slice_color(name, i) for i, name in enumerate(names)]
     labels = [f"{name}  {value / total * 100:.1f}%" for name, value in zip(names, values)]
-    wedges, _ = ax.pie(
+
+    n_cols = 2 if len(slices) > 3 else 1
+    n_rows = int(np.ceil(len(slices) / n_cols))
+    legend_frac = min(0.42, max(0.30, 0.12 + n_rows * 0.06))
+    legend_h = height * legend_frac
+    pie_h = height - legend_h
+    fig_w, fig_h = fig.get_size_inches()
+    pie_w = min(width, pie_h * fig_h / fig_w) if fig_w else width
+    pie_x = left + (width - pie_w) / 2
+    pie_y = bottom + legend_h
+
+    pie_ax = fig.add_axes([pie_x, pie_y, pie_w, pie_h])
+    pie_ax.set_facecolor("none")
+    pie_ax.axis("off")
+    wedges, _ = pie_ax.pie(
         values,
         colors=colors,
         startangle=90,
         counterclock=False,
         wedgeprops={"width": 0.46, "edgecolor": "white", "linewidth": 0.8},
-        radius=0.72,
-        center=(0, 0.18),
+        radius=1.0,
+        center=(0, 0),
     )
-    ncol = 2 if len(slices) > 3 else 1
+    pie_ax.set_xlim(-1.18, 1.18)
+    pie_ax.set_ylim(-1.18, 1.18)
+    pie_ax.set_aspect("equal")
+
+    leg_ax = fig.add_axes([left, bottom, width, legend_h])
+    leg_ax.set_facecolor("none")
+    leg_ax.axis("off")
     legend_font = None
     if fp is not None and fp.get_file():
         legend_font = FontProperties(fname=fp.get_file(), size=7)
     elif fp is not None:
         legend_font = fp
     legend_kwargs = dict(
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.08),
-        ncol=ncol,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.58),
+        ncol=n_cols,
         frameon=False,
         handlelength=0.8,
         handleheight=0.55,
@@ -1026,9 +1047,7 @@ def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
         legend_kwargs["prop"] = legend_font
     else:
         legend_kwargs["fontsize"] = 7
-    ax.legend(wedges, labels, **legend_kwargs)
-    ax.set_xlim(-1.25, 1.25)
-    ax.set_ylim(-0.95, 1.15)
+    leg_ax.legend(wedges, labels, **legend_kwargs)
 
 
 def ret_color(val: float) -> str:
@@ -1664,8 +1683,9 @@ def _make_weekly_report(
         draw_kpi_card(ax, x0 + i * (kpi_w + gap), kpi_row2_y, kpi_w, kpi_h, label, value, fp, color)
 
     if holdings_mode:
-        bottom_h = min(0.28, max(0.23, 0.055 + len(holdings_highlights) * 0.017))
-        bottom_y = 0.068
+        # Footer occupies y=0..0.06; FancyBbox pad/shadow extend ~0.013 below bottom_y.
+        bottom_h = min(0.28, max(0.25, 0.055 + len(holdings_highlights) * 0.017))
+        bottom_y = 0.088
         table_bottom = bottom_y + bottom_h + 0.012
         table_top = table_bottom + 0.125
         chart_bottom = table_top + 0.016
