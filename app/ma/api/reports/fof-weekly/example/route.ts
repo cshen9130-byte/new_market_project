@@ -12,12 +12,20 @@ const EXAMPLE_PATH = path.join(
   "低波稳健FOF 1号周报_20260626.png",
 )
 
-export async function GET() {
-  if (!existsSync(EXAMPLE_PATH)) {
+const HOLDINGS_EXAMPLE_PATH = path.join(
+  process.cwd(),
+  "haitai_week_report",
+  "低波稳健FOF 1号周报_持仓饼图版_范例.png",
+)
+
+export async function GET(req: Request) {
+  const variant = new URL(req.url).searchParams.get("variant")
+  const filePath = variant === "holdings" ? HOLDINGS_EXAMPLE_PATH : EXAMPLE_PATH
+  if (!existsSync(filePath)) {
     return NextResponse.json({ error: "范例文件不存在" }, { status: 404 })
   }
 
-  const buffer = await readFile(EXAMPLE_PATH)
+  const buffer = await readFile(filePath)
   return new Response(buffer, {
     headers: {
       "Content-Type": "image/png",

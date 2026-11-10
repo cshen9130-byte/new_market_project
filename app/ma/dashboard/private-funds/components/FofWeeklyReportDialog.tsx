@@ -50,6 +50,28 @@ const NAV_FREQUENCY_OPTIONS = [
 
 type NavFrequency = (typeof NAV_FREQUENCY_OPTIONS)[number]["value"]
 
+export type FofWeeklyTemplateVariant = "curve" | "holdings"
+
+const WEEKLY_TEMPLATE_META: Record<FofWeeklyTemplateVariant, {
+  id: string
+  name: string
+  title: string
+  subtitle: string
+}> = {
+  curve: {
+    id: "weekly-track-curve",
+    name: "跟踪产品（通用曲线版）",
+    title: "跟踪产品（通用曲线版）",
+    subtitle: "选择产品与报告周，生成 FOF 产品周报",
+  },
+  holdings: {
+    id: "weekly-track-holdings",
+    name: "跟踪产品（持仓饼图版）",
+    title: "跟踪产品（持仓饼图版）",
+    subtitle: "无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图",
+  },
+}
+
 /** Header slogan 波动档 — passed through as product_tagline. */
 const VOL_BAND_OPTIONS = [
   { value: "低波动", label: "低波动 · 稳健运作 · 策略" },
@@ -460,11 +482,13 @@ export function FofWeeklyReportDialog({
   onClose,
   onBack,
   embedded = false,
+  variant = "curve",
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
+  variant?: FofWeeklyTemplateVariant
 }) {
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
@@ -474,6 +498,7 @@ export function FofWeeklyReportDialog({
   const [benchmarkKey, setBenchmarkKey] = useState("IF")
   const [navFrequency, setNavFrequency] = useState<NavFrequency>("weekly")
   const [volBand, setVolBand] = useState<VolBand>("低波动")
+  const [managerView, setManagerView] = useState("")
   const [productSource, setProductSource] = useState<ProductSource>("managed")
   const [presets, setPresets] = useState<FofWeeklyReportPreset[]>([])
   const [selectedPresetName, setSelectedPresetName] = useState("")
@@ -497,6 +522,7 @@ export function FofWeeklyReportDialog({
       setBenchmarkKey("IF")
       setNavFrequency("weekly")
       setVolBand("低波动")
+      setManagerView("")
       setProductSource("managed")
       setSelectedPresetName("")
       setShowSavePresetModal(false)
@@ -521,6 +547,7 @@ export function FofWeeklyReportDialog({
     setWeekEnd(preset.week_end)
     setBenchmarkKey(preset.benchmark_key)
     setNavFrequency(preset.nav_frequency ?? "weekly")
+    setManagerView(preset.manager_view ?? "")
     setSelectedPresetName(preset.name)
     setResult(null)
     setError(null)
@@ -552,6 +579,7 @@ export function FofWeeklyReportDialog({
       week_end: weekEnd,
       benchmark_key: benchmarkKey,
       nav_frequency: navFrequency,
+      manager_view: variant === "holdings" ? managerView.trim() : "",
       savedAt: new Date().toISOString(),
     }
     try {
@@ -728,6 +756,8 @@ export function FofWeeklyReportDialog({
           benchmark_key: benchmarkKey,
           nav_frequency: navFrequency,
           product_tagline: taglineFromVolBand(volBand),
+          report_variant: variant,
+          ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
         }),
       })
       const json = await readJsonSafe(resp)
@@ -741,8 +771,8 @@ export function FofWeeklyReportDialog({
         setResult(result)
         recordGeneratedOfficialReport({
           title: result.reportTitle || productName.trim(),
-          templateId: "weekly-track-curve",
-          templateName: "跟踪产品（通用曲线版）",
+          templateId: WEEKLY_TEMPLATE_META[variant].id,
+          templateName: WEEKLY_TEMPLATE_META[variant].name,
           source: "fof_weekly_generate",
           typeLabel: "周报",
           download: result.download,
@@ -752,6 +782,7 @@ export function FofWeeklyReportDialog({
             beian_hao: beianHao || "",
             week_begin: weekBegin,
             week_end: weekEnd,
+            ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
           },
         })
         return
@@ -761,8 +792,8 @@ export function FofWeeklyReportDialog({
       setResult(syncResult)
       recordGeneratedOfficialReport({
         title: syncResult.reportTitle || productName.trim(),
-        templateId: "weekly-track-curve",
-        templateName: "跟踪产品（通用曲线版）",
+        templateId: WEEKLY_TEMPLATE_META[variant].id,
+        templateName: WEEKLY_TEMPLATE_META[variant].name,
         source: "fof_weekly_generate",
         typeLabel: "周报",
         download: syncResult.download,
@@ -772,6 +803,7 @@ export function FofWeeklyReportDialog({
           beian_hao: beianHao || "",
           week_begin: weekBegin,
           week_end: weekEnd,
+          ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
         },
       })
     } catch (err) {
@@ -793,8 +825,8 @@ export function FofWeeklyReportDialog({
               <ArrowLeft className="h-4 w-4" />
             </button>
             <div>
-              <DialogTitle className="text-base font-semibold">跟踪产品（通用曲线版）</DialogTitle>
-              <p className="mt-0.5 text-xs text-zinc-400">选择产品与报告周，生成 FOF 产品周报</p>
+              <DialogTitle className="text-base font-semibold">{WEEKLY_TEMPLATE_META[variant].title}</DialogTitle>
+              <p className="mt-0.5 text-xs text-zinc-400">{WEEKLY_TEMPLATE_META[variant].subtitle}</p>
             </div>
           </div>
         </DialogHeader>
@@ -908,25 +940,27 @@ export function FofWeeklyReportDialog({
               </p>
             </div>
 
-            <div>
-              <label className="mb-1.5 block text-sm font-medium">
-                <span className="text-red-500">*</span> 基准指数
-              </label>
-              <select
-                value={benchmarkKey}
-                onChange={(e) => {
-                  setBenchmarkKey(e.target.value)
-                  setResult(null)
-                }}
-                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                {BENCHMARK_OPTIONS.map((item) => (
-                  <option key={item.key} value={item.key}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {variant !== "holdings" && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">
+                  <span className="text-red-500">*</span> 基准指数
+                </label>
+                <select
+                  value={benchmarkKey}
+                  onChange={(e) => {
+                    setBenchmarkKey(e.target.value)
+                    setResult(null)
+                  }}
+                  className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {BENCHMARK_OPTIONS.map((item) => (
+                    <option key={item.key} value={item.key}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label className="mb-1.5 block text-sm font-medium">
@@ -973,6 +1007,25 @@ export function FofWeeklyReportDialog({
                 默认取产品标签（低波/中波/高波）；可生成前手动改。SGM223 无标签时默认中波动。
               </p>
             </div>
+
+            {variant === "holdings" && (
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-sm font-medium">基金经理观点</label>
+                <textarea
+                  value={managerView}
+                  onChange={(e) => {
+                    setManagerView(e.target.value.slice(0, 400))
+                    setResult(null)
+                  }}
+                  rows={4}
+                  placeholder="写入本周要点，替换原来的市场环境。留空则显示「本周暂无」。"
+                  className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <p className="mt-1.5 text-xs text-zinc-400">
+                  持仓饼图取产品估值表里的二级策略，按持仓市值汇总，与产品页饼图一致。
+                </p>
+              </div>
+            )}
 
             <div className="sm:col-span-2">
               <label className="mb-1.5 block text-sm font-medium">报告标题</label>

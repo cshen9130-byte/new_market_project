@@ -20,6 +20,7 @@ import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGe
 
 type TemplateCategory = "weekly" | "monthly" | "quarterly" | "custom" | "other"
 type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "fund-official-monthly" | "product-quarterly" | "custom-report"
+type FofWeeklyVariant = "curve" | "holdings"
 type FofMonthlyLayout = "curve" | "review"
 
 interface ReportTemplate {
@@ -48,6 +49,14 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "quarterly" | "other"
       description: "显示产品指标和曲线",
       badgeLabel: "周报",
       exampleUrl: "/ma/api/reports/fof-weekly/example",
+    },
+    {
+      id: "weekly-track-holdings",
+      title: "跟踪产品（持仓饼图版）",
+      description: "无基准曲线，可填基金经理观点，展示二级策略持仓饼图",
+      badgeLabel: "周报",
+      exampleUrl: "/ma/api/reports/fof-weekly/example?variant=holdings",
+      exampleCaption: "低波稳健FOF 1号 · 持仓饼图版",
     },
     {
       id: "weekly-track-general",
@@ -194,6 +203,7 @@ export function NewReportDialog({
   const [customTemplates, setCustomTemplates] = useState<ReportCustomTemplate[]>([])
   const [selectedCustom, setSelectedCustom] = useState<ReportCustomTemplate | null>(null)
   const [monthlyLayout, setMonthlyLayout] = useState<FofMonthlyLayout>("review")
+  const [weeklyVariant, setWeeklyVariant] = useState<FofWeeklyVariant>("curve")
 
   useEffect(() => {
     if (open) {
@@ -202,6 +212,7 @@ export function NewReportDialog({
       setExampleTemplate(null)
       setSelectedCustom(null)
       setMonthlyLayout("review")
+      setWeeklyVariant("curve")
       setCustomTemplates(loadReportTemplates().map(normalizeTemplate))
     }
   }, [open])
@@ -209,7 +220,8 @@ export function NewReportDialog({
   const officialTemplates = category === "custom" ? [] : TEMPLATES_BY_CATEGORY[category as "weekly" | "monthly" | "quarterly" | "other"]
 
   function handleUseOfficialTemplate(template: ReportTemplate) {
-    if (template.id === "weekly-track-curve") {
+    if (template.id === "weekly-track-curve" || template.id === "weekly-track-holdings") {
+      setWeeklyVariant(template.id === "weekly-track-holdings" ? "holdings" : "curve")
       setStep("fof-weekly")
       return
     }
@@ -340,7 +352,13 @@ export function NewReportDialog({
           </DialogContent>
         )}
         {step === "fof-weekly" && (
-          <FofWeeklyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+          <FofWeeklyReportDialog
+            embedded
+            open={open}
+            variant={weeklyVariant}
+            onClose={onClose}
+            onBack={() => setStep("pick")}
+          />
         )}
         {step === "fof-monthly" && (
           <FofMonthlyReportDialog

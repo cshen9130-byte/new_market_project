@@ -25,9 +25,11 @@ import {
   resolveFundElementsBeianKeys,
 } from "@/lib/server/fund-elements-lookup"
 import { loadFundNavRange, resolveFundNames } from "@/lib/server/fund-nav-series"
+import { getFundValuationAllocation } from "@/lib/server/fund-valuation-allocation"
 import { lookupManagedProductOverride, resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { sanitizeBeianCode } from "@/lib/server/sanitize-beian-code"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
+import { isValuationCashHoldingName } from "@/lib/valuation-holding-display-name"
 
 const execFileAsync = promisify(execFile)
 const REPORT_TMP_ROOT = path.join(process.cwd(), ".tmp", "fof-weekly-reports")
@@ -66,6 +68,13 @@ export const FOF_WEEKLY_NAV_FREQUENCY_OPTIONS: Array<{ value: FofWeeklyNavFreque
   { value: "monthly", label: "月频" },
 ]
 
+export type FofWeeklyReportVariant = "curve" | "holdings"
+
+export type FofWeeklyStrategySlice = {
+  name: string
+  value: number
+}
+
 export type FofWeeklyReportRequest = {
   product_name: string
   beian_hao?: string
@@ -75,6 +84,10 @@ export type FofWeeklyReportRequest = {
   product_tagline?: string
   benchmark_key?: string
   nav_frequency?: FofWeeklyNavFrequency
+  /** curve = 通用曲线版. holdings = 持仓饼图版. */
+  report_variant?: FofWeeklyReportVariant
+  /** Replaces 本周要点「市场环境」 on the holdings template. */
+  manager_view?: string
   /** Pre-assigned id for async jobs (status polling). */
   reportId?: string
 }
@@ -93,6 +106,73 @@ function normalizeNavFrequency(value: string | undefined): FofWeeklyNavFrequency
   const freq = (value ?? "weekly").trim().toLowerCase()
   if (freq === "daily" || freq === "monthly") return freq
   return "weekly"
+}
+
+function normalizeReportVariant(value: string | undefined): FofWeeklyReportVariant {
+  return (value ?? "").trim().toLowerCase() === "holdings" ? "holdings" : "curve"
+}
+
+function clipManagerView(value: string | undefined): string {
+  return (value ?? "").replace(/\u0000/g, "").trim().slice(0, 400)
+}
+
+type PieHolding = {
+  fundName: string
+  rowKind: string
+  valuationCode: string | null
+  beianHao: string | null
+  fundStrategy: string | null
+  strategyL2: string | null
+  marketValue: number
+}
+
+/** Same fund-row filter as the valuation page 二级策略 pie. */
+function isPieStockRow(row: PieHolding): boolean {
+  if (/ETF/u.test(row.fundName)) return false
+  if (row.rowKind === "stock") return true
+  if (row.rowKind === "fund_or_stock") {
+    const code = (row.valuationCode ?? "").replace(/\.(SZ|SH|BJ)$/i, "").trim()
+    if (/^\d{6}$/.test(code)) return true
+    if (!row.valuationCode && !row.beianHao) return true
+  }
+  return false
+}
+
+function isPieCashRow(row: PieHolding): boolean {
+  if (["bank_deposit", "settlement_reserve", "margin_deposit", "payable", "clearing"].includes(row.rowKind)) {
+    return true
+  }
+  return isValuationCashHoldingName(row.fundName)
+}
+
+export function aggregateStrategyL2Slices(rows: PieHolding[]): FofWeeklyStrategySlice[] {
+  const totals = new Map<string, number>()
+  for (const row of rows) {
+    if (isPieStockRow(row) || isPieCashRow(row)) continue
+    if (!(row.marketValue > 0)) continue
+    const fromPath = (row.fundStrategy ?? "")
+      .split("/")
+      .map((part) => part.trim())
+      .filter(Boolean)
+    const name = row.strategyL2?.trim() || fromPath[1] || "未配置"
+    totals.set(name, (totals.get(name) ?? 0) + row.marketValue)
+  }
+  return [...totals.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value)
+}
+
+async function loadStrategyL2Pie(beianHao: string): Promise<{
+  slices: FofWeeklyStrategySlice[]
+  valuationDate: string | null
+}> {
+  const allocation = await getFundValuationAllocation(beianHao, "major")
+  const slices = aggregateStrategyL2Slices(allocation.fund_holdings ?? [])
+  const valuationDate = allocation.valuation_date?.slice(0, 10) ?? null
+  return {
+    slices,
+    valuationDate: /^\d{4}-\d{2}-\d{2}$/.test(valuationDate ?? "") ? valuationDate : null,
+  }
 }
 
 /** Old curve-report default. It labeled every product as 强势股, including FOF. */
@@ -1064,6 +1144,33 @@ export async function generateFofWeeklyReport(
     strategyPhrase,
     input.product_tagline,
   )
+  const reportVariant = normalizeReportVariant(input.report_variant)
+  let variantFile: string | null = null
+  if (reportVariant === "holdings") {
+    let slices: FofWeeklyStrategySlice[] = []
+    let valuationDate: string | null = null
+    if (beian_hao) {
+      try {
+        const pie = await loadStrategyL2Pie(beian_hao)
+        slices = pie.slices
+        valuationDate = pie.valuationDate
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn(`[fof-weekly-report] 二级策略持仓饼图不可用，报告仍会生成: ${message}`)
+      }
+    }
+    variantFile = path.join(outDir, "variant.json")
+    await writeFile(
+      variantFile,
+      JSON.stringify({
+        manager_view: clipManagerView(input.manager_view),
+        valuation_date: valuationDate,
+        slices,
+      }),
+      "utf8",
+    )
+  }
+
   const pythonStartedAt = Date.now()
   const { executable: pythonExe, prefixArgs } = await findPython(SCRIPT_DIR)
   console.log(
@@ -1093,6 +1200,9 @@ export async function generateFofWeeklyReport(
     "--nav-frequency",
     navFrequency,
     ...(productInception ? ["--inception-date", productInception] : []),
+    ...(reportVariant === "holdings" && variantFile
+      ? ["--report-variant", "holdings", "--variant-file", variantFile]
+      : []),
   ]
 
   const renderStartedAt = Date.now()

@@ -10,6 +10,8 @@ export type FofWeeklyReportPreset = {
   week_end: string
   benchmark_key: string
   nav_frequency: FofWeeklyNavFrequency
+  /** 持仓饼图版：基金经理观点。通用曲线版忽略。 */
+  manager_view?: string
   savedAt: string
 }
 
@@ -56,6 +58,7 @@ function slimPreset(preset: FofWeeklyReportPreset): FofWeeklyReportPreset {
     week_end: String(preset.week_end ?? "").slice(0, 32),
     benchmark_key: String(preset.benchmark_key ?? "").slice(0, 80),
     nav_frequency,
+    manager_view: String(preset.manager_view ?? "").slice(0, 400),
     savedAt: String(preset.savedAt ?? new Date().toISOString()).slice(0, 40),
   }
 }

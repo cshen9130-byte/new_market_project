@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import sys
 from pathlib import Path
@@ -884,6 +885,152 @@ def build_highlights(
     return [line1, line2, line3, line4, line5, line6]
 
 
+_CJK_BREAK_AFTER = set("，。；、！？,.; ")
+
+
+def wrap_cjk(text: str, width: int) -> list[str]:
+    """Wrap on character count, preferring a break after punctuation."""
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not cleaned or width <= 0:
+        return []
+    lines: list[str] = []
+    for para in cleaned.split("\n"):
+        rest = para.strip()
+        while rest:
+            if len(rest) <= width:
+                lines.append(rest)
+                break
+            window = rest[:width]
+            cut = width
+            for i, ch in enumerate(window):
+                if ch in _CJK_BREAK_AFTER and i >= width // 2:
+                    cut = i + 1
+            lines.append(rest[:cut].strip())
+            rest = rest[cut:].strip()
+    return lines
+
+
+def build_holdings_highlights(
+    metrics: dict,
+    strategy_phrase: str = "FOF策略",
+    manager_view: str = "",
+    report_kind: str | None = "weekly",
+) -> list[str]:
+    """Same 要点 as the curve weekly, with 市场环境 replaced by 基金经理观点."""
+    base = build_highlights(
+        metrics,
+        report_kind=report_kind,
+        strategy_phrase=strategy_phrase,
+    )
+    prefix = "• 基金经理观点："
+    wrapped = wrap_cjk(manager_view, 14)
+    if not wrapped:
+        view = ["• 基金经理观点：本周暂无。"]
+    else:
+        view = [prefix + wrapped[0]] + [f"  {line}" for line in wrapped[1:4]]
+    return base[:2] + view + base[4:6]
+
+
+# Match the product-page 二级策略 pie: named colors win, otherwise palette by slice order.
+_STRATEGY_NAMED_COLORS = {
+    "组合策略": "#1A73E8",
+    "股票多头": "#D93025",
+    "期货策略": "#FBBC04",
+    "股票对冲": "#9333ea",
+    "套利策略": "#22c55e",
+    "多资产策略": "#14b8a6",
+    "债券策略": "#8B5CF6",
+    "期权策略": "#EC4899",
+    "其他": "#78716C",
+    "未配置": "#9ca3af",
+}
+_STRATEGY_PALETTE = [
+    "#D93025", "#FBBC04", "#9333ea", "#22c55e", "#14b8a6",
+    "#EC4899", "#1A73E8", "#8B5CF6", "#78716C",
+]
+
+
+def strategy_slice_color(name: str, index: int) -> str:
+    return _STRATEGY_NAMED_COLORS.get(name) or _STRATEGY_PALETTE[index % len(_STRATEGY_PALETTE)]
+
+
+def load_report_variant_file(path: str | None) -> dict:
+    empty = {"manager_view": "", "slices": [], "valuation_date": ""}
+    if not path:
+        return empty
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"[warn] 无法读取版式数据 {path}: {exc}", file=sys.stderr)
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    slices: list[dict] = []
+    for item in data.get("slices") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        try:
+            value = float(item.get("value") or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if name and value > 0:
+            slices.append({"name": name, "value": value})
+    slices.sort(key=lambda item: item["value"], reverse=True)
+    as_of = str(data.get("valuation_date") or "").strip()[:10]
+    return {
+        "manager_view": str(data.get("manager_view") or "").strip(),
+        "slices": slices,
+        "valuation_date": as_of,
+    }
+
+
+def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
+    """Donut of 二级策略 weights, legend with name and pie share."""
+    ax = fig.add_axes(rect)
+    ax.set_facecolor("none")
+    ax.axis("off")
+    values = [float(item["value"]) for item in slices]
+    names = [str(item["name"]) for item in slices]
+    total = sum(values) or 1.0
+    colors = [strategy_slice_color(name, i) for i, name in enumerate(names)]
+    labels = [f"{name}  {value / total * 100:.1f}%" for name, value in zip(names, values)]
+    wedges, _ = ax.pie(
+        values,
+        colors=colors,
+        startangle=90,
+        counterclock=False,
+        wedgeprops={"width": 0.46, "edgecolor": "white", "linewidth": 0.8},
+        radius=0.72,
+        center=(0, 0.18),
+    )
+    ncol = 2 if len(slices) > 3 else 1
+    legend_font = None
+    if fp is not None and fp.get_file():
+        legend_font = FontProperties(fname=fp.get_file(), size=7)
+    elif fp is not None:
+        legend_font = fp
+    legend_kwargs = dict(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.08),
+        ncol=ncol,
+        frameon=False,
+        handlelength=0.8,
+        handleheight=0.55,
+        columnspacing=0.9,
+        labelspacing=0.28,
+        borderaxespad=0.0,
+    )
+    if legend_font is not None:
+        legend_kwargs["prop"] = legend_font
+    else:
+        legend_kwargs["fontsize"] = 7
+    ax.legend(wedges, labels, **legend_kwargs)
+    ax.set_xlim(-1.25, 1.25)
+    ax.set_ylim(-0.95, 1.15)
+
+
 def ret_color(val: float) -> str:
     if val > 0:
         return C_UP
@@ -1400,6 +1547,10 @@ def _make_weekly_report(
     product_tagline: str,
     benchmark_label: str,
     strategy_phrase: str = "FOF策略",
+    report_variant: str = "curve",
+    manager_view: str = "",
+    strategy_slices: list[dict] | None = None,
+    holdings_as_of: str | None = None,
 ) -> tuple[str, str]:
     labels = REPORT_KIND_LABELS[ctx["kind"]]
     plot_df = ctx["plot_df"]
@@ -1465,39 +1616,74 @@ def _make_weekly_report(
     draw_text(ax, 0.06, 0.89, f"{labels['period_broadcast']}（{week_range}）", fp_bold or fp, size=10, color=C_PRIMARY, weight="bold")
     draw_text(ax, 0.94, 0.89, product_tagline, fp, size=10, color=C_TEXT_LIGHT, ha="right")
 
+    holdings_mode = (report_variant or "").strip().lower() == "holdings"
+    holdings_highlights: list[str] = []
+    if holdings_mode:
+        holdings_highlights = build_holdings_highlights(
+            metrics,
+            strategy_phrase=strategy_phrase,
+            manager_view=manager_view,
+            report_kind=ctx["kind"],
+        )
+
     kpi_row1_y = 0.795
     kpi_h = 0.072
-    kpi_w = 0.21
     gap = 0.025
     x0 = 0.04
+    # 4-card span used by the unchanged curve template: 4 * 0.21 + 3 * 0.025 = 0.915
+    kpi_span = 4 * 0.21 + 3 * 0.025
+    n_cols = 3 if holdings_mode else 4
+    kpi_w = (kpi_span - (n_cols - 1) * gap) / n_cols
 
+    nav_card = ("最新净值", f"{metrics['end_nav']:.4f}", C_TEXT)
     row1 = [
         (labels["period_return"], fmt_pct(metrics["week_return"]), ret_color(metrics["week_return"])),
         ("今年以来", fmt_pct(metrics["ytd_return"]), ret_color(metrics["ytd_return"])),
         ("运作以来", fmt_pct(metrics["total_return"]), ret_color(metrics["total_return"])),
-        ("最新净值", f"{metrics['end_nav']:.4f}", C_TEXT),
     ]
+    if not holdings_mode:
+        row1.append(nav_card)
     for i, (label, value, color) in enumerate(row1):
         draw_kpi_card(ax, x0 + i * (kpi_w + gap), kpi_row1_y, kpi_w, kpi_h, label, value, fp, color)
 
     kpi_row2_y = 0.712
-    row2 = [
-        ("夏普比率", f"{metrics['sharpe']:.2f}", C_PRIMARY),
-        ("年化波动", fmt_pct(metrics["volatility"], signed=False), C_TEXT),
-        ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
-        ("超额收益", fmt_pct(metrics["excess_total"]), ret_color(metrics["excess_total"])),
-    ]
+    if holdings_mode:
+        row2 = [
+            nav_card,
+            ("年化波动", fmt_pct(metrics["volatility"], signed=False), C_TEXT),
+            ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
+        ]
+    else:
+        row2 = [
+            ("夏普比率", f"{metrics['sharpe']:.2f}", C_PRIMARY),
+            ("年化波动", fmt_pct(metrics["volatility"], signed=False), C_TEXT),
+            ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
+            ("超额收益", fmt_pct(metrics["excess_total"]), ret_color(metrics["excess_total"])),
+        ]
     for i, (label, value, color) in enumerate(row2):
         draw_kpi_card(ax, x0 + i * (kpi_w + gap), kpi_row2_y, kpi_w, kpi_h, label, value, fp, color)
 
-    chart_top = 0.68
-    chart_bottom = 0.41
+    if holdings_mode:
+        bottom_h = min(0.28, max(0.23, 0.055 + len(holdings_highlights) * 0.017))
+        bottom_y = 0.068
+        table_bottom = bottom_y + bottom_h + 0.012
+        table_top = table_bottom + 0.125
+        chart_bottom = table_top + 0.016
+        chart_top = 0.68
+    else:
+        chart_top = 0.68
+        chart_bottom = 0.41
+        table_top = 0.39
+        table_bottom = 0.255
+        bottom_y = 0.095
+        bottom_h = 0.14
     chart_left = 0.08
     chart_right = 0.92
+    chart_title = "累计收益率走势" if holdings_mode else f"累计收益率走势（对比{benchmark_label}）"
 
     draw_container_card(
         ax, 0.04, chart_bottom, 0.92, chart_top - chart_bottom,
-        f"累计收益率走势（对比{benchmark_label}）", fp_bold, fp,
+        chart_title, fp_bold, fp,
     )
 
     chart_ax = fig.add_axes([
@@ -1507,14 +1693,15 @@ def _make_weekly_report(
 
     start_nav = float(plot_df["adj_nav"].iloc[0])
     fund_cum = (plot_df.set_index("date")["adj_nav"] / start_nav - 1) * 100
-    bench_cum = (plot_df.set_index("date")["csi300"] / plot_df["csi300"].iloc[0] - 1) * 100
 
     chart_ax.plot(fund_cum.index, fund_cum.values, color=C_UP, linewidth=2.2, label=product_name, zorder=3)
     chart_ax.fill_between(fund_cum.index, fund_cum.values, 0, color=C_UP, alpha=0.08, zorder=2)
-    chart_ax.plot(
-        bench_cum.index, bench_cum.values, color="#64748B", linewidth=1.5,
-        linestyle="--", label=benchmark_label, zorder=1,
-    )
+    if not holdings_mode:
+        bench_cum = (plot_df.set_index("date")["csi300"] / plot_df["csi300"].iloc[0] - 1) * 100
+        chart_ax.plot(
+            bench_cum.index, bench_cum.values, color="#64748B", linewidth=1.5,
+            linestyle="--", label=benchmark_label, zorder=1,
+        )
     chart_ax.axvspan(metrics["week_start"], metrics["week_end"], color=C_UP, alpha=0.12, label=labels["period_range_label"], zorder=0)
 
     last_date = fund_cum.index[-1]
@@ -1560,56 +1747,84 @@ def _make_weekly_report(
         legend_kwargs["prop"] = fp
     chart_ax.legend(**legend_kwargs)
 
-    table_top = 0.39
-    table_bottom = 0.255
     draw_interval_returns_table(
         ax, 0.04, table_bottom, 0.92, table_top - table_bottom,
         interval_rows, fp, fp_bold,
     )
 
-    bottom_y = 0.095
-    bottom_h = 0.14
-
-    draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
-    highlights = build_highlights(
-        metrics, benchmark_label, report_kind=ctx["kind"], strategy_phrase=strategy_phrase,
-    )
-    for i, line in enumerate(highlights):
-        draw_text(ax, 0.06, bottom_y + bottom_h - 0.042 - i * 0.016, line, fp, size=8.5, color=C_TEXT)
-
-    draw_container_card(ax, 0.52, bottom_y, 0.44, bottom_h, "核心指标一览", fp_bold, fp)
-    table_items = [
-        ("成立日期", metrics["start_date"].strftime("%Y-%m-%d")),
-        ("运作天数", f"{metrics['trading_days']} 个交易日"),
-        ("初始净值", f"{float(metrics['start_nav']):.4f}"),
-        ("年化收益", fmt_pct(metrics["annual_return"])),
-        ("卡玛比率", f"{metrics['calmar']:.2f}"),
-        (
-            {"daily": "日度胜率", "weekly": "周度胜率", "monthly": "月度胜率"}.get(
-                metrics.get("nav_frequency") or ctx.get("nav_frequency") or "weekly",
-                "日度胜率",
-            ),
-            fmt_pct(metrics["win_rate"], signed=False),
-        ),
-    ]
-    for i, (label, value) in enumerate(table_items):
-        row_y = bottom_y + bottom_h - 0.042 - i * 0.016
-        if i % 2 == 0:
-            ax.add_patch(
-                Rectangle(
-                    (0.535, row_y - 0.005), 0.41, 0.012, transform=ax.transAxes,
-                    color=C_GRAY, alpha=0.5, clip_on=False,
-                )
+    if holdings_mode:
+        draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
+        line_step = 0.016
+        if holdings_highlights:
+            line_step = min(0.016, (bottom_h - 0.05) / len(holdings_highlights))
+        for i, line in enumerate(holdings_highlights):
+            draw_text(
+                ax, 0.06, bottom_y + bottom_h - 0.042 - i * line_step,
+                line, fp, size=8.5, color=C_TEXT,
             )
-        draw_text(ax, 0.55, row_y, label, fp, size=8, color=C_TEXT_LIGHT)
 
-        val_color = C_TEXT
-        if "收益" in label:
-            try:
-                val_color = ret_color(float(value.replace("%", "").replace("+", "")) / 100)
-            except ValueError:
-                pass
-        draw_text(ax, 0.93, row_y, value, fp, size=8, color=val_color, weight="bold", ha="right")
+        draw_container_card(ax, 0.52, bottom_y, 0.44, bottom_h, "持仓饼图", fp_bold, fp)
+        pie_hint = "二级策略 · 按持仓市值"
+        if holdings_as_of:
+            pie_hint = f"{pie_hint} · 估值日 {holdings_as_of}"
+        draw_text(
+            ax, 0.546, bottom_y + bottom_h - 0.040, pie_hint,
+            fp, size=7.5, color=C_TEXT_LIGHT,
+        )
+        pie_slices = strategy_slices or []
+        if pie_slices:
+            draw_strategy_donut(
+                fig,
+                [0.545, bottom_y + 0.01, 0.39, max(0.12, bottom_h - 0.058)],
+                pie_slices,
+                fp,
+            )
+        else:
+            draw_text(
+                ax, 0.74, bottom_y + bottom_h * 0.42, "暂无二级策略持仓",
+                fp, size=10, color=C_TEXT_LIGHT, ha="center",
+            )
+    else:
+        draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
+        highlights = build_highlights(
+            metrics, benchmark_label, report_kind=ctx["kind"], strategy_phrase=strategy_phrase,
+        )
+        for i, line in enumerate(highlights):
+            draw_text(ax, 0.06, bottom_y + bottom_h - 0.042 - i * 0.016, line, fp, size=8.5, color=C_TEXT)
+
+        draw_container_card(ax, 0.52, bottom_y, 0.44, bottom_h, "核心指标一览", fp_bold, fp)
+        table_items = [
+            ("成立日期", metrics["start_date"].strftime("%Y-%m-%d")),
+            ("运作天数", f"{metrics['trading_days']} 个交易日"),
+            ("初始净值", f"{float(metrics['start_nav']):.4f}"),
+            ("年化收益", fmt_pct(metrics["annual_return"])),
+            ("卡玛比率", f"{metrics['calmar']:.2f}"),
+            (
+                {"daily": "日度胜率", "weekly": "周度胜率", "monthly": "月度胜率"}.get(
+                    metrics.get("nav_frequency") or ctx.get("nav_frequency") or "weekly",
+                    "日度胜率",
+                ),
+                fmt_pct(metrics["win_rate"], signed=False),
+            ),
+        ]
+        for i, (label, value) in enumerate(table_items):
+            row_y = bottom_y + bottom_h - 0.042 - i * 0.016
+            if i % 2 == 0:
+                ax.add_patch(
+                    Rectangle(
+                        (0.535, row_y - 0.005), 0.41, 0.012, transform=ax.transAxes,
+                        color=C_GRAY, alpha=0.5, clip_on=False,
+                    )
+                )
+            draw_text(ax, 0.55, row_y, label, fp, size=8, color=C_TEXT_LIGHT)
+
+            val_color = C_TEXT
+            if "收益" in label:
+                try:
+                    val_color = ret_color(float(value.replace("%", "").replace("+", "")) / 100)
+                except ValueError:
+                    pass
+            draw_text(ax, 0.93, row_y, value, fp, size=8, color=val_color, weight="bold", ha="right")
 
     ax.add_patch(Rectangle((0, 0), 1, 0.06, transform=ax.transAxes, color=C_PRIMARY, clip_on=False))
     disclaimer = "本报告仅供合格投资者及合作渠道参考，不构成投资建议。过往业绩不代表未来表现，市场有风险，投资需谨慎。"
@@ -1993,13 +2208,24 @@ def make_report(
     nav_frequency: str | None = "weekly",
     report_kind: str | None = "weekly",
     report_layout: str | None = None,
+    report_variant: str | None = None,
+    variant_file: str | None = None,
     inception_date: str | None = None,
 ) -> tuple[str, str]:
     kind = normalize_report_kind(report_kind)
     layout = normalize_report_layout(report_layout, kind)
+    variant = (report_variant or "curve").strip().lower()
+    if variant not in ("curve", "holdings") or kind != "weekly":
+        variant = "curve"
+    variant_payload = load_report_variant_file(variant_file) if variant == "holdings" else {
+        "manager_view": "",
+        "slices": [],
+        "valuation_date": "",
+    }
     print(
         f"[make_report] week_begin={week_begin!r} week_end={week_end!r} "
-        f"nav_frequency={nav_frequency!r} report_kind={kind!r} report_layout={layout!r}"
+        f"nav_frequency={nav_frequency!r} report_kind={kind!r} report_layout={layout!r} "
+        f"report_variant={variant!r}"
     )
     output_dir = output_dir or str(Path(nav_file).parent)
 
@@ -2041,6 +2267,10 @@ def make_report(
             product_tagline=tagline,
             benchmark_label=benchmark_label,
             strategy_phrase=strategy_phrase,
+            report_variant=variant,
+            manager_view=str(variant_payload.get("manager_view") or ""),
+            strategy_slices=list(variant_payload.get("slices") or []),
+            holdings_as_of=str(variant_payload.get("valuation_date") or "") or None,
         )
 
     print(f"净值文件: {os.path.basename(nav_file)}")
@@ -2115,6 +2345,16 @@ def main(argv: list[str] | None = None) -> int:
         "--inception-date",
         help="产品成立日期 (YYYY-MM-DD)，与产品页「产品成立时间」相同",
     )
+    parser.add_argument(
+        "--report-variant",
+        default="curve",
+        choices=["curve", "holdings"],
+        help="周报版式：curve=通用曲线, holdings=持仓饼图（无基准、基金经理观点）",
+    )
+    parser.add_argument(
+        "--variant-file",
+        help="持仓饼图版 JSON：manager_view、slices、valuation_date",
+    )
     args = parser.parse_args(argv)
 
     nav_file = args.nav_file
@@ -2140,6 +2380,8 @@ def main(argv: list[str] | None = None) -> int:
             nav_frequency=args.nav_frequency,
             report_kind=args.report_kind,
             report_layout=args.report_layout,
+            report_variant=args.report_variant,
+            variant_file=args.variant_file,
             inception_date=args.inception_date,
         )
     except Exception as exc:
