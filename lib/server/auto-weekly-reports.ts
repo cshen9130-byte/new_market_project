@@ -26,6 +26,7 @@ import { getServerStoragePath } from "@/lib/server/storage"
 import {
   AUTO_WEEKLY_TEMPLATE_ID,
   AUTO_WEEKLY_TEMPLATE_NAME,
+  AUTO_WEEKLY_TEMPLATE_OPTIONS,
   isAutoWeeklyTemplateId,
   resolveAutoWeeklyTemplate,
 } from "@/lib/ma/auto-weekly-templates"
@@ -166,8 +167,61 @@ function productKey(product_name: string, beian_hao: string | null | undefined):
   return `name:${product_name.trim()}`
 }
 
-function dedupeKey(product_name: string, beian_hao: string | null | undefined, weekEnd: string): string {
+function dedupeKey(
+  product_name: string,
+  beian_hao: string | null | undefined,
+  weekEnd: string,
+  templateId?: string | null,
+): string {
+  const tid = resolveAutoWeeklyTemplate(templateId).id
+  return `${productKey(product_name, beian_hao)}::${weekEnd}::${tid}`
+}
+
+export function autoWeeklyWeekGroupKey(
+  product_name: string,
+  beian_hao: string | null | undefined,
+  weekEnd: string,
+): string {
   return `${productKey(product_name, beian_hao)}::${weekEnd}`
+}
+
+export function autoWeeklyReportDedupeKey(
+  product_name: string,
+  beian_hao: string | null | undefined,
+  weekEnd: string,
+  templateId?: string | null,
+): string {
+  return dedupeKey(product_name, beian_hao, weekEnd, templateId)
+}
+
+/** Pick one stored report per product+week: the subscribed template only (no fallback to the other variant). */
+export function pickPreferredAutoWeeklyReports<T extends {
+  product_name: string
+  beian_hao: string | null
+  weekEnd: string
+  templateId?: string
+}>(
+  reports: T[],
+  preferredTemplateId: (row: T) => string | null | undefined,
+): T[] {
+  const byGroup = new Map<string, T[]>()
+  const order: string[] = []
+  for (const row of reports) {
+    const key = autoWeeklyWeekGroupKey(row.product_name, row.beian_hao, row.weekEnd)
+    if (!byGroup.has(key)) {
+      byGroup.set(key, [])
+      order.push(key)
+    }
+    byGroup.get(key)!.push(row)
+  }
+  const picked: T[] = []
+  for (const key of order) {
+    const group = byGroup.get(key)!
+    const pref = resolveAutoWeeklyTemplate(preferredTemplateId(group[0])).id
+    const hit = group.find((row) => resolveAutoWeeklyTemplate(row.templateId).id === pref)
+    if (hit) picked.push(hit)
+  }
+  return picked
 }
 
 export function persistAutoWeeklyReportFiles(reportId: string): void {
@@ -363,12 +417,17 @@ export function enrichAutoWeeklyListItem(
 export async function enrichAutoWeeklyListItems(
   rows: AutoWeeklyReportRecord[],
 ): Promise<AutoWeeklyListItem[]> {
+  // Use the NAV date stored by the night job. Live per-row lookups made the list page too slow.
   const nameMap = await lookupAutoWeeklyTitleNames(rows)
-  return Promise.all(
-    rows.map(async (row) => {
-      const live = await lookupProductLatestNavDate(row.product_name, row.beian_hao)
-      return enrichAutoWeeklyListItem(row, live, nameMap.get(reportNameLookupKey(row)) ?? null)
-    }),
+  return rows.map((row) =>
+    enrichAutoWeeklyListItem(row, row.latestNavDate, nameMap.get(reportNameLookupKey(row)) ?? null),
+  )
+}
+
+/** Team list: one row per product+week, using the 订阅模板 display choice. */
+export function listAutoWeeklyReportsForDisplay(): AutoWeeklyReportRecord[] {
+  return pickPreferredAutoWeeklyReports(listAutoWeeklyReports(), (row) =>
+    findTeamTemplatePref(row.product_name, row.beian_hao).id,
   )
 }
 
@@ -456,9 +515,9 @@ export async function listAutoWeeklyTargetProducts(): Promise<AutoWeeklyTargetPr
 
 function upsertRecord(record: AutoWeeklyReportRecord): void {
   const index = readIndex()
-  const key = dedupeKey(record.product_name, record.beian_hao, record.weekEnd)
+  const key = dedupeKey(record.product_name, record.beian_hao, record.weekEnd, record.templateId)
   const next = index.reports.filter(
-    (r) => dedupeKey(r.product_name, r.beian_hao, r.weekEnd) !== key,
+    (r) => dedupeKey(r.product_name, r.beian_hao, r.weekEnd, r.templateId) !== key,
   )
   next.unshift(record)
   writeIndex({ version: 1, updatedAt: new Date().toISOString(), reports: next })
@@ -599,6 +658,34 @@ export async function listTeamAutoWeeklyTemplateSubscriptions(): Promise<
   })
 }
 
+function summarizeVariantEtlItems(
+  product_name: string,
+  beian_hao: string | null,
+  items: AutoWeeklyEtlItem[],
+): AutoWeeklyEtlItem {
+  const created = items.find((item) => item.status === "created")
+  const exists = items.find((item) => item.status === "exists")
+  const failed = items.find((item) => item.status === "failed")
+  const skipped = items.find((item) => item.status === "skipped")
+  const hit = created || (failed && !exists ? failed : null) || exists || skipped || items[0]
+  const status = created
+    ? "created"
+    : failed && !exists
+      ? "failed"
+      : exists
+        ? "exists"
+        : hit?.status || "skipped"
+  return {
+    product_name,
+    beian_hao,
+    status,
+    weekStart: hit?.weekStart,
+    weekEnd: hit?.weekEnd,
+    reportId: hit?.reportId,
+    error: status === "failed" ? failed?.error : undefined,
+  }
+}
+
 export async function ensureAutoWeeklyReportForProduct(
   product: AutoWeeklyTargetProduct,
 ): Promise<AutoWeeklyEtlItem> {
@@ -649,69 +736,77 @@ export async function ensureAutoWeeklyReportForProduct(
       }
     }
 
-    const existing = readIndex().reports.find(
-      (r) => dedupeKey(r.product_name, r.beian_hao, r.weekEnd) ===
-        dedupeKey(displayName, range.beian_hao || beian, week.weekEnd),
-    )
-    if (existing) {
-      const liveNav = range.latest_nav_date || null
-      if (liveNav && liveNav !== existing.latestNavDate) {
-        upsertRecord({ ...existing, latestNavDate: liveNav, updatedAt: new Date().toISOString() })
-      }
-      return {
-        product_name: displayName,
-        beian_hao: range.beian_hao || beian,
-        status: "exists",
-        weekStart: existing.weekStart,
-        weekEnd: existing.weekEnd,
-        reportId: existing.reportId,
-      }
-    }
-
     const title = displayName
-    const template = findTeamTemplatePref(product_name, range.beian_hao || beian, displayName)
-    const result = await generateFofWeeklyReport({
-      product_name: displayName,
-      beian_hao: range.beian_hao || beian || undefined,
-      week_begin: week.weekStart,
-      week_end: week.weekEnd,
-      report_title: title,
-      benchmark_key: "IF",
-      nav_frequency: "weekly",
-      report_variant: template.variant,
-    })
+    const resolvedBeian = range.beian_hao || beian
+    const liveNav = range.latest_nav_date || null
+    const variantItems: AutoWeeklyEtlItem[] = []
 
-    persistReportFiles(result.reportId)
+    // Night job always builds both templates. 订阅模板 is only a display switch.
+    for (const template of AUTO_WEEKLY_TEMPLATE_OPTIONS) {
+      const existing = readIndex().reports.find(
+        (r) =>
+          dedupeKey(r.product_name, r.beian_hao, r.weekEnd, r.templateId) ===
+          dedupeKey(displayName, resolvedBeian, week.weekEnd, template.id),
+      )
+      if (existing) {
+        if (liveNav && liveNav !== existing.latestNavDate) {
+          upsertRecord({ ...existing, latestNavDate: liveNav, updatedAt: new Date().toISOString() })
+        }
+        variantItems.push({
+          product_name: displayName,
+          beian_hao: resolvedBeian,
+          status: "exists",
+          weekStart: existing.weekStart,
+          weekEnd: existing.weekEnd,
+          reportId: existing.reportId,
+        })
+        continue
+      }
 
-    const now = new Date().toISOString()
-    const record: AutoWeeklyReportRecord = {
-      id: `awr_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
-      reportId: result.reportId,
-      product_name: displayName,
-      beian_hao: range.beian_hao || beian,
-      weekStart: result.weekStart || week.weekStart,
-      weekEnd: result.weekEnd || week.weekEnd,
-      latestNavDate: range.latest_nav_date || null,
-      title: result.reportTitle || title,
-      templateId: template.id,
-      templateName: template.name,
-      creator: AUTO_WEEKLY_CREATOR,
-      type: "system_weekly",
-      typeLabel: AUTO_WEEKLY_TYPE_LABEL,
-      createdAt: now,
-      updatedAt: now,
-      source: product.source,
+      const result = await generateFofWeeklyReport({
+        product_name: displayName,
+        beian_hao: resolvedBeian || undefined,
+        week_begin: week.weekStart,
+        week_end: week.weekEnd,
+        report_title: title,
+        benchmark_key: "IF",
+        nav_frequency: "weekly",
+        report_variant: template.variant,
+      })
+
+      persistReportFiles(result.reportId)
+
+      const now = new Date().toISOString()
+      const record: AutoWeeklyReportRecord = {
+        id: `awr_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+        reportId: result.reportId,
+        product_name: displayName,
+        beian_hao: resolvedBeian,
+        weekStart: result.weekStart || week.weekStart,
+        weekEnd: result.weekEnd || week.weekEnd,
+        latestNavDate: liveNav,
+        title: result.reportTitle || title,
+        templateId: template.id,
+        templateName: template.name,
+        creator: AUTO_WEEKLY_CREATOR,
+        type: "system_weekly",
+        typeLabel: AUTO_WEEKLY_TYPE_LABEL,
+        createdAt: now,
+        updatedAt: now,
+        source: product.source,
+      }
+      upsertRecord(record)
+      variantItems.push({
+        product_name: displayName,
+        beian_hao: record.beian_hao,
+        status: "created",
+        weekStart: record.weekStart,
+        weekEnd: record.weekEnd,
+        reportId: record.reportId,
+      })
     }
-    upsertRecord(record)
 
-    return {
-      product_name: displayName,
-      beian_hao: record.beian_hao,
-      status: "created",
-      weekStart: record.weekStart,
-      weekEnd: record.weekEnd,
-      reportId: record.reportId,
-    }
+    return summarizeVariantEtlItems(displayName, resolvedBeian, variantItems)
   } catch (err) {
     return {
       product_name,

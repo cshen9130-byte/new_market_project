@@ -328,7 +328,7 @@ function parsePickerOptions(json: unknown, source: ProductOption["source"], sour
 
 
 const AUTO_WEEKLY_TEMPLATE_HINT =
-  "模板用于之后自动生成的周报，已生成的报告不会改写。"
+  "夜间任务会同时生成「通用曲线版」和「持仓饼图版」。订阅模板只选择列表展示哪一种，切换立即生效，不会当场重新生成。若某周的对应版本还没生成，该周会暂时不显示，等夜间任务补齐后再出现。"
 
 function AutoWeeklyTemplateSelect({
   value,
@@ -408,6 +408,7 @@ function MineAddProductDialog({
   onRemove,
   onSetTemplate,
   onSetTemplates,
+  onSubscribeAllTeam,
   onRefreshGenerate,
 }: {
   open: boolean
@@ -418,6 +419,7 @@ function MineAddProductDialog({
   onRemove: (p: MineProduct) => Promise<void>
   onSetTemplate: (p: MineProduct, templateId: string) => Promise<void>
   onSetTemplates: (products: MineProduct[], templateId: string) => Promise<void>
+  onSubscribeAllTeam: () => Promise<void>
   onRefreshGenerate: () => Promise<void>
 }) {
   const [query, setQuery] = useState("")
@@ -503,7 +505,7 @@ function MineAddProductDialog({
           <div>
             <div className="text-sm font-semibold">添加跟踪产品</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              加入后按与团队报告相同的周报逻辑自动生成，仅你可见。{AUTO_WEEKLY_TEMPLATE_HINT}
+              加入后仅你可见；夜间任务会为订阅产品同时生成两种周报。可一次订阅全部团队报告产品，也可单独移除。{AUTO_WEEKLY_TEMPLATE_HINT}
             </div>
           </div>
           <button type="button" className="p-1 rounded hover:bg-muted" onClick={onClose} aria-label="关闭">
@@ -607,14 +609,25 @@ function MineAddProductDialog({
         </div>
 
         <div className="px-4 py-3 border-t flex items-center justify-between gap-2">
-          <button
-            type="button"
-            disabled={busy || products.length === 0}
-            onClick={() => void onRefreshGenerate()}
-            className="h-9 px-3 rounded-md border border-border text-sm hover:bg-muted disabled:opacity-50"
-          >
-            {busy ? "处理中…" : "重新生成周报"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void onSubscribeAllTeam()}
+              className="h-9 px-3 rounded-md border border-border text-sm hover:bg-muted disabled:opacity-50"
+              title="将团队报告中的自动周报产品全部加入我的报告，之后可单独移除。不会当场生成周报。"
+            >
+              订阅全部团队报告产品
+            </button>
+            <button
+              type="button"
+              disabled={busy || products.length === 0}
+              onClick={() => void onRefreshGenerate()}
+              className="h-9 px-3 rounded-md border border-border text-sm hover:bg-muted disabled:opacity-50"
+            >
+              {busy ? "处理中…" : "重新生成周报"}
+            </button>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -675,7 +688,7 @@ function TeamTemplateDialog({
           <div>
             <div className="text-sm font-semibold">团队报告订阅模板</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              为每个自动生成的团队周报选择模板。未设置的产品默认使用「跟踪产品（通用曲线版）」。{AUTO_WEEKLY_TEMPLATE_HINT}
+              为每个产品选择团队报告列表展示的周报版本。未设置的产品默认使用「跟踪产品（通用曲线版）」。{AUTO_WEEKLY_TEMPLATE_HINT}
             </div>
           </div>
           <button type="button" className="p-1 rounded hover:bg-muted" onClick={onClose} aria-label="关闭">
@@ -1100,15 +1113,49 @@ export function ReportsManagementView() {
       }
       if (!resp.ok) throw new Error(json.error || "保存模板失败")
       setMineProducts(json.products || [])
+      await refreshMineReports()
       const name = resolveAutoWeeklyTemplate(templateId).name
       const n = json.updated ?? targets.length
       setMineMessage(
         n <= 1 && targets[0]
-          ? `已将 ${targets[0].product_name} 的订阅模板设为「${name}」`
-          : `已将 ${n} 个产品的订阅模板设为「${name}」`,
+          ? `已将 ${targets[0].product_name} 的展示模板设为「${name}」`
+          : `已将 ${n} 个产品的展示模板设为「${name}」`,
       )
     } catch (err) {
       setMineMessage(err instanceof Error ? err.message : "保存模板失败")
+    } finally {
+      setMineBusy(false)
+    }
+  }
+
+  async function handleSubscribeAllTeamProducts() {
+    setMineBusy(true)
+    setMineMessage(null)
+    try {
+      const resp = await fetch("/ma/api/reports/auto-weekly/mine/products", {
+        method: "POST",
+        headers: { ...userFetchHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ subscribeAllTeam: true }),
+      })
+      const json = (await resp.json().catch(() => ({}))) as {
+        error?: string
+        added?: number
+        existed?: number
+        total?: number
+        attachedReports?: number
+        products?: MineProduct[]
+      }
+      if (!resp.ok) throw new Error(json.error || "订阅失败")
+      setMineProducts(json.products || [])
+      await refreshMineReports()
+      const added = json.added ?? 0
+      const existed = json.existed ?? 0
+      const attached = json.attachedReports ?? 0
+      setMineMessage(
+        `已订阅全部团队报告产品：新增 ${added} 个，已在列表中 ${existed} 个，已同步 ${attached} 份已生成周报。可单独点「移除」退订。尚未生成的版本由夜间任务补齐，不会在此等待。`,
+      )
+    } catch (err) {
+      setMineMessage(err instanceof Error ? err.message : "订阅失败")
     } finally {
       setMineBusy(false)
     }
@@ -1141,12 +1188,13 @@ export function ReportsManagementView() {
       }
       if (!resp.ok) throw new Error(json.error || "保存模板失败")
       setTeamTemplateProducts(json.data || [])
+      await refreshTeamReports(canSeeSystem)
       const name = resolveAutoWeeklyTemplate(templateId).name
       const n = json.updated ?? targets.length
       setTeamTemplateMessage(
         n <= 1 && targets[0]
-          ? `已将 ${targets[0].product_name} 的订阅模板设为「${name}」`
-          : `已将 ${n} 个产品的订阅模板设为「${name}」`,
+          ? `已将 ${targets[0].product_name} 的展示模板设为「${name}」，列表已切换到该版本`
+          : `已将 ${n} 个产品的展示模板设为「${name}」，列表已切换到该版本`,
       )
     } catch (err) {
       setTeamTemplateMessage(err instanceof Error ? err.message : "保存模板失败")
@@ -1332,6 +1380,7 @@ export function ReportsManagementView() {
         onRemove={handleRemoveMineProduct}
         onSetTemplate={handleSetMineTemplate}
         onSetTemplates={handleSetMineTemplates}
+        onSubscribeAllTeam={handleSubscribeAllTeamProducts}
         onRefreshGenerate={handleMineRegenerate}
       />
 

@@ -8,10 +8,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 
 import path from "path"
 import {
   autoWeeklyProductKey,
+  autoWeeklyReportDedupeKey,
   enrichAutoWeeklyListItem,
+  listAutoWeeklyReports,
+  listAutoWeeklyTargetProducts,
   lookupAutoWeeklyTitleNames,
-  lookupProductLatestNavDate,
   persistAutoWeeklyReportFiles,
+  pickPreferredAutoWeeklyReports,
   type AutoWeeklyEtlItem,
   type AutoWeeklyEtlResult,
   type AutoWeeklyListItem,
@@ -19,6 +22,7 @@ import {
   type AutoWeeklyTargetProduct,
 } from "@/lib/server/auto-weekly-reports"
 import {
+  AUTO_WEEKLY_TEMPLATE_OPTIONS,
   isAutoWeeklyTemplateId,
   resolveAutoWeeklyTemplate,
 } from "@/lib/ma/auto-weekly-templates"
@@ -127,15 +131,20 @@ function writeIndex(userId: string, index: MineIndex): void {
   writeFileSync(indexPath(userId), JSON.stringify(index, null, 2), "utf8")
 }
 
-function dedupeKey(product_name: string, beian_hao: string | null | undefined, weekEnd: string): string {
-  return `${autoWeeklyProductKey(product_name, beian_hao)}::${weekEnd}`
+function dedupeKey(
+  product_name: string,
+  beian_hao: string | null | undefined,
+  weekEnd: string,
+  templateId?: string | null,
+): string {
+  return autoWeeklyReportDedupeKey(product_name, beian_hao, weekEnd, templateId)
 }
 
 function upsertRecord(userId: string, record: AutoWeeklyReportRecord): void {
   const index = readIndex(userId)
-  const key = dedupeKey(record.product_name, record.beian_hao, record.weekEnd)
+  const key = dedupeKey(record.product_name, record.beian_hao, record.weekEnd, record.templateId)
   const next = index.reports.filter(
-    (r) => dedupeKey(r.product_name, r.beian_hao, r.weekEnd) !== key,
+    (r) => dedupeKey(r.product_name, r.beian_hao, r.weekEnd, r.templateId) !== key,
   )
   next.unshift(record)
   writeIndex(userId, { version: 1, updatedAt: new Date().toISOString(), reports: next })
@@ -261,19 +270,58 @@ export function listMineWeeklyReports(userId: string): AutoWeeklyReportRecord[] 
   })
 }
 
+export function listMineWeeklyReportsForDisplay(userId: string): AutoWeeklyReportRecord[] {
+  const products = listMineWeeklyProducts(userId)
+  const prefByKey = new Map(
+    products.map((row) => [
+      autoWeeklyProductKey(row.product_name, row.beian_hao),
+      resolveAutoWeeklyTemplate(row.templateId).id,
+    ]),
+  )
+  return pickPreferredAutoWeeklyReports(listMineWeeklyReports(userId), (row) => {
+    const key = autoWeeklyProductKey(row.product_name, row.beian_hao)
+    return prefByKey.get(key)
+  })
+}
+
 export async function enrichMineWeeklyListItems(
   userId: string,
 ): Promise<AutoWeeklyListItem[]> {
-  const rows = listMineWeeklyReports(userId)
+  const rows = listMineWeeklyReportsForDisplay(userId)
   const nameMap = await lookupAutoWeeklyTitleNames(rows)
-  return Promise.all(
-    rows.map(async (row) => {
-      const live = await lookupProductLatestNavDate(row.product_name, row.beian_hao)
-      const code = (row.beian_hao || "").trim().toUpperCase()
-      const key = code ? `beian:${code}` : `name:${(row.product_name || "").trim()}`
-      return enrichAutoWeeklyListItem(row, live, nameMap.get(key) ?? null)
-    }),
-  )
+  return rows.map((row) => {
+    const code = (row.beian_hao || "").trim().toUpperCase()
+    const key = code ? `beian:${code}` : `name:${(row.product_name || "").trim()}`
+    return enrichAutoWeeklyListItem(row, row.latestNavDate, nameMap.get(key) ?? null)
+  })
+}
+
+function summarizeMineVariantEtlItems(
+  product_name: string,
+  beian_hao: string | null,
+  items: AutoWeeklyEtlItem[],
+): AutoWeeklyEtlItem {
+  const created = items.find((item) => item.status === "created")
+  const exists = items.find((item) => item.status === "exists")
+  const failed = items.find((item) => item.status === "failed")
+  const skipped = items.find((item) => item.status === "skipped")
+  const hit = created || (failed && !exists ? failed : null) || exists || skipped || items[0]
+  const status = created
+    ? "created"
+    : failed && !exists
+      ? "failed"
+      : exists
+        ? "exists"
+        : hit?.status || "skipped"
+  return {
+    product_name,
+    beian_hao,
+    status,
+    weekStart: hit?.weekStart,
+    weekEnd: hit?.weekEnd,
+    reportId: hit?.reportId,
+    error: status === "failed" ? failed?.error : undefined,
+  }
 }
 
 export async function ensureMineWeeklyReportForProduct(
@@ -324,81 +372,82 @@ export async function ensureMineWeeklyReportForProduct(
       }
     }
 
-    const existing = readIndex(userId).reports.find(
-      (r) =>
-        dedupeKey(r.product_name, r.beian_hao, r.weekEnd) ===
-        dedupeKey(displayName, range.beian_hao || beian, week.weekEnd),
-    )
-    if (existing) {
-      const liveNav = range.latest_nav_date || null
-      if (liveNav && liveNav !== existing.latestNavDate) {
-        upsertRecord(userId, {
-          ...existing,
-          latestNavDate: liveNav,
-          updatedAt: new Date().toISOString(),
-        })
-      }
-      return {
-        product_name: displayName,
-        beian_hao: range.beian_hao || beian,
-        status: "exists",
-        weekStart: existing.weekStart,
-        weekEnd: existing.weekEnd,
-        reportId: existing.reportId,
-      }
-    }
-
     const title = displayName
-    const mineProducts = listMineWeeklyProducts(userId)
-    const displayKey = autoWeeklyProductKey(displayName, range.beian_hao || beian)
-    const sourceKey = autoWeeklyProductKey(product_name, beian)
-    const subscribed =
-      mineProducts.find((row) => autoWeeklyProductKey(row.product_name, row.beian_hao) === displayKey) ??
-      mineProducts.find((row) => autoWeeklyProductKey(row.product_name, row.beian_hao) === sourceKey)
-    const template = resolveAutoWeeklyTemplate(subscribed?.templateId)
-    const result = await generateFofWeeklyReport({
-      product_name: displayName,
-      beian_hao: range.beian_hao || beian || undefined,
-      week_begin: week.weekStart,
-      week_end: week.weekEnd,
-      report_title: title,
-      benchmark_key: "IF",
-      nav_frequency: "weekly",
-      report_variant: template.variant,
-    })
+    const resolvedBeian = range.beian_hao || beian
+    const liveNav = range.latest_nav_date || null
+    const variantItems: AutoWeeklyEtlItem[] = []
 
-    persistAutoWeeklyReportFiles(result.reportId)
+    // Night job always builds both templates. 订阅模板 is only a display switch.
+    for (const template of AUTO_WEEKLY_TEMPLATE_OPTIONS) {
+      const existing = readIndex(userId).reports.find(
+        (r) =>
+          dedupeKey(r.product_name, r.beian_hao, r.weekEnd, r.templateId) ===
+          dedupeKey(displayName, resolvedBeian, week.weekEnd, template.id),
+      )
+      if (existing) {
+        if (liveNav && liveNav !== existing.latestNavDate) {
+          upsertRecord(userId, {
+            ...existing,
+            latestNavDate: liveNav,
+            updatedAt: new Date().toISOString(),
+          })
+        }
+        variantItems.push({
+          product_name: displayName,
+          beian_hao: resolvedBeian,
+          status: "exists",
+          weekStart: existing.weekStart,
+          weekEnd: existing.weekEnd,
+          reportId: existing.reportId,
+        })
+        continue
+      }
 
-    const now = new Date().toISOString()
-    const record: AutoWeeklyReportRecord = {
-      id: `mwr_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
-      reportId: result.reportId,
-      product_name: displayName,
-      beian_hao: range.beian_hao || beian,
-      weekStart: result.weekStart || week.weekStart,
-      weekEnd: result.weekEnd || week.weekEnd,
-      latestNavDate: range.latest_nav_date || null,
-      title: result.reportTitle || title,
-      templateId: template.id,
-      templateName: template.name,
-      creator: creatorName || "我",
-      type: "mine_weekly",
-      typeLabel: MINE_WEEKLY_TYPE_LABEL,
-      createdAt: now,
-      updatedAt: now,
-      source: "mine",
-      ownerUserId: sanitizeUserId(userId),
+      const result = await generateFofWeeklyReport({
+        product_name: displayName,
+        beian_hao: resolvedBeian || undefined,
+        week_begin: week.weekStart,
+        week_end: week.weekEnd,
+        report_title: title,
+        benchmark_key: "IF",
+        nav_frequency: "weekly",
+        report_variant: template.variant,
+      })
+
+      persistAutoWeeklyReportFiles(result.reportId)
+
+      const now = new Date().toISOString()
+      const record: AutoWeeklyReportRecord = {
+        id: `mwr_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+        reportId: result.reportId,
+        product_name: displayName,
+        beian_hao: resolvedBeian,
+        weekStart: result.weekStart || week.weekStart,
+        weekEnd: result.weekEnd || week.weekEnd,
+        latestNavDate: liveNav,
+        title: result.reportTitle || title,
+        templateId: template.id,
+        templateName: template.name,
+        creator: creatorName || "我",
+        type: "mine_weekly",
+        typeLabel: MINE_WEEKLY_TYPE_LABEL,
+        createdAt: now,
+        updatedAt: now,
+        source: "mine",
+        ownerUserId: sanitizeUserId(userId),
+      }
+      upsertRecord(userId, record)
+      variantItems.push({
+        product_name: displayName,
+        beian_hao: record.beian_hao,
+        status: "created",
+        weekStart: record.weekStart,
+        weekEnd: record.weekEnd,
+        reportId: record.reportId,
+      })
     }
-    upsertRecord(userId, record)
 
-    return {
-      product_name: displayName,
-      beian_hao: record.beian_hao,
-      status: "created",
-      weekStart: record.weekStart,
-      weekEnd: record.weekEnd,
-      reportId: record.reportId,
-    }
+    return summarizeMineVariantEtlItems(displayName, resolvedBeian, variantItems)
   } catch (err) {
     return {
       product_name,
@@ -455,6 +504,91 @@ export async function addMineWeeklyProductAndGenerate(
     creatorName,
   )
   return { product: row, etl }
+}
+
+
+/**
+ * Subscribe this user to every team auto-weekly product.
+ * Does not generate reports. Copies already-stored team report records
+ * (same files) into the mine index so the list can show them immediately.
+ */
+export async function subscribeMineWeeklyToAllTeamProducts(
+  userId: string,
+): Promise<{
+  added: number
+  existed: number
+  total: number
+  attachedReports: number
+  products: MineWeeklyProduct[]
+}> {
+  const team = await listAutoWeeklyTargetProducts()
+  let added = 0
+  let existed = 0
+  const beforeKeys = new Set(
+    listMineWeeklyProducts(userId).map((row) => autoWeeklyProductKey(row.product_name, row.beian_hao)),
+  )
+  for (const product of team) {
+    const key = autoWeeklyProductKey(product.product_name, product.beian_hao)
+    const already = beforeKeys.has(key)
+    addMineWeeklyProduct(userId, {
+      product_name: product.product_name,
+      beian_hao: product.beian_hao,
+    })
+    if (already) existed += 1
+    else {
+      added += 1
+      beforeKeys.add(key)
+    }
+  }
+  const attachedReports = attachExistingTeamReportsToMine(userId)
+  return {
+    added,
+    existed,
+    total: team.length,
+    attachedReports,
+    products: listMineWeeklyProducts(userId),
+  }
+}
+
+function attachExistingTeamReportsToMine(userId: string): number {
+  const ownerUserId = sanitizeUserId(userId)
+  const subscribed = new Set(
+    listMineWeeklyProducts(userId).map((row) => autoWeeklyProductKey(row.product_name, row.beian_hao)),
+  )
+  const index = readIndex(userId)
+  const existing = new Set(
+    index.reports.map((row) =>
+      autoWeeklyReportDedupeKey(row.product_name, row.beian_hao, row.weekEnd, row.templateId),
+    ),
+  )
+  const next = index.reports.slice()
+  let attached = 0
+  const now = new Date().toISOString()
+  for (const report of listAutoWeeklyReports()) {
+    if (!subscribed.has(autoWeeklyProductKey(report.product_name, report.beian_hao))) continue
+    const key = autoWeeklyReportDedupeKey(
+      report.product_name,
+      report.beian_hao,
+      report.weekEnd,
+      report.templateId,
+    )
+    if (existing.has(key)) continue
+    next.unshift({
+      ...report,
+      id: `mwr_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+      type: "mine_weekly",
+      typeLabel: MINE_WEEKLY_TYPE_LABEL,
+      source: "mine",
+      ownerUserId,
+      updatedAt: now,
+    })
+    existing.add(key)
+    attached += 1
+  }
+  if (attached > 0) {
+    writeIndex(userId, { version: 1, updatedAt: now, reports: next })
+  }
+  return attached
 }
 
 export function listMineWeeklyOwnerUserIds(): string[] {

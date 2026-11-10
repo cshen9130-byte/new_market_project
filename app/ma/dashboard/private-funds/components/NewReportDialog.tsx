@@ -55,7 +55,7 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "quarterly" | "other"
       title: "跟踪产品（持仓饼图版）",
       description: "无基准曲线，可填基金经理观点，展示二级策略持仓饼图",
       badgeLabel: "周报",
-      exampleUrl: "/ma/api/reports/fof-weekly/example?variant=holdings",
+      exampleUrl: "/ma/api/reports/fof-weekly/example?variant=holdings&v=labeled",
       exampleCaption: "低波稳健FOF 1号 · 持仓饼图版",
     },
     {

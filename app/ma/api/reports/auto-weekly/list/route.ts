@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { canAccessPfInvestmentPool } from "@/lib/permissions"
 import {
   enrichAutoWeeklyListItems,
-  listAutoWeeklyReports,
+  listAutoWeeklyReportsForDisplay,
 } from "@/lib/server/auto-weekly-reports"
 import { getRequestUser } from "@/lib/server/users"
 import type { User } from "@/lib/auth"
@@ -16,6 +16,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "forbidden", code: "forbidden" }, { status: 403 })
   }
 
-  const reports = await enrichAutoWeeklyListItems(listAutoWeeklyReports())
+  const reports = await enrichAutoWeeklyListItems(listAutoWeeklyReportsForDisplay())
   return NextResponse.json({ data: reports, total: reports.length })
 }

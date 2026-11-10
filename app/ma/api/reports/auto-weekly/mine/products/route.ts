@@ -10,6 +10,7 @@ import {
   removeMineWeeklyProduct,
   setMineWeeklyProductTemplate,
   setMineWeeklyProductTemplates,
+  subscribeMineWeeklyToAllTeamProducts,
 } from "@/lib/server/auto-weekly-mine-reports"
 import { getRequestUser } from "@/lib/server/users"
 
@@ -43,11 +44,31 @@ export async function POST(req: Request) {
     beian_hao?: string | null
     templateId?: string | null
     generate?: boolean
+    subscribeAllTeam?: boolean
   } = {}
   try {
     body = (await req.json()) as typeof body
   } catch {
     body = {}
+  }
+
+  if (body.subscribeAllTeam) {
+    try {
+      const result = await subscribeMineWeeklyToAllTeamProducts(user.id)
+      return NextResponse.json({
+        ok: true,
+        added: result.added,
+        existed: result.existed,
+        total: result.total,
+        attachedReports: result.attachedReports,
+        products: result.products,
+      })
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        { status: 500 },
+      )
+    }
   }
 
   const product_name = (body.product_name || "").trim()
