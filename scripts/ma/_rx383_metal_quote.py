@@ -51,7 +51,7 @@ def _futures(day_min: str = "2026-10-01") -> pd.DataFrame:
                    COALESCE(clear, close)::float8 AS settl,
                    COALESCE(volume, 0)::float8 AS volume
             FROM raw_futures_contracts_daily
-            WHERE trade_date BETWEEN DATE %s AND DATE '2026-11-05'
+            WHERE trade_date BETWEEN DATE %s AND DATE '2026-11-09'
             """,
             (day_min,),
         )
@@ -82,7 +82,7 @@ def _fills() -> pd.DataFrame:
                    "手数" AS lots, "成交价" AS price
             FROM mom_options_trade_details
             WHERE LOWER(TRIM("账户")) = %s
-              AND "交易日期" BETWEEN DATE '2026-10-15' AND DATE '2026-11-05'
+              AND "交易日期" BETWEEN DATE '2026-10-15' AND DATE '2026-11-09'
             """,
             (base.ACCOUNT,),
         ))

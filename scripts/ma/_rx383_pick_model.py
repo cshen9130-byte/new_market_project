@@ -154,7 +154,7 @@ def _fill_front_from_ak(front: pd.DataFrame, ak: pd.DataFrame) -> pd.DataFrame:
     """CZCE contract prices are missing in October. Use the continuous future for those products."""
     if ak is None or ak.empty:
         return front
-    window = front[(front["dt"] >= "2026-10-01") & (front["dt"] <= "2026-11-03")] if not front.empty else front
+    window = front[(front["dt"] >= "2026-10-01") & (front["dt"] <= "2026-11-09")] if not front.empty else front
     counts = window.groupby("product").size() if not window.empty else pd.Series(dtype=int)
     strong = set(counts[counts >= 8].index)
     akf = ak.sort_values(["product", "dt"]).copy()

@@ -36,7 +36,7 @@ def tape() -> pd.DataFrame:
                    "手数" AS lots
             FROM mom_options_trade_details
             WHERE LOWER(TRIM("账户")) = %s
-              AND "交易日期" BETWEEN DATE '2026-10-01' AND DATE '2026-11-05'
+              AND "交易日期" BETWEEN DATE '2026-10-01' AND DATE '2026-11-09'
             """,
             (base.ACCOUNT,),
         ))

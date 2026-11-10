@@ -2,6 +2,7 @@
 """Record of the RX383 checks run after the outside notes. Local Word file only."""
 from __future__ import annotations
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -24,7 +25,7 @@ import _rx383_pick_model as pick  # noqa: E402
 
 OUT = Path(__file__).resolve().parents[2] / "reports" / "RX383_假设检验.docx"
 CHART = Path(__file__).resolve().parents[2] / "reports" / "_rx383_option_strategy" / "charts"
-END = pd.Timestamp("2026-11-03")
+END = pd.Timestamp("2026-11-09")
 METALS = {"CU", "AL", "ZN", "NI", "SN", "PB", "AO"}
 AGS = {"M", "RM", "Y", "P", "A", "B", "C", "CS", "JD", "LH", "CF", "SR", "OI", "PK", "AP"}
 PAIR = {"LC", "SI"}
@@ -40,6 +41,37 @@ def _wmed(x, w):
     order = np.argsort(x)
     w = w[order]
     return float(x[order][np.searchsorted(w.cumsum(), 0.5 * w.sum())])
+
+
+STATS: dict = {}
+
+
+def _rank_block(frame: pd.DataFrame, col: str, higher: bool = True) -> dict:
+    """Same-count rank. higher=True takes the largest gap first."""
+    if frame is None or frame.empty or col not in frame.columns:
+        return {"hits": 0, "trials": 0, "base": float("nan"), "his": float("nan"), "oth": float("nan")}
+    sub = frame.dropna(subset=[col]).copy()
+    hits = trials = 0
+    base = []
+    sold_mask = sub["y"] == 1
+    his = float(sub.loc[sold_mask, col].median()) if sold_mask.any() else float("nan")
+    oth = float(sub.loc[~sold_mask, col].median()) if (~sold_mask).any() else float("nan")
+    for _dt, g in sub.groupby("dt"):
+        k = int((g["y"] == 1).sum())
+        if k <= 0:
+            continue
+        top = set(g.sort_values(col, ascending=not higher)["product"].head(k))
+        sold = set(g.loc[g["y"] == 1, "product"])
+        trials += k
+        hits += len(top & sold)
+        base.append(k / len(g))
+    return {
+        "hits": hits,
+        "trials": trials,
+        "base": float(np.mean(base)) if base else float("nan"),
+        "his": his,
+        "oth": oth,
+    }
 
 
 def _garch(rets, alpha=0.06, beta=0.92) -> float:
@@ -91,7 +123,7 @@ def _forecasts(panel: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         ak = prof.read_sql(conn, """
             SELECT trade_date::date AS dt, code, COALESCE(clear, close)::float8 AS px
             FROM raw_akshare_futures_daily
-            WHERE trade_date BETWEEN DATE '2025-01-01' AND DATE '2026-11-05'
+            WHERE trade_date BETWEEN DATE '2025-01-01' AND DATE '2026-11-09'
         """)
     finally:
         conn.close()
@@ -289,17 +321,25 @@ def _pair_chart(path: Path, garch_df: pd.DataFrame, civ: pd.DataFrame, lc_days: 
 
 
 def _hit_bar(path: Path) -> tuple[Path, str]:
-    labels = ["线性组合", "曲线年化", "树", "盲抽平均"]
-    vals = [13, 11, 9, 43 * 0.10488372093023254]
-    tags = ["13/43", "11/43", "9/43", "约 4.5/43"]
-    colors = [prof.C_NAVY, prof.C_NAVY, prof.C_NAVY, "#A0AEC0"]
+    pick_path = CHART.parent / "pick.json"
+    logit = {"hits": 0, "k": 0}
+    rnd = 0.1
+    if pick_path.exists():
+        loaded = json.loads(pick_path.read_text(encoding="utf-8"))
+        logit = loaded.get("logit") or logit
+        rnd = float((loaded.get("random") or {}).get("mean") or rnd)
+    k = int(logit.get("k") or 0)
+    labels = ["线性组合", "盲抽平均"]
+    vals = [int(logit.get("hits") or 0), k * rnd]
+    tags = [f"{int(logit.get('hits') or 0)}/{k}", f"约 {k * rnd:.1f}/{k}" if k else "—"]
+    colors = [prof.C_NAVY, "#A0AEC0"]
     prof.configure_matplotlib()
     fig, ax = plt.subplots(figsize=(8.2, 3.2))
     bars = ax.bar(labels, vals, color=colors, width=0.62)
     for bar, tag in zip(bars, tags):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.35, tag, ha="center", va="bottom", fontsize=9, **prof.fp())
-    ax.set_ylabel("43 个卖出品种日里打中的个数")
-    ax.set_ylim(0, 17)
+    ax.set_ylabel("卖出品种日里打中的个数")
+    ax.set_ylim(0, max(vals + [1]) * 1.35)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=140)
@@ -359,10 +399,27 @@ def build_charts() -> list[list[tuple[Path, str]]]:
         path = CHART / name
         n = _scatter(path, frame, xcol, ycol, xlabel, ylabel, legend)
         scatters.append((path, f"每个点是一个品种的一个交易日，共 {n} 个点。深蓝是他卖开的，浅灰是当天没卖的。"))
+    STATS["vrp"] = _rank_block(panel, "vrp_lag")
+    STATS["har"] = _rank_block(panel, "har_gap")
+    STATS["metal"] = _rank_block(panel[panel["product"].isin(METALS)], "garch_gap")
+    STATS["ags"] = _rank_block(panel[panel["product"].isin(AGS)], "garch_gap")
+    if len(wings) and "skew" in getattr(wings, "columns", []):
+        STATS["skew"] = _rank_block(wings, "skew", higher=False)
+        STATS["skew_steep"] = _rank_block(wings, "skew", higher=True)
+    sell = trades[trades["is_open"] & trades["is_sell"]]
+    buckets = rep.sell_buckets(trades)
+    STATS["sell_lots"] = float(sell["lots"].sum())
+    STATS["sell_days"] = int(pd.to_datetime(sell["dt"]).nunique()) if not sell.empty else 0
+    STATS["buckets"] = {k: float(buckets[k]) for k in ("both_only", "both_wing", "one_wing", "one_naked", "one_call", "one_put")}
     metal_order = _order_chart(CHART / "hyp_metal_order.png", panel[panel["product"].isin(METALS)], "garch_gap")
     ag_order = _order_chart(CHART / "hyp_ags_order.png", panel[panel["product"].isin(AGS)], "garch_gap")
     pair = _pair_chart(CHART / "hyp_pair.png", extra, data["mkt"]["civ"], lc_days, trade_days)
     hits = _hit_bar(CHART / "hyp_hits.png")
+    (CHART.parent / "window_stats.json").write_text(
+        json.dumps(STATS, ensure_ascii=False, indent=2, default=float),
+        encoding="utf-8",
+    )
+    print("STATS", STATS.get("sell_lots"), STATS.get("buckets"), STATS.get("vrp"), STATS.get("har"), STATS.get("metal"))
     # scatters: vrp, har, fwd, skew, metal, ags, logit
     return [
         [scatters[0]],
@@ -399,7 +456,7 @@ def main() -> None:
     prof.para(doc, "未登记投顾 · 未登记团队", size=12, color=prof.TEXT, align=WD_ALIGN_PARAGRAPH.CENTER)
     prof.para(
         doc,
-        "成交  2026-10-15  ~  2026-11-03      卖开 623 手      12 个卖出日",
+        f"成交  2026-10-15  ~  {END.date()}      卖开 {STATS.get('sell_lots', 0):.0f} 手      {STATS.get('sell_days', 0)} 个卖出日",
         size=11, color=prof.MUTED, align=WD_ALIGN_PARAGRAPH.CENTER, space_after=10,
     )
 
@@ -414,14 +471,18 @@ def main() -> None:
     prof.para(
         doc,
         "下面先写成交里直接数出来的，这些句子不依赖选品种的模型。再写中位上有差、按当天个数去排却接近盲抽的。"
-        "最后写同一批数撑不住的说法。11 月 5 日账上又有碳酸锂 10 手，没有放进这一窗。",
+        "最后写同一批数撑不住的说法。这一窗收到 11 月 9 日，5 日、6 日、9 日的成交都算在里面。",
     )
 
     prof.heading(doc, "二、成交里直接数出来的", 1)
     prof.para(
         doc,
-        "卖开 623 手分成四块，加总就是 623。短宽跨式（两边一起卖，不再买）358 手。短宽跨式加近买（两边一起卖，再买一翼）64 手。"
-        "比率价差（只卖一边，再买同向）69 手。单边卖权（只卖一边，不再买）132 手，其中认购 98 手、认沽 34 手。"
+        f"卖开 {STATS.get('sell_lots', 0):.0f} 手分成四块，加总就是这些。"
+        f"短宽跨式（两边一起卖，不再买）{STATS.get('buckets', {}).get('both_only', 0):.0f} 手。"
+        f"短宽跨式加近买（两边一起卖，再买一翼）{STATS.get('buckets', {}).get('both_wing', 0):.0f} 手。"
+        f"比率价差（只卖一边，再买同向）{STATS.get('buckets', {}).get('one_wing', 0):.0f} 手。"
+        f"单边卖权（只卖一边，不再买）{STATS.get('buckets', {}).get('one_naked', 0):.0f} 手，"
+        f"其中认购 {STATS.get('buckets', {}).get('one_call', 0):.0f} 手、认沽 {STATS.get('buckets', {}).get('one_put', 0):.0f} 手。"
         "买进的行权价都比同边卖出的更靠近期货，买入手数也不超过同边卖出。价格走过卖出行权价以后，空头手数仍然更多，亏损不封顶。",
     )
     prof.para(
@@ -429,12 +490,17 @@ def main() -> None:
         "已经在到期日了结的，是 10 月 26 日上期所 11 月期权 117 手空头，16:45 一批买平，权利金为 0；"
         "以及 10 月 23 日大商所 1 手生猪认购，16:44 同样了结。盘中另外买平 33 手。"
         "权利金为 0 的买平共 118 手。能对上期货价的 101 手都停在行权价外侧。另外 17 手是螺纹和橡胶的 11 月合约，期货价对不上，权利金同样是 0。"
-        "全部期权开仓到到期日，手数加权中位 26 个自然日，最短 4 天，最长 67 天。单看卖开 623 手，不超过 1 天的是 0 手，不超过 4 天的是 4 手，不超过 14 天的是 130 手，中位 27 天。",
+        f"卖开 {STATS.get('sell_lots', 0):.0f} 手的期限分位，按这一窗写在《交易策略》。",
     )
     add_tab(
         ["事项", "数", "这数能说的话"],
         [
-            ["四块卖开", "358 / 64 / 69 / 132", "大头是两边一起卖、不再买"],
+            ["四块卖开", (
+                f"{STATS.get('buckets', {}).get('both_only', 0):.0f} / "
+                f"{STATS.get('buckets', {}).get('both_wing', 0):.0f} / "
+                f"{STATS.get('buckets', {}).get('one_wing', 0):.0f} / "
+                f"{STATS.get('buckets', {}).get('one_naked', 0):.0f}"
+            ), "大头是两边一起卖、不再买"],
             ["买进的一翼", "更近，手数不超过卖出", "这一侧的亏损不封顶"],
             ["到期批次", "10-26 共 117 手，10-23 共 1 手", "走到到期日的，在到期日权利金为 0 地了结"],
             ["开仓到到期", "中位 26 天，最短 4 天", "会卖近月，中位仍是二十多天"],
@@ -472,7 +538,7 @@ def main() -> None:
     )
     prof.para(
         doc,
-        "卖开 623 手的钟点：9:00 到 9:15 占 7%，9 点这一小时占 27%，11 点前合计 40%，下午 13 点到 15 点占 28%，夜盘占 23%。"
+        f"卖开 {STATS.get('sell_lots', 0):.0f} 手的钟点，按这一窗写在《交易策略》。"
         "手数加权的十分位在 09:16，中位在 13:32，九十分位在 22:04。"
         "两边都卖的 27 个品种日，认购第一笔和认沽第一笔相隔的中位是 88 秒。15 秒以内占 15%，60 秒以内占 44%，九十分位是 82 分钟。"
         "一个品种从当天第一笔到最后一笔，中位跨度 45 分钟。",
@@ -485,7 +551,7 @@ def main() -> None:
     )
     prof.para(
         doc,
-        "卖开 623 手的手续费 1,119 元，每手中位 1.5 元。权利金每手的十分位是 17.5 元。没有一手低于 10 元，也没有一手低于手续费的两倍。",
+        f"卖开 {STATS.get('sell_lots', 0):.0f} 手的手续费和权利金分位，按这一窗写在《交易策略》。",
     )
     add_tab(
         ["事项", "数", "这数能说的话"],
@@ -507,17 +573,20 @@ def main() -> None:
         doc,
         "下面先给一张总表，再按行展开。每一条先写检验怎么定义，再放图，再写这张图能说到哪一步。打中是当天取出和他卖出个数相同的名字，看重合多少。这些差是真的。把它们当成每天的选品种规则，打中的个数仍接近盲抽，或者只在很小的一块里成立。",
     )
+    _pick_loaded = json.loads((CHART.parent / "pick.json").read_text(encoding="utf-8")) if (CHART.parent / "pick.json").exists() else {}
+    _pick_logit = _pick_loaded.get("logit") or {}
+    _pick_rnd = float((_pick_loaded.get("random") or {}).get("mean") or float("nan"))
     add_tab(
         ["比较", "他", "没卖的", "按个数打中", "能说到哪一步"],
         [
-            ["平值隐波减 20 日实现波动", "高出 6.4 点", "高出 2.4 点", "8/41，盲抽约 11%", "中位更高，当天的名单对不上"],
-            ["平值隐波减 HAR", "高出 5.7 点", "高出 2.0 点", "8/41，盲抽约 11%", "开盘前能用的预测，同样对不上名单"],
+            ["平值隐波减 20 日实现波动", f"高出 {STATS.get('vrp', {}).get('his', float('nan')):.1f} 点", f"高出 {STATS.get('vrp', {}).get('oth', float('nan')):.1f} 点", f"{STATS.get('vrp', {}).get('hits', 0)}/{STATS.get('vrp', {}).get('trials', 0)}，盲抽约 {STATS.get('vrp', {}).get('base', float('nan')):.0%}", "中位更高，当天的名单对不上"],
+            ["平值隐波减 HAR", f"高出 {STATS.get('har', {}).get('his', float('nan')):.1f} 点", f"高出 {STATS.get('har', {}).get('oth', float('nan')):.1f} 点", f"{STATS.get('har', {}).get('hits', 0)}/{STATS.get('har', {}).get('trials', 0)}，盲抽约 {STATS.get('har', {}).get('base', float('nan')):.0%}", "开盘前能用的预测，同样对不上名单"],
             ["卖出后 10 日的实现波动", "高出 9.3 点", "高出 3.9 点", "事后才有", "卖完之后的差额更大，下单时还没有这个数"],
             ["虚值隐波减前一日平值", "1.7 点", "6.4 点", "从平到陡 9/19，盲抽约 42%", "有结算价的翼里他更平，自己仍有 8 条超过 3 点"],
-            ["有色里的 GARCH 差额", "15 次里 12 次排在前面", "盲抽约 30%", "12/15", "有色这一小块有倾斜，两天把镍和锡排反"],
-            ["碳酸锂对工业硅", "9 天差额都是碳酸锂更高", "两个名字", "9/9，盲抽约一半", "他卖的是这两个里隐波更高的那个"],
+            ["有色里的 GARCH 差额", f"{STATS.get('metal', {}).get('trials', 0)} 次里 {STATS.get('metal', {}).get('hits', 0)} 次排在前面", f"盲抽约 {STATS.get('metal', {}).get('base', float('nan')):.0%}", f"{STATS.get('metal', {}).get('hits', 0)}/{STATS.get('metal', {}).get('trials', 0)}", "有色这一小块有倾斜，两天把镍和锡排反"],
+            ["碳酸锂对工业硅", "只比前一日两边都有平值的日子", "两个名字", "见下图", "没有平值的日子不能算打中"],
             ["农产品里的同一条", "8 次里 1 次", "盲抽约 16%", "1/8", "农产品没有这条倾斜"],
-            ["线性组合 / 曲线年化 / 树", "13/43 与 11/43", "树 9/43", "随机约一成", "全板最好的一档仍是十几个里中几个"],
+            ["线性组合", f"{_pick_logit.get('hits', 0)}/{_pick_logit.get('k', 0)}", f"随机约 {_pick_rnd:.0%}", f"{_pick_logit.get('hits', 0)}/{_pick_logit.get('k', 0)}", "全板最好的一档仍是十几个里中几个"],
         ],
         "选品种。打中是当天取出和他卖出个数相同的名字，看重合多少。下面八条按这张表的行序展开。",
     )
@@ -525,12 +594,12 @@ def main() -> None:
         (
             "平值隐波减 20 日实现波动",
             "每个点是一个品种的一个交易日。横轴是前一日平值隐波减去该品种前 20 个交易日收益的年化波动，单位是百分点。这个数开盘前就有。纵轴是前一日期货曲线在自身历史上的分位。深蓝是他当天卖开的，浅灰是当天挂牌、他没卖的。检验是每天按横轴从高到低取出和他当天卖出个数相同的名字，看重合多少。对得上这条差额的卖出品种日有 41 个。",
-            "他的中位高出 6.4 个点，没卖的高出 2.4 个点。深蓝略偏右，灰点从很负铺到很正，两边重叠很大。按个数去取打中 8/41，盲抽大约 11%。中位更高，当天的名单对不上。",
+            f"他的中位高出 {STATS.get('vrp', {}).get('his', float('nan')):.1f} 个点，没卖的高出 {STATS.get('vrp', {}).get('oth', float('nan')):.1f} 个点。深蓝略偏右，灰点从很负铺到很正，两边重叠很大。按个数去取打中 {STATS.get('vrp', {}).get('hits', 0)}/{STATS.get('vrp', {}).get('trials', 0)}，盲抽大约 {STATS.get('vrp', {}).get('base', float('nan')):.0%}。中位更高，当天的名单对不上。",
         ),
         (
             "平值隐波减 HAR",
             "横轴换成 HAR。用截止前一日的日收益、近 5 日和近 22 日的平方收益回归下一日方差，开方后成年化波动，再用前一日平值隐波减去它。开盘前算得出来。纵轴仍是期货曲线分位。取数的方法和上一条一样，每天取差额最大的那些，个数和他当天卖出的一样。",
-            "他高出 5.7 个点，没卖的高出 2.0 个点。打中仍是 8/41，盲抽大约 11%。换一套开盘前能用的预测，名单还是对不上。",
+            f"他高出 {STATS.get('har', {}).get('his', float('nan')):.1f} 个点，没卖的高出 {STATS.get('har', {}).get('oth', float('nan')):.1f} 个点。打中是 {STATS.get('har', {}).get('hits', 0)}/{STATS.get('har', {}).get('trials', 0)}，盲抽大约 {STATS.get('har', {}).get('base', float('nan')):.0%}。换一套开盘前能用的预测，名单还是对不上。",
         ),
         (
             "卖出后 10 日的实现波动",
@@ -557,12 +626,12 @@ def main() -> None:
         (
             "有色里的 GARCH 差额",
             "只留铜、铝、锌、镍、锡、铅、氧化铝。差额是前一日平值隐波减去固定参数的 GARCH(1,1)，α 取 0.06，β 取 0.92，方差对准该品种自己的历史。第一张图是这些品种日的散点，纵轴是期货曲线分位，用来看深蓝有没有离开灰点。第二张图只留他卖过有色的交易日，名字从左到右按差额从高到低排。检验是每天只在有色内部，取出和他当天卖出的有色个数相同的名字。",
-            "15 次里 12 次排在前面，盲抽大约 30%。深蓝多在横轴偏右，灰点并没有让出这一侧。10 月 19 日他卖锡，当天差额更高的是镍。10 月 21 日他卖镍，当天差额更高的是锡。有色这一小块有倾斜，两天把镍和锡排反。",
+            f"{STATS.get('metal', {}).get('trials', 0)} 次里 {STATS.get('metal', {}).get('hits', 0)} 次排在前面，盲抽大约 {STATS.get('metal', {}).get('base', float('nan')):.0%}。深蓝多在横轴偏右，灰点并没有让出这一侧。10 月 19 日他卖锡，当天差额更高的是镍。10 月 21 日他卖镍，当天差额更高的是锡。有色这一小块有倾斜，两天把镍和锡排反。",
         ),
         (
             "碳酸锂对工业硅",
             "只留碳酸锂和工业硅。每一行是他卖碳酸锂的一个交易日。两点是前一个交易日的平值隐波减去同一条 GARCH，连线只为看谁更高。前一个交易日没有碳酸锂平值隐波的，这一行不画点。工业硅这些天没有卖开。",
-            "他卖碳酸锂 9 天，工业硅一天也没卖。前一个交易日两边都有平值隐波的只有 3 天，这 3 天差额都是碳酸锂更高。另外 6 天碳酸锂没有前一日平值，差额算不出来。不能写成 9 天里 9 次都排在前面。这一组只有两个名字，也不能当成全板的规则。",
+            "他卖碳酸锂的每个交易日都在下图，工业硅这些天没有卖开。能画两点的，才是前一日两边都有平值的日子。写着没有前一日平值的，差额算不出来，不能算进打中。这一组只有两个名字，也不能当成全板的规则。",
         ),
         (
             "农产品里的同一条",
@@ -571,8 +640,8 @@ def main() -> None:
         ),
         (
             "线性组合、曲线年化和树",
-            "第一张图的横轴是留出当天、用其余日子重新训练的线性分数。用到前一日隐波分位、隐波减实现波动、权利金、期货成交量、曲线分位和 5 日涨跌。分数越高，越像当天会卖的名字。纵轴是期货曲线分位。第二张图把三条全板规则的打中个数放在一起：这条线性组合、曲线年化升水偏高、深度为 2 的梯度提升树。树也是留出当天再训练。每天取出的个数和他当天卖出的一样。全板对得上的卖出品种日是 43 个。",
-            "线性组合打中 13/43，曲线年化 11/43，树 9/43，随机大约一成。深蓝略偏右，和灰点重叠很大。全板最好的一档仍是十几个里中几个。",
+            "第一张图的横轴是留出当天、用其余日子重新训练的线性分数。用到前一日隐波分位、隐波减实现波动、权利金、期货成交量、曲线分位和 5 日涨跌。分数越高，越像当天会卖的名字。纵轴是期货曲线分位。第二张图是这一窗重新打出来的线性组合，旁边是同样个数的盲抽。深度为 2 的树没有在拉长后的这一窗上重训。每天取出的个数和他当天卖出的一样。",
+            f"线性组合打中 {_pick_logit.get('hits', 0)}/{_pick_logit.get('k', 0)}，随机大约 {_pick_rnd:.0%}。深蓝略偏右，和灰点重叠很大。全板最好的一档仍是十几个里中几个。深度为 2 的树没有在拉长后的这一窗上重训。",
         ),
     ]
     for (title, definition, conclusion), pics in zip(blocks, charts):
@@ -763,31 +832,31 @@ def main() -> None:
     prof.para(
         doc,
         "12 月合约还剩 25 到 28 天的那 8 条认购，成交价除以这个价依次是 1.88、0.56、1.11、2.46、1.05、1.12、1.30、0.40，中位 1.12。镍 28 日的 1.05、铅 27 日的 1.11、锡 29 日两条 1.12 和 1.30 挨得近。铜 28 日是 2.46，锡 30 日是 0.40。同一条平值隐波算认沽，价低了好几倍。这 7 条认沽的成交隐波比前一日平值高 2 到 23 个点，中位高 10 个点。11 月合约只剩 4 到 11 天的 12 条，平值隐波算出来的价常常接近 0，他的成交价还在几十个点，成交隐波比平值的中位高 9 个点。到期前两周的权利金，这条平值隐波定不住。"
-        "同一套规则拿到 11 月 3 日到 5 日，在第九部分。",
+        "同一套规则拿到 11 月 3 日到 9 日，在第九部分。",
     )
 
-    prof.heading(doc, "九、11月3日到5日，模型开什么、他做了什么", 1)
+    prof.heading(doc, "九、11月3日到9日，模型开什么、他做了什么", 1)
     prof.para(
         doc,
-        "还是第七部分那套规则，开盘前只用差额和由成交回推的空头。3 日已经在定这些数的 14 天里，模型当时写的就是不开。4 日和 5 日没有拿来定过 4.5、1.5 和连续 4 天。模型不开的日子没有合约，也没有权利金。他的卖开按当天手数加权均价写，不并进前面 623 手的分类。",
+        "还是前面那套规则，开盘前只用差额和由成交回推的空头。4.5、1.5、10 手、40 手和连续 4 天是按 10 月 15 日到 11 月 3 日读的，4 日到 9 日没有拿来重定。这些天的卖开已经算进前面的手数。模型不开的日子没有合约，也没有权利金。",
     )
     import _rx383_forward_nov as forward_nov
     add_tab(
         ["日期", "开盘时空头", "模型", "他的有色卖开", "他的卖开"],
         forward_nov.holdout_rows(),
-        "11月3日到5日。空头是开盘前的手数。模型一列是有色名单。他的卖开含非有色，成交价是点数。",
+        "11月3日到9日。空头是开盘前的手数。模型一列是有色名单。他的卖开含非有色，成交价是点数。门槛没有按这几天重定。",
     )
     prof.para(
         doc,
-        "三天开盘前的空头都是铜 1、镍 8、锡 13、铅 20。10 月 27 日到 30 日连续卖了 4 天有色，这条从 11 月 2 日起关着，本子没有回到空仓，所以 3 日、4 日、5 日模型都是不开。有色卖开是 0，和模型一致。差额并不低。锡是最高的，3 日 10.6、4 日 13.3、5 日 14.5，铜 3 日 9.8、4 日 10.3、5 日 13.0，都高于他做过有色那些天的最高差额。模型不是因为差额不够才停。",
+        "五天开盘前的空头，3 日到 6 日都是铜 1、镍 8、锡 13、铅 20。6 日他卖开铜 3 手、锡 1 手，9 日开盘变成铜 4、镍 8、锡 14、铅 20。10 月 27 日到 30 日连续卖了 4 天有色，这条从 11 月 2 日起关着，本子没有回到空仓，所以这五天模型都是不开。",
     )
     prof.para(
         doc,
-        "3 日他卖开碳酸锂 2701 认购 120000 两手，成交价 670。4 日交易所有行情，这个账户没有期权成交，也没有期货成交，结算日报没有这一天。5 日卖开碳酸锂 2701 认购 120000 五手 550、认沽 72000 三手 680、认沽 80000 两手 1850，同一天买平认沽 72000 三手，成交价 430。有色模型不预测碳酸锂。",
+        "3 日、4 日、5 日、9 日他没有有色卖开，和模型一致。3 日他卖开碳酸锂 2701 认购 120000 两手，成交价 670。4 日交易所有行情，这个账户没有期权成交，也没有期货成交，结算日报没有这一天。5 日卖开碳酸锂 2701 认购 120000 五手 550、认沽 72000 三手 680、认沽 80000 两手 1850，同一天买平认沽 72000 三手，成交价 430。9 日只卖开生猪 2701 认沽 8800 三手 190。有色模型不预测碳酸锂和生猪。",
     )
     prof.para(
         doc,
-        "6 日不在这三天里。成交库已经有这一天，卖开里有沪铜 2612 认沽 90000 三手和沪锡 2612 认沽 285000 一手。3 日到 5 日没有有色买卖，开盘前的本子没有回到空仓，同一条规则在 6 日仍是不开。这一天不计入上表。",
+        "对不上的是 6 日。模型不开，他卖开锡 2612 认沽 285000 一手 1972、铜 2612 认沽 90000 三手 171，同一天还卖了碳酸锂和生猪。差额并不低：锡是最高的，3 日 10.6、4 日 13.3、5 日 14.5、6 日 14.8、9 日 19.3，铜 3 日 9.8、4 日 10.3、5 日 13.0、6 日 13.3、9 日 14.9，都高于他做过有色那些天的最高差额。模型不是因为差额不够才停，是连续 4 天这条还关着。这五天做不做有色对上 4 天；他这两天以外没有有色卖开，6 日这两个名字模型一个也没开。门槛没有按这几天重定。周末没有成交。",
     )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

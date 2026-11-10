@@ -14,7 +14,9 @@ import _rx383_metal_quote as quote  # noqa: E402
 import _rx383_option_strategy_report as base  # noqa: E402
 from mom_data_etl import get_conn  # noqa: E402
 
-HOLD = [pd.Timestamp(x) for x in ("2026-11-03", "2026-11-04", "2026-11-05")]
+HOLD = [pd.Timestamp(x) for x in (
+    "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09",
+)]
 
 
 def actual_opens() -> pd.DataFrame:
@@ -27,7 +29,7 @@ def actual_opens() -> pd.DataFrame:
                    "手数" AS lots, "成交价" AS price
             FROM mom_options_trade_details
             WHERE LOWER(TRIM("账户")) = %s
-              AND "交易日期" BETWEEN DATE '2026-11-03' AND DATE '2026-11-05'
+              AND "交易日期" BETWEEN DATE '2026-11-03' AND DATE '2026-11-09'
             """,
             (base.ACCOUNT,),
         ))
@@ -54,8 +56,11 @@ def _sell_opens(tr: pd.DataFrame, dt: pd.Timestamp) -> str:
 
 
 def holdout_rows() -> list[list[str]]:
-    """Name-model calls for 3-5 Nov next to every sell-open that day."""
-    metal, _, _ = mm.build(pd.Timestamp("2026-11-05"))
+    """Name-model calls for 3-9 Nov next to every sell-open that day.
+
+    Thresholds stay the ones read off 15 Oct–3 Nov. Later sessions are scored, not used to retune.
+    """
+    metal, _, _ = mm.build(pd.Timestamp("2026-11-09"))
     out = pred.run(metal, pred.tape())
     tr = actual_opens()
     rows = []
@@ -74,7 +79,7 @@ def holdout_rows() -> list[list[str]]:
 
 
 def main() -> None:
-    metal, _, _ = mm.build(pd.Timestamp("2026-11-05"))
+    metal, _, _ = mm.build(pd.Timestamp("2026-11-09"))
     print("sessions", [pd.Timestamp(d).strftime("%m-%d") for d in sorted(metal["dt"].unique()) if d >= pd.Timestamp("2026-11-01")])
     out = pred.run(metal, pred.tape())
     sub = out[out["dt"].isin(HOLD)]
