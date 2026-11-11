@@ -1973,11 +1973,11 @@ export async function listUnderlyingHoldings(options: {
     market_weight: string | null
   }>(
     `WITH latest_holding AS (
-       SELECT managed_product_id, MAX(valuation_date) AS valuation_date
-       FROM ops_managed_fof_underlying
-       WHERE COALESCE(market_value, 0) > 0
+       SELECT m.managed_product_id, MAX(m.valuation_date) AS valuation_date
+       FROM ops_managed_fof_underlying m
+       WHERE COALESCE(m.market_value, 0) > 0
          AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}
-       GROUP BY managed_product_id
+       GROUP BY m.managed_product_id
      )
      SELECT
        MIN(m.id)::text AS id,
