@@ -27,7 +27,7 @@ export type SavedCustomReport = {
   source?: SavedCustomReportSource
   typeLabel?: string
   /** When present, 我的报告 can offer downloads. */
-  download?: { png?: string; pdf?: string }
+  download?: { png?: string; pdf?: string; pptx?: string }
   /** Stable key used to de-dupe imports (template id / preset name). */
   importKey?: string
 }
@@ -220,7 +220,7 @@ export function importSavedNewReportTemplates(): ImportSavedTemplatesResult {
       id: createReportId(),
       title: preset.report_title || preset.name,
       templateId: "weekly-track-curve",
-      templateName: "跟踪产品（通用曲线版）",
+      templateName: "跟踪产品（超额版）",
       inputValues: {
         preset_name: preset.name,
         product_name: preset.product_name,
@@ -251,7 +251,7 @@ export function importSavedNewReportTemplates(): ImportSavedTemplatesResult {
       id: createReportId(),
       title: preset.report_title || preset.name,
       templateId: "monthly-track-curve",
-      templateName: "跟踪产品（通用曲线版）月报",
+      templateName: "跟踪产品（超额版）",
       inputValues: {
         preset_name: preset.name,
         product_name: preset.product_name,
@@ -282,7 +282,7 @@ export function recordGeneratedOfficialReport(input: {
   templateName: string
   source: SavedCustomReportSource
   typeLabel: string
-  download?: { png?: string; pdf?: string }
+  download?: { png?: string; pdf?: string; pptx?: string }
   inputValues?: Record<string, string>
   reportJobId?: string
 }): SavedCustomReport[] {

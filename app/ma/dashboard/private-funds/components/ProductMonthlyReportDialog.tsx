@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { VOLATILITY_SECTIONS, type VolatilitySection } from "@/lib/client/product-monthly-report"
+import { recordGeneratedOfficialReport } from "@/lib/ma/custom-report-storage"
 
 type ProductSource = "managed" | "private" | "custom_fund"
 
@@ -230,11 +231,13 @@ export function ProductMonthlyReportDialog({
   onClose,
   onBack,
   embedded = false,
+  onSaved,
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
+  onSaved?: () => void
 }) {
   const baseId = useId()
   const [sectionFunds, setSectionFunds] = useState<Record<VolatilitySection, FundSlot[]>>(emptySectionFunds())
@@ -404,7 +407,19 @@ export function ProductMonthlyReportDialog({
       if (!resp.ok) {
         throw new Error(json.error || "报告生成失败")
       }
-      setResult(json as GenerateResult)
+      const next = json as GenerateResult
+      setResult(next)
+      recordGeneratedOfficialReport({
+        title: `低中高波三产品版 ${next.endDate}`.trim(),
+        templateId: "monthly-pe-official",
+        templateName: "低中高波三产品版",
+        source: "product_monthly_generate",
+        typeLabel: "月报",
+        download: { pdf: next.download.pdf || undefined, pptx: next.download.pptx },
+        reportJobId: next.reportId,
+        inputValues: { end_date: endDate },
+      })
+      onSaved?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {
@@ -424,7 +439,7 @@ export function ProductMonthlyReportDialog({
               <ArrowLeft className="h-4 w-4" />
             </button>
             <div>
-              <DialogTitle className="text-base font-semibold">私募基金月报-官方</DialogTitle>
+              <DialogTitle className="text-base font-semibold">低中高波三产品版</DialogTitle>
               <p className="mt-0.5 text-xs text-zinc-400">按低波 / 中低波 / 中波分组，生成私募产品历史业绩月报</p>
             </div>
           </div>

@@ -12,18 +12,23 @@ import {
   Search,
   Trash2,
   X,
+  MessageSquareText,
 } from "lucide-react"
 import JSZip from "jszip"
 import { NewReportDialog } from "./NewReportDialog"
+import { ManagerViewDialog } from "./ManagerViewDialog"
 import { authService, type User } from "@/lib/auth"
 import { canAccessPfInvestmentPool } from "@/lib/permissions"
 import {
   AUTO_WEEKLY_TEMPLATE_ID,
   AUTO_WEEKLY_TEMPLATE_OPTIONS,
+  officialReportTemplateShortLabel,
   resolveAutoWeeklyTemplate,
 } from "@/lib/ma/auto-weekly-templates"
+import { loadCustomReports, type SavedCustomReport } from "@/lib/ma/custom-report-storage"
 
 type ScopeTab = "team" | "mine"
+export type ReportListSection = "weekly" | "monthly" | "quarterly" | "holding"
 type ViewMode = "table" | "images"
 type TitleNameMode = "short" | "full"
 
@@ -33,6 +38,7 @@ type WeeklyReportRow = {
   id: string
   reportId: string
   title: string
+  templateId?: string
   templateName: string
   createdAt: string
   creator: string
@@ -49,7 +55,7 @@ type WeeklyReportRow = {
   full_name?: string | null
   isCustomFund?: boolean
   source?: "managed" | "extra" | "mine"
-  download?: { png: string; pdf: string }
+  download?: { png?: string; pdf?: string; pptx?: string }
   kind: ScopeTab
 }
 
@@ -110,6 +116,93 @@ function formatNavDaysBehind(n?: number | null): string {
   return `缺${n}日`
 }
 
+const MONTHLY_SOURCES = new Set([
+  "fof_monthly_generate",
+  "product_monthly_generate",
+  "fund_official_monthly_generate",
+])
+const QUARTERLY_SOURCES = new Set(["product_quarterly_generate"])
+
+function customReportMatchesSection(report: SavedCustomReport, section: ReportListSection): boolean {
+  const source = report.source || ""
+  const typeLabel = report.typeLabel || ""
+  const templateId = report.templateId || ""
+  if (section === "monthly") {
+    return MONTHLY_SOURCES.has(source) || typeLabel === "月报" || templateId.startsWith("monthly-")
+  }
+  if (section === "quarterly") {
+    return QUARTERLY_SOURCES.has(source) || typeLabel === "季报" || templateId.startsWith("quarterly-")
+  }
+  if (section === "holding") {
+    return typeLabel === "持有期报告" || report.inputValues?.report_kind === "holding"
+  }
+  return false
+}
+
+function periodFromCustomReport(report: SavedCustomReport): { start?: string; end?: string } {
+  const iv = report.inputValues || {}
+  const start = (iv.week_begin || iv.month_begin || iv.period_begin || "").trim() || undefined
+  const end = (iv.week_end || iv.month_end || iv.period_end || iv.end_date || "").trim() || undefined
+  return { start, end: end || start }
+}
+
+function mapCustomReportRow(report: SavedCustomReport): WeeklyReportRow {
+  const iv = report.inputValues || {}
+  const { start, end } = periodFromCustomReport(report)
+  const download = report.download
+  const png = download?.png || ""
+  const pdf = download?.pdf || ""
+  const pptx = download?.pptx || ""
+  return {
+    id: report.id,
+    reportId: (report.importKey || "").replace(/^gen:/, "") || report.id,
+    title: report.title,
+    templateId: report.templateId,
+    templateName: officialReportTemplateShortLabel(report.templateId, report.templateName) || report.templateName,
+    createdAt: report.createdAt,
+    creator: report.creator || currentUserName() || "我",
+    typeLabel: report.typeLabel || "我的报告",
+    weekStart: start,
+    weekEnd: end,
+    product_name: (iv.product_name || report.title || "").trim() || undefined,
+    beian_hao: (iv.beian_hao || "").trim() || null,
+    download: png || pdf || pptx ? { png, pdf, pptx: pptx || undefined } : undefined,
+    kind: "mine",
+  }
+}
+
+const SECTION_META: Record<ReportListSection, {
+  periodColumn: string
+  periodToken: string
+  emptyTeam: string
+  emptyMine: string
+}> = {
+  weekly: {
+    periodColumn: "报告周",
+    periodToken: "周报",
+    emptyTeam: "系统周报由夜间任务自动生成，只显示在「团队报告」",
+    emptyMine: "点「添加产品」把跟踪基金加入自动周报；仅当前账号可见",
+  },
+  monthly: {
+    periodColumn: "报告月",
+    periodToken: "月报",
+    emptyTeam: "点「新建报告」生成产品月报后，会保存在团队报告里，所有账号在任意电脑上都能看到",
+    emptyMine: "点「新建报告」生成产品月报，生成后会出现在此列表",
+  },
+  quarterly: {
+    periodColumn: "报告季",
+    periodToken: "季报",
+    emptyTeam: "点「新建报告」生成产品季报后，会保存在团队报告里，所有账号在任意电脑上都能看到",
+    emptyMine: "点「新建报告」生成产品季报，生成后会出现在此列表",
+  },
+  holding: {
+    periodColumn: "持有期",
+    periodToken: "持有期报告",
+    emptyTeam: "点「新建报告」生成持有期报告后，会保存在团队报告里，所有账号在任意电脑上都能看到",
+    emptyMine: "点「新建报告」生成持有期报告，生成后会出现在此列表",
+  },
+}
+
 
 function readStoredTitleNameMode(): TitleNameMode {
   try {
@@ -159,24 +252,25 @@ function formatWeekRangeToken(weekStart?: string, weekEnd?: string): string {
   return a || b || ""
 }
 
-function buildWeeklyZipName(scope: ScopeTab, rows: WeeklyReportRow[]): string {
+function buildWeeklyZipName(scope: ScopeTab, rows: WeeklyReportRow[], periodToken = "周报"): string {
   const starts = rows.map((r) => (r.weekStart || "").trim()).filter(Boolean).sort()
   const ends = rows.map((r) => (r.weekEnd || "").trim()).filter(Boolean).sort()
   const weekStart = starts[0] || ""
   const weekEnd = ends[ends.length - 1] || ""
   const range = formatWeekRangeToken(weekStart, weekEnd)
-  const prefix = scope === "team" ? "系统周报" : "我的周报"
+  const prefix = scope === "team" ? `系统${periodToken}` : `我的${periodToken}`
   if (range) return `${prefix}_${range}.zip`
   return `${prefix}_${new Date().toISOString().slice(0, 10)}.zip`
 }
 
 function buildReportZipEntryName(
   row: Pick<WeeklyReportRow, "product_name" | "title" | "weekStart" | "weekEnd" | "reportId">,
-  ext: "pdf" | "png",
+  ext: "pdf" | "png" | "pptx",
+  periodToken = "周报",
 ): string {
   const product = sanitizeFileToken(row.product_name || row.title || row.reportId || "报告").slice(0, 60)
   const range = formatWeekRangeToken(row.weekStart, row.weekEnd)
-  const stem = range ? `${product}_周报_${range}` : `${product}_周报`
+  const stem = range ? `${product}_${periodToken}_${range}` : `${product}_${periodToken}`
   return `${stem}.${ext}`
 }
 
@@ -328,7 +422,7 @@ function parsePickerOptions(json: unknown, source: ProductOption["source"], sour
 
 
 const AUTO_WEEKLY_TEMPLATE_HINT =
-  "夜间任务会同时生成「通用曲线版」和「持仓饼图版」。订阅模板只选择列表展示哪一种，切换立即生效，不会当场重新生成。若某周的对应版本还没生成，该周会暂时不显示，等夜间任务补齐后再出现。"
+  "夜间任务会同时生成「超额版」和「持仓版」。订阅模板只选择列表展示哪一种，切换立即生效，不会当场重新生成。若某周的对应版本还没生成，该周会暂时不显示，等夜间任务补齐后再出现。"
 
 function AutoWeeklyTemplateSelect({
   value,
@@ -349,7 +443,7 @@ function AutoWeeklyTemplateSelect({
     >
       {AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item) => (
         <option key={item.id} value={item.id}>
-          {item.name}
+          {item.shortName}
         </option>
       ))}
     </select>
@@ -642,8 +736,19 @@ function MineAddProductDialog({
 }
 
 
+type TemplatePrefProduct = {
+  product_name: string
+  beian_hao: string | null
+  templateId?: string
+  templateName?: string
+  source?: string
+  addedAt?: string
+}
+
 function TeamTemplateDialog({
   open,
+  title,
+  hint,
   products,
   busy,
   message,
@@ -652,12 +757,14 @@ function TeamTemplateDialog({
   onSetTemplates,
 }: {
   open: boolean
-  products: TeamTemplateProduct[]
+  title: string
+  hint: string
+  products: TemplatePrefProduct[]
   busy: boolean
   message: string | null
   onClose: () => void
-  onSetTemplate: (p: TeamTemplateProduct, templateId: string) => Promise<void>
-  onSetTemplates: (products: TeamTemplateProduct[], templateId: string) => Promise<void>
+  onSetTemplate: (p: TemplatePrefProduct, templateId: string) => Promise<void>
+  onSetTemplates: (products: TemplatePrefProduct[], templateId: string) => Promise<void>
 }) {
   const [query, setQuery] = useState("")
   const [bulkTemplateId, setBulkTemplateId] = useState(AUTO_WEEKLY_TEMPLATE_ID)
@@ -686,9 +793,9 @@ function TeamTemplateDialog({
       <div className="w-full max-w-2xl rounded-xl border border-border bg-background shadow-xl flex flex-col max-h-[85vh]">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <div>
-            <div className="text-sm font-semibold">团队报告订阅模板</div>
+            <div className="text-sm font-semibold">{title}</div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              为每个产品选择团队报告列表展示的周报版本。未设置的产品默认使用「跟踪产品（通用曲线版）」。{AUTO_WEEKLY_TEMPLATE_HINT}
+              {hint}
             </div>
           </div>
           <button type="button" className="p-1 rounded hover:bg-muted" onClick={onClose} aria-label="关闭">
@@ -759,7 +866,11 @@ function TeamTemplateDialog({
   )
 }
 
-export function ReportsManagementView() {
+export function ReportsManagementView({
+  section = "weekly",
+}: {
+  section?: ReportListSection
+}) {
   const [scopeTab, setScopeTab] = useState<ScopeTab>("team")
   const [keyword, setKeyword] = useState("")
   const [onlyCustomFunds, setOnlyCustomFunds] = useState(false)
@@ -771,6 +882,8 @@ export function ReportsManagementView() {
   const [teamTemplateProducts, setTeamTemplateProducts] = useState<TeamTemplateProduct[]>([])
   const [teamTemplateBusy, setTeamTemplateBusy] = useState(false)
   const [teamTemplateMessage, setTeamTemplateMessage] = useState<string | null>(null)
+  const [teamDisplayTemplateId, setTeamDisplayTemplateId] = useState(AUTO_WEEKLY_TEMPLATE_ID)
+  const [managerViewOpen, setManagerViewOpen] = useState(false)
 
   const [teamReports, setTeamReports] = useState<WeeklyReportRow[]>([])
   const [mineReports, setMineReports] = useState<WeeklyReportRow[]>([])
@@ -790,6 +903,18 @@ export function ReportsManagementView() {
   }, [])
 
   useEffect(() => {
+    setScopeTab("team")
+    setKeyword("")
+    setOnlyCustomFunds(false)
+    setMineMessage(null)
+    setTeamTemplateMessage(null)
+    setZipMessage(null)
+    setNewReportOpen(false)
+    setAddProductOpen(false)
+    setTeamTemplateOpen(false)
+  }, [section])
+
+  useEffect(() => {
     try {
       localStorage.setItem(TITLE_NAME_MODE_STORAGE_KEY, titleNameMode)
     } catch {
@@ -803,7 +928,11 @@ export function ReportsManagementView() {
       id: String(r.id || r.reportId || ""),
       reportId: String(r.reportId || r.id || ""),
       title: String(r.title || r.product_name || ""),
-      templateName: String(r.templateName || ""),
+      templateId: (r.templateId as string | undefined) || undefined,
+      templateName: officialReportTemplateShortLabel(
+        (r.templateId as string | undefined) || undefined,
+        String(r.templateName || ""),
+      ) || String(r.templateName || ""),
       createdAt: String(r.createdAt || new Date().toISOString()),
       creator: String(r.creator || (kind === "team" ? "系统" : currentUserName() || "我")),
       typeLabel: String(r.typeLabel || (kind === "team" ? "系统周报" : "我的周报")),
@@ -838,6 +967,7 @@ export function ReportsManagementView() {
       const json = (await resp.json().catch(() => ({}))) as {
         data?: Record<string, unknown>[]
         error?: string
+        weeklyReportTemplate?: string
       }
       if (!resp.ok) {
         if (resp.status === 403) {
@@ -846,6 +976,9 @@ export function ReportsManagementView() {
           return
         }
         throw new Error(json.error || `加载失败 HTTP ${resp.status}`)
+      }
+      if (typeof json.weeklyReportTemplate === "string") {
+        setTeamDisplayTemplateId(resolveAutoWeeklyTemplate(json.weeklyReportTemplate).id)
       }
       setTeamReports((json.data || []).map((r) => mapApiRow(r, "team")))
     } catch (err) {
@@ -908,15 +1041,71 @@ export function ReportsManagementView() {
         error?: string
       }
       if (!resp.ok) throw new Error(json.error || "加载团队模板失败")
-      setTeamTemplateProducts(json.data || [])
+      const rows = json.data || []
+      setTeamTemplateProducts(rows)
+      return rows
     } catch (err) {
       setTeamTemplateProducts([])
       setTeamTemplateMessage(err instanceof Error ? err.message : "加载团队模板失败")
+      return [] as TeamTemplateProduct[]
     }
   }, [])
 
+  const refreshCustomMineReports = useCallback(() => {
+    const rows = loadCustomReports()
+      .filter((report) => customReportMatchesSection(report, section))
+      .map(mapCustomReportRow)
+    setMineReports(rows)
+    setMineLoading(false)
+    setMineError(null)
+  }, [section])
+
+  const refreshOfficialReports = useCallback(async () => {
+    if (section === "weekly") return
+    setTeamLoading(true)
+    setMineLoading(true)
+    setTeamError(null)
+    setMineError(null)
+    try {
+      const resp = await fetch(`/ma/api/reports/official/list?section=${encodeURIComponent(section)}`, {
+        headers: userFetchHeaders(),
+        cache: "no-store",
+      })
+      const json = (await resp.json().catch(() => ({}))) as {
+        team?: Record<string, unknown>[]
+        mine?: Record<string, unknown>[]
+        data?: Record<string, unknown>[]
+        error?: string
+      }
+      if (!resp.ok) throw new Error(json.error || "加载团队报告失败")
+      const teamRows = (json.team || json.data || []).map((row) => mapApiRow(row, "team"))
+      const mineServerRows = (json.mine || []).map((row) => mapApiRow(row, "mine"))
+      const localRows = loadCustomReports()
+        .filter((report) => customReportMatchesSection(report, section))
+        .map(mapCustomReportRow)
+      const seen = new Set(mineServerRows.map((row) => row.reportId || row.id))
+      const mergedMine = [
+        ...mineServerRows,
+        ...localRows.filter((row) => !seen.has(row.reportId || row.id)),
+      ]
+      setTeamReports(teamRows)
+      setMineReports(mergedMine)
+    } catch (err) {
+      setTeamReports([])
+      refreshCustomMineReports()
+      setTeamError(err instanceof Error ? err.message : "加载团队报告失败")
+    } finally {
+      setTeamLoading(false)
+      setMineLoading(false)
+    }
+  }, [section, mapApiRow, refreshCustomMineReports])
+
   useEffect(() => {
     let cancelled = false
+    if (section !== "weekly") {
+      void refreshOfficialReports()
+      return
+    }
     ;(async () => {
       // getCurrentUser is sync (localStorage); refresh pulls latest permissions from server.
       let user = authService.getCurrentUser() as User | null
@@ -934,17 +1123,23 @@ export function ReportsManagementView() {
     return () => {
       cancelled = true
     }
-  }, [refreshTeamReports])
+  }, [section, refreshTeamReports, refreshOfficialReports])
 
   useEffect(() => {
+    if (section !== "weekly") return
     if (scopeTab !== "mine") return
     void refreshMineReports()
     void refreshMineProducts()
-  }, [scopeTab, refreshMineReports, refreshMineProducts])
+  }, [section, scopeTab, refreshMineReports, refreshMineProducts])
+
+  useEffect(() => {
+    if (section !== "weekly" || scopeTab !== "team" || !canSeeSystem) return
+    void refreshTeamTemplates()
+  }, [section, scopeTab, canSeeSystem, refreshTeamTemplates])
 
   const filtered = useMemo(() => {
     const q = keyword.trim().toLowerCase()
-    let rows = scopeTab === "team" ? (canSeeSystem ? teamReports : []) : mineReports
+    let rows = scopeTab === "team" ? (section !== "weekly" || canSeeSystem ? teamReports : []) : mineReports
     if (onlyCustomFunds) {
       rows = rows.filter((r) => r.isCustomFund === true || r.source === "extra")
     }
@@ -970,13 +1165,13 @@ export function ReportsManagementView() {
       const zip = new JSZip()
       let added = 0
       for (const row of withFiles) {
-        for (const format of ["pdf", "png"] as const) {
+        for (const format of ["pdf", "png", "pptx"] as const) {
           const url = row.download?.[format]
           if (!url) continue
           const resp = await fetch(url, { headers: userFetchHeaders() })
           if (!resp.ok) continue
           const buf = await resp.arrayBuffer()
-          zip.file(buildReportZipEntryName(row, format), buf)
+          zip.file(buildReportZipEntryName(row, format, SECTION_META[section].periodToken), buf)
           added += 1
         }
       }
@@ -984,7 +1179,7 @@ export function ReportsManagementView() {
       const blob = await zip.generateAsync({ type: "blob" })
       const a = document.createElement("a")
       a.href = URL.createObjectURL(blob)
-      a.download = buildWeeklyZipName(scopeTab, withFiles)
+      a.download = buildWeeklyZipName(scopeTab, withFiles, SECTION_META[section].periodToken)
       a.click()
       URL.revokeObjectURL(a.href)
       setZipMessage(`已打包 ${withFiles.length} 条报告`)
@@ -1086,11 +1281,11 @@ export function ReportsManagementView() {
   }
 
 
-  async function handleSetMineTemplate(p: MineProduct, templateId: string) {
+  async function handleSetMineTemplate(p: TemplatePrefProduct, templateId: string) {
     await handleSetMineTemplates([p], templateId)
   }
 
-  async function handleSetMineTemplates(targets: MineProduct[], templateId: string) {
+  async function handleSetMineTemplates(targets: TemplatePrefProduct[], templateId: string) {
     if (targets.length === 0) return
     setMineBusy(true)
     setMineMessage(null)
@@ -1203,12 +1398,40 @@ export function ReportsManagementView() {
     }
   }
 
+  async function handleSwitchAllTeamTemplate(templateId: string) {
+    const nextTemplate = resolveAutoWeeklyTemplate(templateId)
+    if (teamDisplayTemplateId === nextTemplate.id) return
+    setTeamTemplateBusy(true)
+    setTeamTemplateMessage(null)
+    try {
+      const resp = await fetch("/ma/api/account-dashboard", {
+        method: "PATCH",
+        headers: { ...userFetchHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ prefs: { weeklyReportTemplate: nextTemplate.id } }),
+      })
+      const json = (await resp.json().catch(() => ({}))) as {
+        ok?: boolean
+        error?: string
+        prefs?: { weeklyReportTemplate?: string }
+      }
+      if (!resp.ok || !json.ok) throw new Error(json.error || "保存默认模板失败")
+      const savedId = resolveAutoWeeklyTemplate(json.prefs?.weeklyReportTemplate).id
+      setTeamDisplayTemplateId(savedId)
+      await refreshTeamReports(canSeeSystem)
+      setTeamTemplateMessage(`已将列表默认显示切换为「${nextTemplate.shortName}」，仅对当前账号生效`)
+    } catch (err) {
+      setTeamTemplateMessage(err instanceof Error ? err.message : "切换模板失败")
+    } finally {
+      setTeamTemplateBusy(false)
+    }
+  }
+
   const emptyHint =
     scopeTab === "team"
-      ? canSeeSystem
-        ? "系统周报由夜间任务自动生成，只显示在「团队报告」"
-        : "暂无团队报告"
-      : "点「添加产品」把跟踪基金加入自动周报；仅当前账号可见"
+      ? section === "weekly" && !canSeeSystem
+        ? "暂无团队报告"
+        : SECTION_META[section].emptyTeam
+      : SECTION_META[section].emptyMine
 
   const showLoading = scopeTab === "team" ? teamLoading : mineLoading
   const showTools = scopeTab === "team" ? canSeeSystem : true
@@ -1326,21 +1549,42 @@ export function ReportsManagementView() {
               </button>
             </>
           )}
-          {scopeTab === "team" && canSeeSystem && (
+          {section === "weekly" && scopeTab === "team" && canSeeSystem && (
+            <div className="inline-flex h-9 rounded-md border border-border overflow-hidden shrink-0" title="切换当前账号默认查看的周报版本">
+              {AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item, index) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  disabled={teamTemplateBusy}
+                  onClick={() => void handleSwitchAllTeamTemplate(item.id)}
+                  className={[
+                    "px-3 text-sm font-medium disabled:opacity-50",
+                    index > 0 ? "border-l border-border" : "",
+                    teamDisplayTemplateId === item.id
+                      ? "bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400"
+                      : "bg-background hover:bg-muted text-zinc-600",
+                  ].join(" ")}
+                >
+                  {item.shortName}
+                </button>
+              ))}
+            </div>
+          )}
+          {section === "weekly" && scopeTab === "team" && canSeeSystem && teamDisplayTemplateId === "weekly-track-holdings" && (
             <button
               type="button"
               onClick={() => {
-                setTeamTemplateOpen(true)
-                setTeamTemplateMessage(null)
+                setManagerViewOpen(true)
                 void refreshTeamTemplates()
               }}
               className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-border bg-background hover:bg-muted text-sm font-medium transition-colors"
+              title="管理持仓版基金经理观点"
             >
-              <LayoutTemplate className="mr-1.5 h-4 w-4" />
-              订阅模板
+              <MessageSquareText className="mr-1.5 h-4 w-4" />
+              基金经理观点
             </button>
           )}
-          {scopeTab === "mine" && (
+          {section === "weekly" && scopeTab === "mine" && (
             <button
               type="button"
               onClick={() => {
@@ -1351,6 +1595,20 @@ export function ReportsManagementView() {
             >
               <Plus className="mr-1.5 h-4 w-4" />
               添加产品
+            </button>
+          )}
+          {section === "weekly" && scopeTab === "mine" && (
+            <button
+              type="button"
+              onClick={() => {
+                setTeamTemplateOpen(true)
+                setTeamTemplateMessage(null)
+                void refreshMineProducts()
+              }}
+              className="inline-flex items-center justify-center h-9 px-3 rounded-md border border-border bg-background hover:bg-muted text-sm font-medium transition-colors"
+            >
+              <LayoutTemplate className="mr-1.5 h-4 w-4" />
+              订阅模板
             </button>
           )}
           <button
@@ -1366,8 +1624,13 @@ export function ReportsManagementView() {
       <NewReportDialog
         open={newReportOpen}
         onClose={() => setNewReportOpen(false)}
+        initialCategory={section}
         onCustomReportSaved={() => {
-          if (scopeTab === "mine") void refreshMineReports()
+          if (section === "weekly") {
+            if (scopeTab === "mine") void refreshMineReports()
+          } else {
+            void refreshOfficialReports()
+          }
         }}
       />
 
@@ -1384,14 +1647,23 @@ export function ReportsManagementView() {
         onRefreshGenerate={handleMineRegenerate}
       />
 
+      <ManagerViewDialog
+        open={managerViewOpen}
+        fallbackProducts={teamTemplateProducts}
+        onClose={() => setManagerViewOpen(false)}
+        onUpdated={() => void refreshTeamReports(canSeeSystem)}
+      />
+
       <TeamTemplateDialog
         open={teamTemplateOpen}
-        products={teamTemplateProducts}
-        busy={teamTemplateBusy}
-        message={teamTemplateMessage}
+        title="我的报告订阅模板"
+        hint={`为每个产品选择我的报告列表展示的周报版本。未设置的产品默认使用「${AUTO_WEEKLY_TEMPLATE_OPTIONS[0].name}」。${AUTO_WEEKLY_TEMPLATE_HINT}`}
+        products={mineProducts}
+        busy={mineBusy}
+        message={mineMessage}
         onClose={() => setTeamTemplateOpen(false)}
-        onSetTemplate={handleSetTeamTemplate}
-        onSetTemplates={handleSetTeamTemplates}
+        onSetTemplate={handleSetMineTemplate}
+        onSetTemplates={handleSetMineTemplates}
       />
 
       {activeError && (
@@ -1399,6 +1671,9 @@ export function ReportsManagementView() {
       )}
       {scopeTab === "mine" && mineMessage && (
         <div className="mb-3 text-xs text-sky-600 dark:text-sky-400">{mineMessage}</div>
+      )}
+      {section === "weekly" && scopeTab === "team" && teamTemplateMessage && (
+        <div className="mb-3 text-xs text-sky-600 dark:text-sky-400">{teamTemplateMessage}</div>
       )}
       {showTools && zipMessage && (
         <div className="mb-3 text-xs text-sky-600 dark:text-sky-400">{zipMessage}</div>
@@ -1485,7 +1760,7 @@ export function ReportsManagementView() {
                 <tr>
                   <th className={`${thBase} w-16 text-center`}>序号</th>
                   <th className={thBase}>标题</th>
-                  <th className={thBase}>报告周</th>
+                  <th className={thBase}>{SECTION_META[section].periodColumn}</th>
                   <th className={thBase}>最新净值日期</th>
                   <th className={thBase}>距下期缺日</th>
                   <th className={thBase}>模板</th>
@@ -1524,7 +1799,7 @@ export function ReportsManagementView() {
                       <td className="px-3 py-3 text-zinc-500 text-xs whitespace-nowrap">
                         {formatNavDaysBehind(r.navDaysBehindNextWeek)}
                       </td>
-                      <td className="px-3 py-3 text-zinc-500 text-xs">{r.templateName}</td>
+                      <td className="px-3 py-3 text-zinc-500 text-xs">{officialReportTemplateShortLabel(r.templateId, r.templateName) || r.templateName || "—"}</td>
                       <td className="px-3 py-3 text-zinc-500 text-xs">
                         {new Date(r.createdAt).toLocaleString("zh-CN", { hour12: false })}
                       </td>
@@ -1555,7 +1830,12 @@ export function ReportsManagementView() {
                             PNG
                           </a>
                         ) : null}
-                        {!r.download?.pdf && !r.download?.png ? (
+                        {r.download?.pptx ? (
+                          <a href={r.download.pptx} className="text-sky-600 hover:underline" download>
+                            PPTX
+                          </a>
+                        ) : null}
+                        {!r.download?.pdf && !r.download?.png && !r.download?.pptx ? (
                           <span className="text-zinc-400">—</span>
                         ) : null}
                       </td>

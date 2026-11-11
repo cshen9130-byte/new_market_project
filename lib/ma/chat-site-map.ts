@@ -154,7 +154,10 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("pf-cmd-mine", "我发起的指令", "/ma/dashboard/private-funds?tab=instructions&side=cmd-mine", "私募基金 → 指令 → 我发起的", "any", []),
   p("pf-cmd-all", "所有指令", "/ma/dashboard/private-funds?tab=instructions&side=cmd-all", "私募基金 → 指令 → 所有指令", "any", []),
 
-  p("pf-rpt-mine", "我的报告", "/ma/dashboard/private-funds?tab=reports&side=rpt-mine", "私募基金 → 报告 → 我的报告", "any", ["报告"]),
+  p("pf-rpt-weekly", "产品周报", "/ma/dashboard/private-funds?tab=reports&side=rpt-weekly", "私募基金 → 报告 → 产品周报", "any", ["报告", "我的报告", "周报"]),
+  p("pf-rpt-monthly", "产品月报", "/ma/dashboard/private-funds?tab=reports&side=rpt-monthly", "私募基金 → 报告 → 产品月报", "any", ["月报"]),
+  p("pf-rpt-quarterly", "产品季报", "/ma/dashboard/private-funds?tab=reports&side=rpt-quarterly", "私募基金 → 报告 → 产品季报", "any", ["季报"]),
+  p("pf-rpt-holding", "持有期报告", "/ma/dashboard/private-funds?tab=reports&side=rpt-holding", "私募基金 → 报告 → 持有期报告", "any", ["持有期"]),
   p("pf-rpt-templates", "报告模板管理", "/ma/dashboard/private-funds?tab=reports&side=rpt-templates", "私募基金 → 报告 → 模板管理", "any", ["报告模板"]),
 ]
 

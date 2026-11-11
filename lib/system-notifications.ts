@@ -313,7 +313,7 @@ export function managedSystemWeeklyMessage(share: ManagedWeeklyShare): {
   return {
     title: "在管产品系统周报已最新",
     body: `在管产品 ${share.current}/${share.total} 只的距下期缺日为已最新，系统周报可以查看。`,
-    href: "/ma/dashboard/private-funds?tab=reports&side=rpt-mine",
+    href: "/ma/dashboard/private-funds?tab=reports&side=rpt-weekly",
   }
 }
 

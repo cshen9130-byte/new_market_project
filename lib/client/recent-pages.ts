@@ -100,7 +100,11 @@ const PF_SIDE_LABELS: Record<string, string> = {
   "cmd-handled": "我处理的",
   "cmd-mine": "我发起的",
   "cmd-all": "所有指令",
-  "rpt-mine": "我的报告",
+  "rpt-mine": "产品周报",
+  "rpt-weekly": "产品周报",
+  "rpt-monthly": "产品月报",
+  "rpt-quarterly": "产品季报",
+  "rpt-holding": "持有期报告",
   "rpt-templates": "模板管理",
 }
 

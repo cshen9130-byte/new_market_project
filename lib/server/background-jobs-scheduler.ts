@@ -447,7 +447,7 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   })
 
-  // Nightly 22:30 Beijing: system weekly reports for managed products + strategy extras.
+  // Nightly 22:30 Beijing: system weekly reports, plus 月报 / 季报 / 持有期报告 in the same job.
   // Idempotent: skips products that already have the latest available-data week.
   // Skipped on Windows->:5433 tunnel unless forced (same as other heavy ETLs).
   cron.schedule("30 22 * * *", () => {

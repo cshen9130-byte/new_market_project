@@ -257,11 +257,27 @@ const operationsSidebarGroups: SidebarGroup[] = [
   },
 ]
 
+function normalizeReportsSide(side: string): string {
+  return side === "rpt-mine" ? "rpt-weekly" : side
+}
+
+function reportListSectionFromSide(side: string): "weekly" | "monthly" | "quarterly" | "holding" | null {
+  const normalized = normalizeReportsSide(side)
+  if (normalized === "rpt-weekly") return "weekly"
+  if (normalized === "rpt-monthly") return "monthly"
+  if (normalized === "rpt-quarterly") return "quarterly"
+  if (normalized === "rpt-holding") return "holding"
+  return null
+}
+
 const reportsSidebarGroups: SidebarGroup[] = [
   {
     label: "报告管理",
     items: [
-      { key: "rpt-mine", label: "我的报告" },
+      { key: "rpt-weekly", label: "产品周报" },
+      { key: "rpt-monthly", label: "产品月报" },
+      { key: "rpt-quarterly", label: "产品季报" },
+      { key: "rpt-holding", label: "持有期报告" },
     ],
   },
   {
@@ -326,7 +342,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
   instructions: DEFAULT_INSTRUCTION_SIDE,
-  reports: "rpt-mine",
+  reports: "rpt-weekly",
 }
 
 const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"]
@@ -25061,7 +25077,7 @@ function PrivateFundsPageContent() {
       }
       // legacy: 指令流程 used to be a side item; it is now a group title
       if (side === "cmd-flow") return TAB_DEFAULT_SIDE.instructions
-      return side
+      return normalizeReportsSide(side)
     }
     if (tab === "operations" && !showOperationsTab) return TAB_DEFAULT_SIDE.funds
     if (tab === "investment" && !showInvestmentTab) return TAB_DEFAULT_SIDE.funds
@@ -25093,7 +25109,7 @@ function PrivateFundsPageContent() {
         setActiveSideItem(TAB_DEFAULT_SIDE.instructions)
         return
       }
-      setActiveSideItem(side)
+      setActiveSideItem(normalizeReportsSide(side))
     }
   }, [searchParams, showOperationsTab, showInvestmentTab, currentUser])
 
@@ -25600,9 +25616,11 @@ function PrivateFundsPageContent() {
             </div>
           )}
           {activeTab === "instructions" ? <InstructionsSection side={activeSideItem} /> : null}
-          {activeTab === "reports" && activeSideItem === "rpt-mine" && <ReportsManagementView />}
+          {activeTab === "reports" && reportListSectionFromSide(activeSideItem) && (
+            <ReportsManagementView section={reportListSectionFromSide(activeSideItem)!} />
+          )}
           {activeTab === "reports" && activeSideItem === "rpt-templates" && <ReportTemplateManagementView />}
-          {activeTab === "reports" && activeSideItem !== "rpt-mine" && activeSideItem !== "rpt-templates" && (
+          {activeTab === "reports" && !reportListSectionFromSide(activeSideItem) && activeSideItem !== "rpt-templates" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

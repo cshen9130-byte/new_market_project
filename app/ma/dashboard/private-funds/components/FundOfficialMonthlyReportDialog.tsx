@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { recordGeneratedOfficialReport } from "@/lib/ma/custom-report-storage"
 
 type ProductSource = "managed" | "private" | "custom_fund"
 
@@ -239,11 +240,13 @@ export function FundOfficialMonthlyReportDialog({
   onClose,
   onBack,
   embedded = false,
+  onSaved,
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
+  onSaved?: () => void
 }) {
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
@@ -338,7 +341,24 @@ export function FundOfficialMonthlyReportDialog({
       })
       const json = await resp.json()
       if (!resp.ok) throw new Error(json.error || "报告生成失败")
-      setResult(json as GenerateResult)
+      const next = json as GenerateResult
+      setResult(next)
+      recordGeneratedOfficialReport({
+        title: next.reportTitle || productName.trim(),
+        templateId: "monthly-fund-official",
+        templateName: "表格版",
+        source: "fund_official_monthly_generate",
+        typeLabel: "月报",
+        download: next.download,
+        reportJobId: next.reportId,
+        inputValues: {
+          product_name: productName.trim(),
+          beian_hao: beianHao || "",
+          month_begin: monthBeginDate,
+          month_end: monthEndDate,
+        },
+      })
+      onSaved?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {
@@ -358,7 +378,7 @@ export function FundOfficialMonthlyReportDialog({
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
-            <DialogTitle className="text-base font-semibold">单产品投资月报</DialogTitle>
+            <DialogTitle className="text-base font-semibold">表格版</DialogTitle>
             <p className="mt-0.5 text-xs text-zinc-400">
               产品概览 · 经理简介 · 净值走势 · 业绩表现 · 持仓结构
             </p>

@@ -1,10 +1,16 @@
 import { normalizeAccountShortcuts, type AccountShortcut } from "./account-shortcuts"
+import { isAutoWeeklyTemplateId, type AutoWeeklyTemplateId } from "./auto-weekly-templates"
 
 export const ACCOUNT_PROFILE_EVENT = "ma-account-profile"
 
 export type AccountTheme = "system" | "light" | "dark"
 export type AccountDensity = "comfortable" | "compact"
 export type AccountLanding = "overview" | "account"
+export type AccountWeeklyReportTemplate = AutoWeeklyTemplateId
+export type AccountDashboardIdentity = {
+  name?: string | null
+  email?: string | null
+}
 export type AccountChartAccess = "any" | "mom"
 export type AccountBoardColumns = 1 | 2 | 3 | 4
 export type AccountChartWidth = "narrow" | "half" | "wide" | "full"
@@ -1275,6 +1281,7 @@ export type AccountDashboardPrefs = {
   layout: Record<string, AccountChartBox>
   holders: AccountChartHolder[]
   shortcuts: AccountShortcut[]
+  weeklyReportTemplate: AccountWeeklyReportTemplate
 }
 
 export const DEFAULT_ACCOUNT_CHARTS: string[] = []
@@ -1289,6 +1296,27 @@ export const DEFAULT_ACCOUNT_DASHBOARD: AccountDashboardPrefs = {
   layout: {},
   holders: [],
   shortcuts: normalizeAccountShortcuts(undefined),
+  weeklyReportTemplate: "weekly-track-curve",
+}
+
+
+export function isChenpeifengAccount(user?: AccountDashboardIdentity | null): boolean {
+  const values = [user?.name, user?.email]
+  for (const raw of values) {
+    const value = String(raw || "").trim().toLowerCase()
+    if (!value) continue
+    const local = value.split("@")[0].trim()
+    if (local === "chenpeifeng" || value === "chenpeifeng" || local === "陈培峰" || value === "陈培峰") {
+      return true
+    }
+  }
+  return false
+}
+
+export function defaultWeeklyReportTemplate(
+  user?: AccountDashboardIdentity | null,
+): AccountWeeklyReportTemplate {
+  return isChenpeifengAccount(user) ? "weekly-track-holdings" : "weekly-track-curve"
 }
 
 export function defaultChartBox(id: string | null): AccountChartBox {
@@ -1323,7 +1351,10 @@ function asRecord(raw: unknown): Record<string, unknown> {
   return raw as Record<string, unknown>
 }
 
-export function normalizeAccountDashboardPrefs(raw: unknown): AccountDashboardPrefs {
+export function normalizeAccountDashboardPrefs(
+  raw: unknown,
+  identity?: AccountDashboardIdentity | null,
+): AccountDashboardPrefs {
   const obj = asRecord(raw)
   const theme: AccountTheme =
     obj.theme === "light" || obj.theme === "dark" || obj.theme === "system" ? obj.theme : "system"
@@ -1354,7 +1385,12 @@ export function normalizeAccountDashboardPrefs(raw: unknown): AccountDashboardPr
       })
   const projected = projectBoard(holders)
   const shortcuts = normalizeAccountShortcuts(obj.shortcuts)
-  return { title, theme, density, landing, columns, charts: projected.charts, layout: projected.layout, holders, shortcuts }
+  const weeklyReportTemplate: AccountWeeklyReportTemplate = isAutoWeeklyTemplateId(
+    typeof obj.weeklyReportTemplate === "string" ? obj.weeklyReportTemplate : null,
+  )
+    ? obj.weeklyReportTemplate
+    : defaultWeeklyReportTemplate(identity)
+  return { title, theme, density, landing, columns, charts: projected.charts, layout: projected.layout, holders, shortcuts, weeklyReportTemplate }
 }
 
 function projectBoard(holders: AccountChartHolder[]): { charts: string[]; layout: Record<string, AccountChartBox> } {
@@ -1415,8 +1451,12 @@ export function accountCanUseMom(user: { role?: string; permissions?: { mom?: bo
   return !!user && (user.role === "admin" || user.permissions?.mom === true)
 }
 
-export function sanitizeAccountDashboardPrefs(raw: unknown, allowMom: boolean): AccountDashboardPrefs {
-  const prefs = normalizeAccountDashboardPrefs(raw)
+export function sanitizeAccountDashboardPrefs(
+  raw: unknown,
+  allowMom: boolean,
+  identity?: AccountDashboardIdentity | null,
+): AccountDashboardPrefs {
+  const prefs = normalizeAccountDashboardPrefs(raw, identity)
   if (allowMom) return prefs
   const holders = prefs.holders.filter((holder) => {
     if (!holder.chartId) return true

@@ -23,6 +23,7 @@ import {
   listAllCustomFundRecords,
 } from "@/lib/server/custom-funds"
 import { getServerStoragePath } from "@/lib/server/storage"
+import { getAssignedManagerView } from "@/lib/server/auto-weekly-manager-views"
 import {
   AUTO_WEEKLY_TEMPLATE_ID,
   AUTO_WEEKLY_TEMPLATE_NAME,
@@ -399,8 +400,11 @@ export function enrichAutoWeeklyListItem(
   names?: { short_name: string | null; full_name: string | null } | null,
 ): AutoWeeklyListItem {
   const liveNav = (latestNavDate ?? row.latestNavDate ?? null) || null
+  const template = resolveAutoWeeklyTemplate(row.templateId)
   return {
     ...row,
+    templateId: template.id,
+    templateName: template.name,
     latestNavDate: liveNav,
     navDaysBehindNextWeek: daysBehindNextWeeklyReport(liveNav),
     isCustomFund: isAutoWeeklyCustomFund(row),
@@ -424,11 +428,12 @@ export async function enrichAutoWeeklyListItems(
   )
 }
 
-/** Team list: one row per product+week, using the 订阅模板 display choice. */
-export function listAutoWeeklyReportsForDisplay(): AutoWeeklyReportRecord[] {
-  return pickPreferredAutoWeeklyReports(listAutoWeeklyReports(), (row) =>
-    findTeamTemplatePref(row.product_name, row.beian_hao).id,
-  )
+/** Team list: one row per product+week, using the current account's default weekly template. */
+export function listAutoWeeklyReportsForDisplay(
+  preferredTemplateId?: string | null,
+): AutoWeeklyReportRecord[] {
+  const templateId = resolveAutoWeeklyTemplate(preferredTemplateId).id
+  return pickPreferredAutoWeeklyReports(listAutoWeeklyReports(), () => templateId)
 }
 
 
@@ -772,6 +777,9 @@ export async function ensureAutoWeeklyReportForProduct(
         benchmark_key: "IF",
         nav_frequency: "weekly",
         report_variant: template.variant,
+        ...(template.variant === "holdings"
+          ? { manager_view: getAssignedManagerView(displayName, resolvedBeian).text }
+          : {}),
       })
 
       persistReportFiles(result.reportId)
@@ -815,6 +823,116 @@ export async function ensureAutoWeeklyReportForProduct(
       error: err instanceof Error ? err.message : String(err),
     }
   }
+}
+
+
+export async function regenerateAutoWeeklyHoldingsReport(
+  product: { product_name: string; beian_hao?: string | null; source?: AutoWeeklyTargetProduct["source"] },
+): Promise<{ product_name: string; reportId: string; weekEnd: string }> {
+  const product_name = (product.product_name || "").trim()
+  if (!product_name) throw new Error("empty_name")
+
+  let beian = product.beian_hao?.trim() || null
+  beian = await resolveProductBeianHao(product_name, beian || undefined)
+
+  const custom = beian
+    ? getCustomFundByCode(beian)
+    : listAllCustomFundRecords().find((f) => f.product_name.trim() === product_name) ?? null
+  const displayName =
+    product.source === "extra" ? product_name : (custom?.product_name || product_name)
+
+  const range = await resolveFofWeeklyProductNavRange(displayName, beian || undefined)
+  if (!range.latest_nav_date) throw new Error("no_nav")
+  const resolvedBeian = range.beian_hao || beian
+
+  const holdingsTemplate = AUTO_WEEKLY_TEMPLATE_OPTIONS.find((item) => item.variant === "holdings")
+    ?? AUTO_WEEKLY_TEMPLATE_OPTIONS[1]
+  const existing = listAutoWeeklyReports()
+    .filter((row) => {
+      if (row.templateId !== holdingsTemplate.id) return false
+      const keys = [
+        autoWeeklyProductKey(displayName, resolvedBeian),
+        autoWeeklyProductKey(product_name, resolvedBeian),
+        autoWeeklyProductKey(displayName, null),
+        autoWeeklyProductKey(product_name, null),
+      ]
+      const rowKeys = [
+        autoWeeklyProductKey(row.product_name, row.beian_hao),
+        autoWeeklyProductKey(row.product_name, null),
+      ]
+      return rowKeys.some((key) => keys.includes(key))
+    })
+    .sort((a, b) => b.weekEnd.localeCompare(a.weekEnd))[0]
+
+  const week = existing
+    ? { weekStart: existing.weekStart, weekEnd: existing.weekEnd }
+    : resolveLatestAvailableDataWeek(range.latest_nav_date)
+  if (!week) throw new Error("no_week")
+
+  const managerView = getAssignedManagerView(displayName, resolvedBeian).text
+    || getAssignedManagerView(product_name, resolvedBeian).text
+  const result = await generateFofWeeklyReport({
+    product_name: displayName,
+    beian_hao: resolvedBeian || undefined,
+    week_begin: week.weekStart,
+    week_end: week.weekEnd,
+    report_title: displayName,
+    benchmark_key: "IF",
+    nav_frequency: "weekly",
+    report_variant: "holdings",
+    manager_view: managerView,
+  })
+
+  persistReportFiles(result.reportId)
+  const now = new Date().toISOString()
+  upsertRecord({
+    id: existing?.id ?? `awr_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+    reportId: result.reportId,
+    product_name: displayName,
+    beian_hao: resolvedBeian,
+    weekStart: result.weekStart || week.weekStart,
+    weekEnd: result.weekEnd || week.weekEnd,
+    latestNavDate: range.latest_nav_date || existing?.latestNavDate || null,
+    title: result.reportTitle || displayName,
+    templateId: holdingsTemplate.id,
+    templateName: holdingsTemplate.name,
+    creator: AUTO_WEEKLY_CREATOR,
+    type: existing?.type ?? "system_weekly",
+    typeLabel: existing?.typeLabel ?? AUTO_WEEKLY_TYPE_LABEL,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    source: existing?.source ?? product.source ?? "managed",
+    ownerUserId: existing?.ownerUserId,
+  })
+  return {
+    product_name: displayName,
+    reportId: result.reportId,
+    weekEnd: result.weekEnd || week.weekEnd,
+  }
+}
+
+export async function regenerateAutoWeeklyHoldingsReports(
+  products: Array<{ product_name: string; beian_hao?: string | null; source?: AutoWeeklyTargetProduct["source"] }>,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ updated: number; failed: Array<{ product_name: string; error: string }> }> {
+  const failed: Array<{ product_name: string; error: string }> = []
+  let updated = 0
+  const total = products.length
+  let done = 0
+  for (const product of products) {
+    try {
+      await regenerateAutoWeeklyHoldingsReport(product)
+      updated += 1
+    } catch (err) {
+      failed.push({
+        product_name: product.product_name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    done += 1
+    onProgress?.(done, total)
+  }
+  return { updated, failed }
 }
 
 export async function runAutoWeeklyReportsEtl(options?: {

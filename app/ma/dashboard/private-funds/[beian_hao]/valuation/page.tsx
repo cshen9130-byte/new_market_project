@@ -30,6 +30,12 @@ import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import { getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "../components/shared"
 import { ChartCalcHelpButton } from "./ChartCalcHelpButton"
+import {
+  DEFAULT_NAV_TYPE,
+  NAV_TYPE_OPTIONS,
+  readPreferredNavType,
+  writePreferredNavType,
+} from "@/lib/ma/nav-type-preference"
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false })
 const FofVolatilityAnalysisPanel = dynamic(
@@ -532,10 +538,14 @@ export default function FundValuationAnalysisPage() {
   const [navError, setNavError] = useState<string | null>(null)
   const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
   const [fundStrategy, setFundStrategy] = useState<string | null>(null)
-  const [filterNavType, setFilterNavType] = useState("复权净值")
+  const [filterNavType, setFilterNavType] = useState(DEFAULT_NAV_TYPE)
   const [peerMonthly, setPeerMonthly] = useState<PeerMonthlyRow[]>([])
   const [peerYearly, setPeerYearly] = useState<PeerYearlyRow[]>([])
   const [fundInfoMetrics, setFundInfoMetrics] = useState<IntervalMetricValues | null>(null)
+
+  useEffect(() => {
+    setFilterNavType(readPreferredNavType())
+  }, [])
 
   const loadData = useCallback((mode: ConfigMode) => {
     if (!beian_hao) return
@@ -1067,10 +1077,14 @@ export default function FundValuationAnalysisPage() {
           <span className="text-zinc-500 whitespace-nowrap">净值类型：</span>
           <select
             value={filterNavType}
-            onChange={(e) => setFilterNavType(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value
+              setFilterNavType(next)
+              writePreferredNavType(next)
+            }}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[88px]"
           >
-            {["单位净值", "累计净值", "复权净值"].map((o) => (
+            {NAV_TYPE_OPTIONS.map((o) => (
               <option key={o}>{o}</option>
             ))}
           </select>

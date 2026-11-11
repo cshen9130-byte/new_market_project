@@ -51,6 +51,50 @@ const NAV_FREQUENCY_OPTIONS = [
 type NavFrequency = (typeof NAV_FREQUENCY_OPTIONS)[number]["value"]
 
 export type FofWeeklyTemplateVariant = "curve" | "holdings"
+export type FofWeeklyReportKind = "weekly" | "holding" | "monthly"
+
+const REPORT_KIND_UI: Record<FofWeeklyReportKind, {
+  periodLabel: string
+  fillLatest: string
+  hint: string
+  missingDates: string
+  typeLabel: string
+  resultSuffix: string
+  resultRangePrefix: string
+  previewAltSuffix: string
+}> = {
+  weekly: {
+    periodLabel: "报告周",
+    fillLatest: "填充最近一周",
+    hint: "填写报告覆盖的起止日期，业绩统计与图表高亮均按所选区间计算",
+    missingDates: "请填写报告周的开始和结束日期",
+    typeLabel: "周报",
+    resultSuffix: "周报",
+    resultRangePrefix: "报告周",
+    previewAltSuffix: "周报预览",
+  },
+  holding: {
+    periodLabel: "持有期",
+    fillLatest: "结束日期填最新净值日",
+    hint: "选择持有期开始日期，结束日期默认为最新净值日。持有期收益与图表高亮均按该区间计算",
+    missingDates: "请填写持有期的开始和结束日期",
+    typeLabel: "持有期报告",
+    resultSuffix: "持有期报告",
+    resultRangePrefix: "持有期",
+    previewAltSuffix: "持有期报告预览",
+  },
+  monthly: {
+    periodLabel: "报告月",
+    fillLatest: "填充最近一个月",
+    hint: "填写报告覆盖的自然月起止日期，业绩统计与图表高亮均按所选区间计算",
+    missingDates: "请填写报告月的开始和结束日期",
+    typeLabel: "月报",
+    resultSuffix: "月报",
+    resultRangePrefix: "报告月",
+    previewAltSuffix: "月报预览",
+  },
+}
+
 
 const WEEKLY_TEMPLATE_META: Record<FofWeeklyTemplateVariant, {
   id: string
@@ -60,16 +104,38 @@ const WEEKLY_TEMPLATE_META: Record<FofWeeklyTemplateVariant, {
 }> = {
   curve: {
     id: "weekly-track-curve",
-    name: "跟踪产品（通用曲线版）",
-    title: "跟踪产品（通用曲线版）",
+    name: "跟踪产品（超额版）",
+    title: "跟踪产品（超额版）",
     subtitle: "选择产品与报告周，生成 FOF 产品周报",
   },
   holdings: {
     id: "weekly-track-holdings",
-    name: "跟踪产品（持仓饼图版）",
-    title: "跟踪产品（持仓饼图版）",
+    name: "跟踪产品（持仓版）",
+    title: "跟踪产品（持仓版）",
     subtitle: "无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图",
   },
+}
+
+function templateMetaFor(
+  variant: FofWeeklyTemplateVariant,
+  reportKind: FofWeeklyReportKind,
+): { id: string; name: string; title: string; subtitle: string } {
+  if (reportKind === "monthly") {
+    return variant === "holdings"
+      ? {
+          id: "monthly-track-holdings",
+          name: "跟踪产品（持仓版）",
+          title: "跟踪产品（持仓版）",
+          subtitle: "选择产品与报告月，无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图",
+        }
+      : {
+          id: "monthly-track-curve",
+          name: "跟踪产品（超额版）",
+          title: "跟踪产品（超额版）",
+          subtitle: "选择产品与报告月，生成 FOF 产品月报",
+        }
+  }
+  return WEEKLY_TEMPLATE_META[variant]
 }
 
 /** Header slogan 波动档 — passed through as product_tagline. */
@@ -213,6 +279,61 @@ function latestWeekRange(latestNavDate: string): { begin: string; end: string } 
     begin: isoWeekBegin(latestNavDate),
     end: latestNavDate,
   }
+}
+
+function lastDayOfMonth(year: number, month: number): string {
+  const date = new Date(Date.UTC(year, month, 0))
+  return `${year}-${String(month).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`
+}
+
+function shanghaiToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date())
+}
+
+/** Previous complete calendar month, clipped to the latest NAV date. */
+function latestCompleteMonthRange(
+  latestNavDate: string,
+  today = shanghaiToday(),
+): { begin: string; end: string } | null {
+  const [ty, tm] = today.split("-").map(Number)
+  if (!ty || !tm) return null
+  let year = ty
+  let month = tm - 1
+  if (month <= 0) {
+    month = 12
+    year -= 1
+  }
+  for (let i = 0; i < 24; i += 1) {
+    const monthStart = `${year}-${String(month).padStart(2, "0")}-01`
+    const last = lastDayOfMonth(year, month)
+    if (latestNavDate >= monthStart) {
+      const monthEnd = latestNavDate < last ? latestNavDate : last
+      return { begin: monthStart, end: monthEnd }
+    }
+    month -= 1
+    if (month <= 0) {
+      month = 12
+      year -= 1
+    }
+  }
+  return null
+}
+
+function clampRangeToNav(
+  range: { begin: string; end: string },
+  navRange: { start: string | null; end: string | null },
+): { begin: string; end: string } {
+  let begin = range.begin
+  let end = range.end
+  if (navRange.start && begin < navRange.start) begin = navRange.start
+  if (navRange.end && end > navRange.end) end = navRange.end
+  if (begin > end) begin = end
+  return { begin, end }
 }
 
 const dateInputClass =
@@ -483,13 +604,19 @@ export function FofWeeklyReportDialog({
   onBack,
   embedded = false,
   variant = "curve",
+  reportKind = "weekly",
+  onSaved,
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
   variant?: FofWeeklyTemplateVariant
+  reportKind?: FofWeeklyReportKind
+  onSaved?: () => void
 }) {
+  const kindUi = REPORT_KIND_UI[reportKind]
+  const templateMeta = templateMetaFor(variant, reportKind)
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
   const [reportTitle, setReportTitle] = useState("")
@@ -511,6 +638,8 @@ export function FofWeeklyReportDialog({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GenerateResult | null>(null)
+  const resultRef = useRef<HTMLDivElement>(null)
+  const generatingRef = useRef(false)
 
   useEffect(() => {
     if (!open) {
@@ -520,7 +649,7 @@ export function FofWeeklyReportDialog({
       setWeekBegin("")
       setWeekEnd("")
       setBenchmarkKey("IF")
-      setNavFrequency("weekly")
+      setNavFrequency(reportKind === "monthly" ? "monthly" : "weekly")
       setVolBand("低波动")
       setManagerView("")
       setProductSource("managed")
@@ -531,12 +660,18 @@ export function FofWeeklyReportDialog({
       setLoading(false)
       setError(null)
       setResult(null)
+      generatingRef.current = false
     }
   }, [open])
 
   useEffect(() => {
     if (open) setPresets(loadFofWeeklyReportPresets())
   }, [open])
+
+  useEffect(() => {
+    if (!result) return
+    resultRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+  }, [result])
 
   function applyPreset(preset: FofWeeklyReportPreset) {
     setProductName(preset.product_name)
@@ -611,20 +746,30 @@ export function FofWeeklyReportDialog({
       setNavRange({ start: null, end: null })
       return
     }
-    const params = new URLSearchParams({ product_name: productName.trim() })
-    if (beianHao) params.set("beian_hao", beianHao)
+    const requestedName = productName.trim()
+    const requestedBeian = beianHao
+    const params = new URLSearchParams({ product_name: requestedName })
+    if (requestedBeian) params.set("beian_hao", requestedBeian)
+    let cancelled = false
     fetch(`/ma/api/reports/fof-weekly/nav-range?${params}`)
       .then((r) => r.json())
       .then((json) => {
+        if (cancelled) return
         if (json.error) return
-        if (json.beian_hao && json.beian_hao !== beianHao) {
+        // Keep the clicked product id; do not replace it with a name-based lookup.
+        if (!requestedBeian && json.beian_hao) {
           setBeianHao(json.beian_hao)
         }
         const start = json.nav_start_date ?? null
         const end = json.latest_nav_date ?? null
         setNavRange({ start, end })
       })
-      .catch(() => setNavRange({ start: null, end: null }))
+      .catch(() => {
+        if (!cancelled) setNavRange({ start: null, end: null })
+      })
+    return () => {
+      cancelled = true
+    }
   }, [beianHao, productName])
 
   // Default 波动档 from product tags (低波/中波/高波); SGM223 → 中波动 when untagged.
@@ -651,14 +796,46 @@ export function FofWeeklyReportDialog({
     }
   }, [beianHao])
 
+  // Holding-period reports default the end date to the latest NAV; the user picks the start.
+  useEffect(() => {
+    if (reportKind !== "holding") return
+    if (!navRange.end) return
+    setWeekEnd((prev) => prev || navRange.end!)
+  }, [reportKind, navRange.end])
+
+  // Monthly holdings default to the latest complete calendar month.
+  useEffect(() => {
+    if (reportKind !== "monthly") return
+    if (!navRange.end) return
+    const range = latestCompleteMonthRange(navRange.end)
+    if (!range) return
+    const clamped = clampRangeToNav(range, navRange)
+    setWeekBegin((prev) => prev || clamped.begin)
+    setWeekEnd((prev) => prev || clamped.end)
+  }, [reportKind, navRange.end, navRange.start])
+
   function handleFillLatestWeek() {
     if (!navRange.end) {
       setError("请先选择有净值数据的产品")
       return
     }
-    const range = latestWeekRange(navRange.end)
-    setWeekBegin(range.begin)
-    setWeekEnd(range.end)
+    if (reportKind === "holding") {
+      setWeekEnd(navRange.end)
+      if (weekBegin && weekBegin > navRange.end) setWeekBegin(navRange.end)
+    } else if (reportKind === "monthly") {
+      const range = latestCompleteMonthRange(navRange.end)
+      if (!range) {
+        setError("暂无完整自然月的净值数据")
+        return
+      }
+      const clamped = clampRangeToNav(range, navRange)
+      setWeekBegin(clamped.begin)
+      setWeekEnd(clamped.end)
+    } else {
+      const range = latestWeekRange(navRange.end)
+      setWeekBegin(range.begin)
+      setWeekEnd(range.end)
+    }
     setResult(null)
     setError(null)
   }
@@ -718,12 +895,13 @@ export function FofWeeklyReportDialog({
   }
 
   async function handleGenerate() {
+    if (generatingRef.current) return
     if (!productName.trim()) {
       setError("请先选择产品")
       return
     }
     if (!weekBegin || !weekEnd) {
-      setError("请填写报告周的开始和结束日期")
+      setError(kindUi.missingDates)
       return
     }
     if (weekBegin > weekEnd) {
@@ -739,6 +917,7 @@ export function FofWeeklyReportDialog({
       return
     }
 
+    generatingRef.current = true
     setLoading(true)
     setError(null)
     setResult(null)
@@ -757,6 +936,7 @@ export function FofWeeklyReportDialog({
           nav_frequency: navFrequency,
           product_tagline: taglineFromVolBand(volBand),
           report_variant: variant,
+          report_kind: reportKind,
           ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
         }),
       })
@@ -771,10 +951,10 @@ export function FofWeeklyReportDialog({
         setResult(result)
         recordGeneratedOfficialReport({
           title: result.reportTitle || productName.trim(),
-          templateId: WEEKLY_TEMPLATE_META[variant].id,
-          templateName: WEEKLY_TEMPLATE_META[variant].name,
+          templateId: templateMeta.id,
+          templateName: templateMeta.name,
           source: "fof_weekly_generate",
-          typeLabel: "周报",
+          typeLabel: kindUi.typeLabel,
           download: result.download,
           reportJobId: result.reportId,
           inputValues: {
@@ -782,9 +962,11 @@ export function FofWeeklyReportDialog({
             beian_hao: beianHao || "",
             week_begin: weekBegin,
             week_end: weekEnd,
+            report_kind: reportKind,
             ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
           },
         })
+        onSaved?.()
         return
       }
 
@@ -792,10 +974,10 @@ export function FofWeeklyReportDialog({
       setResult(syncResult)
       recordGeneratedOfficialReport({
         title: syncResult.reportTitle || productName.trim(),
-        templateId: WEEKLY_TEMPLATE_META[variant].id,
-        templateName: WEEKLY_TEMPLATE_META[variant].name,
+        templateId: templateMeta.id,
+        templateName: templateMeta.name,
         source: "fof_weekly_generate",
-        typeLabel: "周报",
+        typeLabel: kindUi.typeLabel,
         download: syncResult.download,
         reportJobId: syncResult.reportId,
         inputValues: {
@@ -803,18 +985,34 @@ export function FofWeeklyReportDialog({
           beian_hao: beianHao || "",
           week_begin: weekBegin,
           week_end: weekEnd,
+          report_kind: reportKind,
           ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
         },
       })
+      onSaved?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {
+      generatingRef.current = false
       setLoading(false)
     }
   }
 
   const dialogBody = (
-    <DialogContent className="flex max-h-[90vh] w-[920px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[920px]" showCloseButton>
+    <DialogContent
+      className="flex max-h-[90vh] w-[920px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[920px]"
+      showCloseButton
+      onFocusOutside={(e) => e.preventDefault()}
+      onPointerDownOutside={(e) => {
+        if (generatingRef.current || loading) e.preventDefault()
+      }}
+      onInteractOutside={(e) => {
+        if (generatingRef.current || loading) e.preventDefault()
+      }}
+      onEscapeKeyDown={(e) => {
+        if (generatingRef.current || loading) e.preventDefault()
+      }}
+    >
         <DialogHeader className="border-b px-6 py-4 text-left">
           <div className="flex items-center gap-3">
             <button
@@ -825,8 +1023,14 @@ export function FofWeeklyReportDialog({
               <ArrowLeft className="h-4 w-4" />
             </button>
             <div>
-              <DialogTitle className="text-base font-semibold">{WEEKLY_TEMPLATE_META[variant].title}</DialogTitle>
-              <p className="mt-0.5 text-xs text-zinc-400">{WEEKLY_TEMPLATE_META[variant].subtitle}</p>
+              <DialogTitle className="text-base font-semibold">{templateMeta.title}</DialogTitle>
+              <p className="mt-0.5 text-xs text-zinc-400">
+                {reportKind === "holding"
+                  ? (variant === "holdings"
+                    ? "选择持有期起始日期，无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图"
+                    : "选择产品与持有期起始日期，生成持有期报告")
+                  : templateMeta.subtitle}
+              </p>
             </div>
           </div>
         </DialogHeader>
@@ -894,7 +1098,7 @@ export function FofWeeklyReportDialog({
             <div className="sm:col-span-2">
               <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                 <label className="text-sm font-medium">
-                  <span className="text-red-500">*</span> 报告周
+                  <span className="text-red-500">*</span> {kindUi.periodLabel}
                 </label>
                 <button
                   type="button"
@@ -902,7 +1106,7 @@ export function FofWeeklyReportDialog({
                   disabled={!navRange.end}
                   className="text-xs text-sky-600 hover:text-sky-700 disabled:cursor-not-allowed disabled:text-zinc-300 dark:text-sky-400 dark:disabled:text-zinc-600"
                 >
-                  填充最近一周
+                  {kindUi.fillLatest}
                 </button>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -935,7 +1139,7 @@ export function FofWeeklyReportDialog({
                 </div>
               </div>
               <p className="mt-1.5 text-xs text-zinc-400">
-                填写报告覆盖的起止日期，业绩统计与图表高亮均按所选区间计算
+                {kindUi.hint}
                 {navRange.start && navRange.end ? `（净值区间 ${navRange.start} ~ ${navRange.end}）` : ""}
               </p>
             </div>
@@ -1014,15 +1218,21 @@ export function FofWeeklyReportDialog({
                 <textarea
                   value={managerView}
                   onChange={(e) => {
-                    setManagerView(e.target.value.slice(0, 400))
+                    setManagerView(e.target.value.slice(0, 800))
                     setResult(null)
                   }}
-                  rows={4}
-                  placeholder="写入本周要点，替换原来的市场环境。留空则显示「本周暂无」。"
+                  rows={8}
+                  placeholder={
+                    reportKind === "monthly"
+                      ? "写入本月要点，替换原来的市场环境。留空则显示「本月暂无」。"
+                      : reportKind === "holding"
+                        ? "写入持有期要点，替换原来的市场环境。留空则显示「持有期暂无」。"
+                        : "写入本周要点，替换原来的市场环境。留空则显示「本周暂无」。"
+                  }
                   className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <p className="mt-1.5 text-xs text-zinc-400">
-                  持仓饼图取产品估值表里的二级策略，按持仓市值汇总，与产品页饼图一致。
+                  {managerView.length}/800。持仓饼图取产品估值表里的二级策略，按持仓市值汇总，与产品页饼图一致。
                 </p>
               </div>
             )}
@@ -1049,8 +1259,8 @@ export function FofWeeklyReportDialog({
             <button
               type="button"
               onClick={handleGenerate}
-              disabled={loading}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-red-500 px-4 text-sm font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-60"
+              aria-busy={loading}
+              className={`inline-flex h-9 items-center justify-center rounded-md bg-red-500 px-4 text-sm font-medium text-white transition-colors hover:bg-red-600 ${loading ? "opacity-60 cursor-wait" : ""}`}
             >
               {loading ? (
                 <>
@@ -1085,20 +1295,20 @@ export function FofWeeklyReportDialog({
           </div>
 
           {result && (
-            <div className="mt-6 rounded-xl border bg-zinc-50/80 p-4 dark:bg-zinc-900/40">
+            <div ref={resultRef} className="mt-6 rounded-xl border bg-zinc-50/80 p-4 dark:bg-zinc-900/40">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold">{result.reportTitle} 周报</h3>
+                  <h3 className="text-sm font-semibold">{result.reportTitle} {kindUi.resultSuffix}</h3>
                   <p className="text-xs text-zinc-400">
-                    报告周 {result.weekStart} ~ {result.weekEnd}
+                    {kindUi.resultRangePrefix} {result.weekStart} ~ {result.weekEnd}
                   </p>
                 </div>
               </div>
               <div className="overflow-auto rounded-lg border bg-white dark:bg-zinc-950">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={`${result.previewUrl}&t=${Date.now()}`}
-                  alt={`${result.reportTitle} 周报预览`}
+                  src={`${result.previewUrl}&t=${encodeURIComponent(result.reportId)}`}
+                  alt={`${result.reportTitle} ${kindUi.previewAltSuffix}`}
                   className="mx-auto block max-w-full"
                 />
               </div>

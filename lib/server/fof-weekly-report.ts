@@ -6,7 +6,7 @@ import path from "path"
 import { promisify } from "util"
 import { query } from "@/lib/db"
 import {
-  findCustomFundByName, getCustomFundByCode, type CustomFundRecord,
+  getCustomFundByCode, type CustomFundRecord,
   listAllCustomFundRecords,
 } from "@/lib/server/custom-funds"
 import { loadResolvedFundStrategies } from "@/lib/server/fund-strategy-resolve"
@@ -69,6 +69,8 @@ export const FOF_WEEKLY_NAV_FREQUENCY_OPTIONS: Array<{ value: FofWeeklyNavFreque
 ]
 
 export type FofWeeklyReportVariant = "curve" | "holdings"
+export type FofWeeklyReportKind = "weekly" | "holding" | "monthly"
+
 
 export type FofWeeklyStrategySlice = {
   name: string
@@ -84,8 +86,10 @@ export type FofWeeklyReportRequest = {
   product_tagline?: string
   benchmark_key?: string
   nav_frequency?: FofWeeklyNavFrequency
-  /** curve = 通用曲线版. holdings = 持仓饼图版. */
+  /** curve = 超额版. holdings = 持仓版. */
   report_variant?: FofWeeklyReportVariant
+  /** weekly = 产品周报 (default). holding = 持有期报告. monthly = 产品月报. */
+  report_kind?: FofWeeklyReportKind
   /** Replaces 本周要点「市场环境」 on the holdings template. */
   manager_view?: string
   /** Pre-assigned id for async jobs (status polling). */
@@ -112,8 +116,14 @@ function normalizeReportVariant(value: string | undefined): FofWeeklyReportVaria
   return (value ?? "").trim().toLowerCase() === "holdings" ? "holdings" : "curve"
 }
 
+function normalizeReportKind(value: string | undefined): FofWeeklyReportKind {
+  const kind = (value ?? "").trim().toLowerCase()
+  if (kind === "holding" || kind === "monthly") return kind
+  return "weekly"
+}
+
 function clipManagerView(value: string | undefined): string {
-  return (value ?? "").replace(/\u0000/g, "").trim().slice(0, 400)
+  return (value ?? "").replace(/\u0000/g, "").trim().slice(0, 800)
 }
 
 type PieHolding = {
@@ -526,6 +536,19 @@ async function findPython(scriptDir: string): Promise<PythonInvocation> {
   )
 }
 
+
+/** Exact custom-fund match only — soft includes would map 荣熙共赢 → 荣熙共赢同策略. */
+function resolveReportCustomFund(
+  beianHao: string | null | undefined,
+  productName: string,
+): CustomFundRecord | null {
+  const byCode = beianHao ? getCustomFundByCode(beianHao) : null
+  if (byCode) return byCode
+  const name = productName.trim()
+  if (!name) return null
+  return listAllCustomFundRecords().find((f) => f.product_name.trim() === name) ?? null
+}
+
 export async function resolveProductBeianHao(product_name: string, beian_hao?: string): Promise<string> {
   const name = product_name.trim()
   const hintRaw = (beian_hao || "").trim()
@@ -847,7 +870,7 @@ export async function buildFofWeeklyNavCsv(
   benchmarkKey: FofWeeklyBenchmarkKey = "IF",
   options?: { minNavDate?: string },
 ): Promise<{ csv: string; benchLabel: string }> {
-  const customFund = getCustomFundByCode(beian_hao) ?? findCustomFundByName(product_name)
+  const customFund = resolveReportCustomFund(beian_hao, product_name)
   if (customFund) {
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
@@ -912,10 +935,7 @@ export async function resolveFofWeeklyProductNavRange(
 }> {
   const resolvedBeian = await resolveProductBeianHao(product_name, beian_hao)
   // Exact custom-fund match only — soft includes would map 荣熙共赢 → 荣熙共赢同策略 (380004).
-  const customFund =
-    getCustomFundByCode(resolvedBeian)
-    ?? listAllCustomFundRecords().find((f) => f.product_name.trim() === product_name.trim())
-    ?? null
+  const customFund = resolveReportCustomFund(resolvedBeian, product_name)
   if (customFund) {
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
@@ -1047,6 +1067,10 @@ export async function runFofWeeklyReportJob(
       updatedAt: new Date().toISOString(),
       result,
     })
+    if ((input.report_kind || "weekly") === "holding") {
+      const { tryRegisterHoldingOfficialReport } = await import("@/lib/server/official-shared-reports")
+      tryRegisterHoldingOfficialReport(reportId, input, result)
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : "报告生成失败"
     console.error("[fof-weekly-report] async job failed:", message)
@@ -1077,20 +1101,28 @@ export async function generateFofWeeklyReport(
   const product_name = input.product_name.trim()
   const week_end = input.week_end.trim()
   const week_begin = input.week_begin?.trim() ?? ""
+  const reportKind = normalizeReportKind(input.report_kind)
+  const periodLabel = reportKind === "holding" ? "持有期" : reportKind === "monthly" ? "报告月" : "报告周"
   if (!product_name) throw new Error("请选择产品")
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(week_end)) throw new Error("请选择有效的报告周日期")
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(week_end)) throw new Error(`请选择有效的${periodLabel}结束日期`)
+  if (reportKind === "holding" && !week_begin) {
+    throw new Error("请选择持有期开始日期")
+  }
+  if (reportKind === "monthly" && !week_begin) {
+    throw new Error("请选择报告月开始日期")
+  }
   if (week_begin && !/^\d{4}-\d{2}-\d{2}$/.test(week_begin)) {
-    throw new Error("请选择有效的报告周开始日期")
+    throw new Error(`请选择有效的${periodLabel}开始日期`)
   }
   if (week_begin && week_begin > week_end) {
-    throw new Error("报告周开始日期不能晚于结束日期")
+    throw new Error(`${periodLabel}开始日期不能晚于结束日期`)
   }
 
   const startedAt = Date.now()
   const benchmark = resolveFofWeeklyBenchmark(input.benchmark_key)
   const navFrequency = normalizeNavFrequency(input.nav_frequency)
   const beian_hao = await resolveProductBeianHao(product_name, input.beian_hao)
-  const customFund = getCustomFundByCode(beian_hao) ?? findCustomFundByName(product_name)
+  const customFund = resolveReportCustomFund(beian_hao, product_name)
   const names = customFund
     ? { product_name: customFund.product_name, short_name: "" }
     : await resolveFundNames(beian_hao, product_name)
@@ -1112,10 +1144,10 @@ export async function generateFofWeeklyReport(
   if (!latestNavDate || !earliestNavDate) throw new Error("净值数据为空")
 
   if (week_end < earliestNavDate || week_end > latestNavDate) {
-    throw new Error(`报告周日期需在 ${earliestNavDate} ~ ${latestNavDate} 之间`)
+    throw new Error(`${periodLabel}结束日期需在 ${earliestNavDate} ~ ${latestNavDate} 之间`)
   }
   if (week_begin && week_begin < earliestNavDate) {
-    throw new Error(`报告周开始日期不能早于 ${earliestNavDate}`)
+    throw new Error(`${periodLabel}开始日期不能早于 ${earliestNavDate}`)
   }
 
   if (!existsSync(SCRIPT_PATH)) {
@@ -1188,7 +1220,10 @@ export async function generateFofWeeklyReport(
     week_end,
     ...(week_begin ? ["--week-begin", week_begin] : []),
     "--product-name",
-    names.short_name || names.product_name,
+    // Prefer the selected/header name. BFL short_name can be a different
+    // product (e.g. 荣熙共赢 → short_name 荣熙共赢同策略) and would leak into
+    // the chart legend and 区间收益率 table.
+    reportTitle || names.product_name || names.short_name,
     "--report-title",
     reportTitle,
     "--product-tagline",
@@ -1199,6 +1234,12 @@ export async function generateFofWeeklyReport(
     benchLabel,
     "--nav-frequency",
     navFrequency,
+    "--report-kind",
+    reportKind,
+    // Holdings (incl. monthly) must stay on the portrait pie layout, not monthly review.
+    ...(reportVariant === "holdings" || reportKind === "monthly"
+      ? ["--report-layout", "curve"]
+      : []),
     ...(productInception ? ["--inception-date", productInception] : []),
     ...(reportVariant === "holdings" && variantFile
       ? ["--report-variant", "holdings", "--variant-file", variantFile]

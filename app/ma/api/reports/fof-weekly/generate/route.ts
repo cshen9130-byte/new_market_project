@@ -7,6 +7,8 @@ import {
   type FofWeeklyReportRequest,
   type FofWeeklyReportResult,
 } from "@/lib/server/fof-weekly-report"
+import { fofWeeklyTmpDir, writeOfficialReportOwnerHint } from "@/lib/server/official-shared-reports"
+import { getRequestUser } from "@/lib/server/users"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -27,6 +29,13 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as FofWeeklyReportRequest
     const reportId = await prepareFofWeeklyReportJob()
+    if ((body.report_kind || "weekly") === "holding") {
+      const user = await getRequestUser(req)
+      writeOfficialReportOwnerHint(fofWeeklyTmpDir(reportId), {
+        userId: user?.id,
+        name: user?.name || user?.email,
+      })
+    }
 
     // Fire-and-forget on the long-lived PM2 process. Do NOT use next/server `after()`
     // here — some proxies keep the client request open until after() finishes.

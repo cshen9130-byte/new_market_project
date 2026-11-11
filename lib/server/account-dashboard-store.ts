@@ -1,6 +1,7 @@
 import { query } from "@/lib/db"
 import {
   sanitizeAccountDashboardPrefs,
+  type AccountDashboardIdentity,
   type AccountDashboardPrefs,
 } from "@/lib/ma/account-dashboard"
 
@@ -27,22 +28,27 @@ function ensureColumn(): Promise<void> {
   return ready
 }
 
-export async function readAccountDashboard(userId: string, allowMom: boolean): Promise<AccountDashboardPrefs> {
+export async function readAccountDashboard(
+  userId: string,
+  allowMom: boolean,
+  identity?: AccountDashboardIdentity | null,
+): Promise<AccountDashboardPrefs> {
   await ensureColumn()
   const rows = await query<{ dashboard_prefs: unknown }>(
     `SELECT dashboard_prefs FROM auth_users WHERE id = $1`,
     [userId],
   )
-  return sanitizeAccountDashboardPrefs(rows[0]?.dashboard_prefs, allowMom)
+  return sanitizeAccountDashboardPrefs(rows[0]?.dashboard_prefs, allowMom, identity)
 }
 
 export async function writeAccountDashboard(
   userId: string,
   raw: unknown,
   allowMom: boolean,
+  identity?: AccountDashboardIdentity | null,
 ): Promise<AccountDashboardPrefs> {
   await ensureColumn()
-  const prefs = sanitizeAccountDashboardPrefs(raw, allowMom)
+  const prefs = sanitizeAccountDashboardPrefs(raw, allowMom, identity)
   await query(
     `UPDATE auth_users SET dashboard_prefs = $2::jsonb WHERE id = $1`,
     [userId, JSON.stringify(prefs)],

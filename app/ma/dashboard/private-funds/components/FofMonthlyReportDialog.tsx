@@ -434,12 +434,14 @@ export function FofMonthlyReportDialog({
   onBack,
   embedded = false,
   layout = "review",
+  onSaved,
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
   layout?: "curve" | "review"
+  onSaved?: () => void
 }) {
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
@@ -679,7 +681,7 @@ export function FofMonthlyReportDialog({
       recordGeneratedOfficialReport({
         title: next.reportTitle || productName.trim(),
         templateId: layout === "curve" ? "monthly-track-curve" : "monthly-review",
-        templateName: layout === "curve" ? "跟踪产品（通用曲线版）月报" : "跟踪产品（月度回顾版）",
+        templateName: layout === "curve" ? "跟踪产品（超额版）" : "跟踪产品（马年版）",
         source: "fof_monthly_generate",
         typeLabel: "月报",
         download: next.download,
@@ -692,6 +694,7 @@ export function FofMonthlyReportDialog({
           report_layout: layout,
         },
       })
+      onSaved?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {
@@ -700,7 +703,7 @@ export function FofMonthlyReportDialog({
   }
 
   const isReviewLayout = layout === "review"
-  const dialogTitle = isReviewLayout ? "跟踪产品（月度回顾版）" : "跟踪产品（通用曲线版）"
+  const dialogTitle = isReviewLayout ? "跟踪产品（马年版）" : "跟踪产品（超额版）"
   const dialogSubtitle = isReviewLayout
     ? "横版月报布局，含月度收益柱图与业绩回顾"
     : "竖版月报布局，指标卡片与净值曲线"

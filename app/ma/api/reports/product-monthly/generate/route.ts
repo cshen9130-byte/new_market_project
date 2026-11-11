@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server"
+import path from "path"
+import { getRequestUser } from "@/lib/server/users"
+import { tryRegisterOfficialSharedReport } from "@/lib/server/official-shared-reports"
 import {
   buildProductMonthlyDownloadToken,
   generateProductMonthlyReport,
@@ -12,6 +15,24 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as ProductMonthlyReportRequest
     const result = await generateProductMonthlyReport(body)
+
+    const user = await getRequestUser(req)
+    tryRegisterOfficialSharedReport({
+      reportId: result.reportId,
+      section: "monthly",
+      source: "product_monthly_generate",
+      title: `产品月报（${result.endDate}）`,
+      templateId: "monthly-pe-official",
+      templateName: "低中高波三产品版",
+      typeLabel: "月报",
+      product_name: "低中高波三产品版",
+      periodEnd: result.endDate,
+      periodStart: result.endDate,
+      tmpDir: path.join(process.cwd(), ".tmp", "product-monthly-reports", result.reportId),
+      ownerUserId: user?.id,
+      ownerName: user?.name || user?.email,
+      formats: result.pdfFileName ? ["pptx", "pdf"] : ["pptx"],
+    })
 
     return NextResponse.json({
       ...result,

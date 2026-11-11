@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import glob
 import json
 import os
@@ -85,6 +86,15 @@ REPORT_KIND_LABELS: dict[str, dict[str, str]] = {
         "period_range_label": "本月区间",
         "period_highlights": "本月要点",
         "file_suffix": "月报",
+    },
+    "holding": {
+        "kind_name": "持有期报告",
+        "period_name": "持有期",
+        "period_return": "持有期收益",
+        "period_broadcast": "持有期业绩播报",
+        "period_range_label": "持有期区间",
+        "period_highlights": "持有期要点",
+        "file_suffix": "持有期报告",
     },
 }
 
@@ -649,6 +659,90 @@ def calendar_benchmark_return(
     return end_px / start_px - 1.0
 
 
+
+def nav_level_on_or_before(df: pd.DataFrame, as_of: pd.Timestamp, column: str) -> float | None:
+    """Last available value of `column` on or before as_of."""
+    if df is None or df.empty or column not in df.columns:
+        return None
+    work = df[df["date"] <= pd.Timestamp(as_of).normalize()]
+    if work.empty:
+        return None
+    value = float(work[column].iloc[-1])
+    if not np.isfinite(value) or value == 0:
+        return None
+    return value
+
+
+def holding_period_simple_return(
+    df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    column: str = "adj_nav",
+) -> float | None:
+    """Holding-period return: end_NAV / start_NAV - 1.
+
+    Start NAV is the point on the start date, or the last available point on
+    or before that date if the start date itself has no print. End NAV is the
+    last point on or before the end date. This is not the weekly/monthly
+    prior-close convention.
+    """
+    if df is None or df.empty or column not in df.columns:
+        return None
+    start = pd.Timestamp(start).normalize()
+    end = pd.Timestamp(end).normalize()
+    window = df[df["date"] <= end]
+    if window.empty:
+        return None
+    start_val = nav_level_on_or_before(window, start, column)
+    if start_val is None:
+        after = window[window["date"] >= start]
+        if after.empty:
+            return None
+        start_val = float(after[column].iloc[0])
+        if not np.isfinite(start_val) or start_val == 0:
+            return None
+    end_val = float(window[column].iloc[-1])
+    if not np.isfinite(end_val) or end_val == 0:
+        return None
+    return end_val / start_val - 1.0
+
+
+def holding_period_max_drawdown(
+    df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    column: str = "adj_nav",
+) -> float | None:
+    """Peak-to-trough max drawdown on the holding-period NAV path.
+
+    The peak is reset at the start of the window: NAV on the start date, or
+    the last available point on or before that date if the start date itself
+    has no print. This is not the since-inception / full-history max DD.
+    """
+    if df is None or df.empty or column not in df.columns:
+        return None
+    start = pd.Timestamp(start).normalize()
+    end = pd.Timestamp(end).normalize()
+    window = df[df["date"] <= end]
+    if window.empty:
+        return None
+    prior = window[window["date"] <= start]
+    if not prior.empty:
+        path = window[window["date"] >= prior["date"].iloc[-1]][column]
+    else:
+        after = window[window["date"] >= start]
+        if after.empty:
+            return None
+        path = after[column]
+    wealth = pd.to_numeric(path, errors="coerce")
+    wealth = wealth[np.isfinite(wealth) & (wealth > 0)]
+    if wealth.empty:
+        return None
+    roll_max = wealth.cummax()
+    drawdown = (wealth - roll_max) / roll_max
+    return float(drawdown.min()) if not drawdown.empty else 0.0
+
+
 def compute_metrics(
     df: pd.DataFrame,
     as_of_date: pd.Timestamp | None = None,
@@ -722,7 +816,27 @@ def compute_metrics(
         week_start = week_df["date"].iloc[0]
         week_end = week_df["date"].iloc[-1]
     week_start_loc = work.index.get_loc(week_df.index[0])
-    if week_start_loc > 0:
+    # Weekly/monthly reports use the prior close (last NAV before the window).
+    # Holding-period reports use end / start - 1, with start = NAV on the
+    # chosen start date (or last available NAV on or before that date).
+    if kind == "holding":
+        holding_ret = holding_period_simple_return(work, week_start, week_end, "adj_nav")
+        holding_bench = holding_period_simple_return(work, week_start, week_end, "csi300")
+        if holding_ret is not None:
+            week_return = holding_ret
+        elif week_start_loc > 0:
+            prior_row = work.iloc[week_start_loc - 1]
+            week_return = float(week_df["adj_nav"].iloc[-1] / prior_row["adj_nav"] - 1)
+        else:
+            week_return = float(week_df["adj_nav"].iloc[-1] / week_df["adj_nav"].iloc[0] - 1)
+        if holding_bench is not None:
+            week_bench = holding_bench
+        elif week_start_loc > 0:
+            prior_row = work.iloc[week_start_loc - 1]
+            week_bench = float(week_df["csi300"].iloc[-1] / prior_row["csi300"] - 1)
+        else:
+            week_bench = float(week_df["csi300"].iloc[-1] / week_df["csi300"].iloc[0] - 1)
+    elif week_start_loc > 0:
         prior_row = work.iloc[week_start_loc - 1]
         week_return = float(week_df["adj_nav"].iloc[-1] / prior_row["adj_nav"] - 1)
         week_bench = float(week_df["csi300"].iloc[-1] / prior_row["csi300"] - 1)
@@ -766,24 +880,31 @@ def compute_metrics(
     # 成立日期 is the product establishment date when the caller has one.
     # It can be earlier than the first NAV point. Otherwise use the first
     # trading-day NAV, not the first weekly or monthly sample.
+    first_nav_date = pd.Timestamp(work["date"].iloc[0]).normalize()
     if inception_date is not None:
         inception = pd.Timestamp(inception_date).normalize()
     else:
-        inception = work["date"].iloc[0]
-    # 运作天数 counts exchange sessions from 成立日期 through the report
-    # cutoff. Weekly/monthly sampling must not shrink this to the kept points.
+        inception = first_nav_date
+    # 运作天数 / 年化收益 share one span. Official 成立日期 may be earlier
+    # than the first print (keep counting from 成立日期). It may also be
+    # later when the file includes predecessor / 同策略 history (e.g. 荣熙共赢
+    # established 2026-01-20 but NAV starts 2020-03-30). In that case count
+    # from the first NAV used in total_return; otherwise (end/start) is
+    # annualized over a short stub and explodes (58.96% over 193 days → 83%).
+    # Weekly/monthly sampling must not shrink this to the kept points.
     if operating_end is not None:
         span_end = pd.Timestamp(operating_end).normalize()
     elif as_of_date is not None:
         span_end = pd.Timestamp(as_of_date).normalize()
     else:
         span_end = work["date"].iloc[-1]
-    if span_end < inception:
-        span_end = inception
+    span_start = min(inception, first_nav_date)
+    if span_end < span_start:
+        span_end = span_start
 
-    # 年化收益: (1+R)^(252/n)-1 with n = 运作天数 (trading days inception→cutoff inclusive).
+    # 年化收益: (1+R)^(252/n)-1 with n = 运作天数 (trading days span_start→cutoff inclusive).
     # Keep total_return from first→last NAV of the (possibly weekly) series; do NOT use weekly point count.
-    trading_days_n = max(1, count_cn_trading_days(inception, span_end))
+    trading_days_n = max(1, count_cn_trading_days(span_start, span_end))
     annual_return = (end_nav / start_nav) ** (252 / trading_days_n) - 1.0
     bench_trading_days_n = max(1, count_cn_trading_days(bench_nav.index[0], bench_nav.index[-1]))
     bench_annual_return = (bench_end / bench_start) ** (252 / bench_trading_days_n) - 1.0
@@ -853,8 +974,16 @@ def build_highlights(
     is_new_high = metrics["is_week_all_time_high"]
     week_end = metrics["week_end"]
     weekday = ["一", "二", "三", "四", "五", "六", "日"][week_high_date.weekday()]
-    day_label = f"{week_high_date.day}日" if normalize_report_kind(report_kind) == "monthly" else f"周{weekday}"
-    range_label = "月内" if normalize_report_kind(report_kind) == "monthly" else "周内"
+    kind = normalize_report_kind(report_kind)
+    if kind == "monthly":
+        day_label = f"{week_high_date.day}日"
+        range_label = "月内"
+    elif kind == "holding":
+        day_label = f"{week_high_date.month}月{week_high_date.day}日"
+        range_label = "持有期内"
+    else:
+        day_label = f"周{weekday}"
+        range_label = "周内"
 
     if wr >= 0:
         line1 = f"• 策略表现：{period_name}净值累计上涨{wr * 100:.2f}%，"
@@ -885,28 +1014,147 @@ def build_highlights(
     return [line1, line2, line3, line4, line5, line6]
 
 
-_CJK_BREAK_AFTER = set("，。；、！？,.; ")
+# Prefer a line break after these; do not include closing quotes, so
+# “政策效果验证”与“企业…” stays on one phrase when it still fits.
+_CJK_BREAK_AFTER = set("，。；、！？,.;）)】》 ")
+# If a line would end in 的/之 plus one leftover character, break before 的/之.
+_CJK_DONT_SPLIT_AFTER = set("的之")
+
+_VIEW_HEADING_RE = re.compile(r"(【[^】]+】)")
+_VIEW_ENUM_RE = re.compile(
+    r"(?<!\d)(\d{1,2})[.．、](?=\s*[\u4e00-\u9fffA-Za-z“「【])"
+)
 
 
-def wrap_cjk(text: str, width: int) -> list[str]:
-    """Wrap on character count, preferring a break after punctuation."""
+def wrap_cjk(text: str, width: int, first_width: int | None = None) -> list[str]:
+    """Wrap on character count, preferring a break after punctuation.
+
+    first_width applies only to the first line (used for a hanging prefix).
+    """
     cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not cleaned or width <= 0:
         return []
+    closing = set("，。；、！？,.;）)”’」』】》")
+    opening = set("“「『【（(")
     lines: list[str] = []
+    use_first = True
     for para in cleaned.split("\n"):
         rest = para.strip()
+        if not rest:
+            continue
         while rest:
-            if len(rest) <= width:
+            limit = first_width if use_first and first_width else width
+            use_first = False
+            limit = max(1, limit)
+            if len(rest) <= limit:
                 lines.append(rest)
                 break
-            window = rest[:width]
-            cut = width
+            window = rest[:limit]
+            cut = limit
+            min_punct = max(4, limit // 3)
             for i, ch in enumerate(window):
-                if ch in _CJK_BREAK_AFTER and i >= width // 2:
+                if ch in _CJK_BREAK_AFTER and i >= min_punct:
                     cut = i + 1
+            # Never start the next line with a closing quote or comma.
+            while cut < len(rest) and rest[cut] in closing:
+                cut += 1
+            tail = rest[cut:]
+            if tail and tail[0] not in closing:
+                extra = 0
+                while extra < 2 and extra < len(tail) and tail[extra] not in closing:
+                    extra += 1
+                if extra < len(tail) and tail[extra] in closing:
+                    cut = cut + extra + 1
+                elif extra == len(tail):
+                    cut = cut + extra
+            # If this cut lands inside “…” and the closer is nearby, take it.
+            open_i = rest.rfind("“", 0, cut)
+            close_i = rest.rfind("”", 0, cut)
+            if open_i > close_i:
+                nxt = rest.find("”", cut)
+                if nxt >= 0 and nxt - (limit - 1) <= 6:
+                    cut = nxt + 1
+                    while cut < len(rest) and rest[cut] in closing:
+                        cut += 1
+            # Don't end a line on an opening quote or bracket.
+            while cut > min_punct and rest[cut - 1] in opening:
+                cut -= 1
+            # Don't end a line with 的/之; keep "的中高比例" together on the next line.
+            if (
+                cut >= 2
+                and cut < len(rest)
+                and rest[cut - 1] in _CJK_DONT_SPLIT_AFTER
+            ):
+                new_cut = cut - 1
+                if new_cut >= max(1, limit * 2 // 3):
+                    cut = new_cut
+            elif (
+                cut >= 2
+                and cut < len(rest)
+                and rest[cut - 2] in _CJK_DONT_SPLIT_AFTER
+                and rest[cut - 1] not in closing
+            ):
+                new_cut = cut - 2
+                if new_cut >= max(1, limit * 2 // 3):
+                    cut = new_cut
+            if cut <= 0 or cut >= len(rest):
+                cut = min(len(rest), max(1, limit))
             lines.append(rest[:cut].strip())
             rest = rest[cut:].strip()
+    return lines
+
+
+def _split_manager_view_blocks(text: str) -> list[tuple[str, str]]:
+    """Split 观点 into headings, numbered items, and body paragraphs."""
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not cleaned:
+        return []
+    cleaned = _VIEW_HEADING_RE.sub(lambda m: "\n" + m.group(1) + "\n", cleaned)
+    cleaned = _VIEW_ENUM_RE.sub(lambda m: "\n" + m.group(1) + ". ", cleaned)
+    blocks: list[tuple[str, str]] = []
+    for raw in cleaned.split("\n"):
+        part = " ".join(raw.split())
+        if not part:
+            continue
+        if re.fullmatch(r"【[^】]+】", part):
+            blocks.append(("heading", part))
+            continue
+        enum = re.match(r"(\d{1,2})[.．、]\s*(.*)$", part)
+        if enum:
+            marker = f"{enum.group(1)}. "
+            body = enum.group(2).strip()
+            blocks.append(("item", marker + body))
+            continue
+        blocks.append(("body", part))
+    return blocks
+
+
+def format_manager_view_lines(text: str, wrap_width: int = 22, prefix: str = "• 基金经理观点：") -> list[str]:
+    """Render 基金经理观点 with headings and 1. 2. 3. items on their own lines."""
+    blocks = _split_manager_view_blocks(text)
+    if not blocks:
+        return []
+    lines = [prefix]
+    for kind, chunk in blocks:
+        if kind == "heading":
+            lines.append(f"  {chunk}")
+            continue
+        if kind == "item":
+            marker, _, body = chunk.partition(" ")
+            marker = marker if marker.endswith(" ") else marker + " "
+            # "1. " hangs; wrapped body aligns under the text, not the number.
+            inner_width = max(8, wrap_width - len(marker))
+            wrapped = wrap_cjk(body, inner_width) if body else []
+            if not wrapped:
+                lines.append("  " + marker.strip())
+                continue
+            lines.append("  " + marker + wrapped[0])
+            pad = "  " + " " * len(marker)
+            for ln in wrapped[1:]:
+                lines.append(pad + ln)
+            continue
+        for ln in wrap_cjk(chunk, wrap_width):
+            lines.append(f"  {ln}")
     return lines
 
 
@@ -915,20 +1163,24 @@ def build_holdings_highlights(
     strategy_phrase: str = "FOF策略",
     manager_view: str = "",
     report_kind: str | None = "weekly",
+    wrap_width: int = 22,
 ) -> list[str]:
-    """Same 要点 as the curve weekly, with 市场环境 replaced by 基金经理观点."""
+    """Same 要点 as the curve weekly, with 市场环境 replaced by 基金经理观点.
+
+    Headings like 【宏观与市场定调】 and numbered points stay on their own lines;
+    the full comment is wrapped and not truncated.
+    """
     base = build_highlights(
         metrics,
         report_kind=report_kind,
         strategy_phrase=strategy_phrase,
     )
     prefix = "• 基金经理观点："
-    wrapped = wrap_cjk(manager_view, 14)
-    if not wrapped:
-        view = ["• 基金经理观点：本周暂无。"]
-    else:
-        view = [prefix + wrapped[0]] + [f"  {line}" for line in wrapped[1:4]]
-    return base[:2] + view + base[4:6]
+    view_lines = format_manager_view_lines(manager_view, wrap_width=wrap_width, prefix=prefix)
+    if not view_lines:
+        empty_period = REPORT_KIND_LABELS[normalize_report_kind(report_kind)]["period_name"]
+        view_lines = [f"• 基金经理观点：{empty_period}暂无。"]
+    return base[:2] + view_lines + base[4:6]
 
 
 # Match the product-page 二级策略 pie: named colors win, otherwise palette by slice order.
@@ -986,58 +1238,8 @@ def load_report_variant_file(path: str | None) -> dict:
     }
 
 
-def _donut_label_font(fp, size: float) -> FontProperties:
-    if fp is not None and fp.get_file():
-        return FontProperties(fname=fp.get_file(), size=size)
-    if fp is not None:
-        return FontProperties(family=fp.get_name(), size=size)
-    return FontProperties(size=size)
-
-
-def _label_width_inches(text: str, font_size: float) -> float:
-    """Approximate rendered width; CJK characters count as one em."""
-    width_pt = 0.0
-    for ch in text:
-        width_pt += font_size if ord(ch) > 0x2E7F else font_size * 0.55
-    return width_pt / 72.0
-
-
-def _pack_label_ys(desired: list[float], y_min: float, y_max: float, min_gap: float) -> list[float]:
-    """Spread already top-to-bottom ys so neighbors stay at least min_gap apart."""
-    n = len(desired)
-    if n == 0:
-        return []
-    if n == 1:
-        return [min(y_max, max(y_min, desired[0]))]
-    span = max(0.0, y_max - y_min)
-    gap = min_gap if (n - 1) * min_gap <= span else span / (n - 1)
-    out = list(desired)
-    out[0] = min(out[0], y_max)
-    for i in range(1, n):
-        out[i] = min(out[i], out[i - 1] - gap)
-    out[-1] = max(out[-1], y_min)
-    for i in range(n - 2, -1, -1):
-        out[i] = max(out[i], out[i + 1] + gap)
-    if out[0] > y_max:
-        shift = out[0] - y_max
-        out = [y - shift for y in out]
-    if out[-1] < y_min:
-        shift = y_min - out[-1]
-        out = [y + shift for y in out]
-        if out[0] > y_max:
-            # Still does not fit: compress into [y_min, y_max].
-            if n == 1:
-                out = [(y_min + y_max) / 2.0]
-            else:
-                out = [y_max - i * (span / (n - 1)) for i in range(n)]
-    return out
-
-
 def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
-    """Donut of 二级策略 weights with on-chart name+percent labels and leader lines.
-
-    The bottom color legend is omitted so labels have room in the compact card.
-    """
+    """Donut of 二级策略 weights with outside name+share labels, clipped inside rect."""
     left, bottom, width, height = rect
     if width <= 0 or height <= 0 or not slices:
         return
@@ -1046,135 +1248,121 @@ def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
     names = [str(item["name"]) for item in slices]
     total = sum(values) or 1.0
     colors = [strategy_slice_color(name, i) for i, name in enumerate(names)]
-    labels = [f"{name} {value / total * 100:.1f}%" for name, value in zip(names, values)]
 
-    ax = fig.add_axes([left, bottom, width, height])
-    ax.set_facecolor("none")
-    ax.axis("off")
+    pie_ax = fig.add_axes([left, bottom, width, height])
+    pie_ax.set_facecolor("none")
+    pie_ax.axis("off")
 
-    wedges, _ = ax.pie(
+    # Smaller ring than the product page so leader+label stay inside this card.
+    ring_outer = 1.0
+    ring_inner_ratio = 30 / 48
+    wedges, _ = pie_ax.pie(
         values,
         colors=colors,
         startangle=90,
         counterclock=False,
-        wedgeprops={"width": 0.46, "edgecolor": "white", "linewidth": 0.8},
-        radius=1.0,
+        wedgeprops={
+            "width": ring_outer * (1 - ring_inner_ratio),
+            "edgecolor": "white",
+            "linewidth": 0.8,
+        },
+        radius=ring_outer,
         center=(0, 0),
     )
+    axes_limit = 2.70
+    pie_ax.set_xlim(-axes_limit, axes_limit)
+    pie_ax.set_ylim(-axes_limit, axes_limit)
+    pie_ax.set_aspect("equal", adjustable="box")
+
+    fontsize = 6.5
+    font_props = None
+    if fp is not None and fp.get_file():
+        font_props = FontProperties(fname=fp.get_file(), size=fontsize)
+    elif fp is not None:
+        font_props = FontProperties(family=fp.get_name(), size=fontsize)
 
     fig_w, fig_h = fig.get_size_inches()
-    ax_w_in = width * fig_w
-    ax_h_in = height * fig_h
-    if ax_w_in <= 0 or ax_h_in <= 0:
-        return
+    side_in = min(width * fig_w, height * fig_h)
 
-    n_slices = len(slices)
-    font_size = 7.0 if n_slices <= 5 else 6.5 if n_slices <= 8 else 6.0
-    line_in = 0.20
-    text_pad_in = 0.04
-    edge_pad_in = 0.03
-    min_side_in = 0.28
+    def _text_width(label: str) -> float:
+        em = 0.0
+        for ch in label:
+            if "\u4e00" <= ch <= "\u9fff":
+                em += 1.0
+            elif ch == " ":
+                em += 0.35
+            else:
+                em += 0.55
+        inches = em * (fontsize / 72.0) * 1.08
+        return inches / (side_in / (2 * axes_limit)) if side_in else 0.0
 
-    # Pre-assign sides from mid-angles so each side only reserves the width it needs.
-    theta = 90.0
-    side_labels = {"left": [], "right": []}
-    for value, label in zip(values, labels):
-        extent = 360.0 * value / total
-        mid = np.deg2rad(theta - extent / 2.0)
-        side_labels["right" if np.cos(mid) >= 0 else "left"].append(label)
-        theta -= extent
+    entries: list[tuple[float, float, str, str]] = []
+    for wedge, name, value, color in zip(wedges, names, values, colors):
+        ang = (wedge.theta1 + wedge.theta2) / 2.0
+        theta = np.deg2rad(ang)
+        x = float(np.cos(theta))
+        y = float(np.sin(theta))
+        label = f"{name} {value / total * 100:.1f}%"
+        entries.append((x, y, label, color))
 
-    def side_need(texts: list[str], size: float) -> float:
-        if not texts:
-            return min_side_in
-        widest = max(_label_width_inches(text, size) for text in texts)
-        return max(min_side_in, line_in + text_pad_in + edge_pad_in + widest)
+    r0 = 1.05
+    pad = 0.10
+    x_bound = axes_limit - pad
+    y_limit = axes_limit - 0.20
+    min_gap = 0.32
 
-    left_need = right_need = min_side_in
-    ipu = 0.45
-    for size in (7.0, 6.5, 6.0, 5.5):
-        left_need = side_need(side_labels["left"], size)
-        right_need = side_need(side_labels["right"], size)
-        cand_w = (ax_w_in - left_need - right_need) / 2.0
-        cand_h = ax_h_in / 2.0 / 1.06
-        cand = min(cand_w, cand_h)
-        if cand >= 0.45 or size == 5.5:
-            font_size = size
-            ipu = max(0.36, cand)
-            break
+    def _layout(side_right: bool) -> list[tuple[tuple[float, float, str, str], float, float]]:
+        side = [item for item in entries if (item[0] >= 0) == side_right]
+        side.sort(key=lambda item: item[1], reverse=True)
+        ys = [item[1] * 1.25 for item in side]
+        for i in range(1, len(ys)):
+            if ys[i - 1] - ys[i] < min_gap:
+                ys[i] = ys[i - 1] - min_gap
+        if ys and ys[-1] < -y_limit:
+            delta = -y_limit - ys[-1]
+            ys = [y + delta for y in ys]
+        if ys and ys[0] > y_limit:
+            delta = ys[0] - y_limit
+            ys = [y - delta for y in ys]
+        placed: list[tuple[tuple[float, float, str, str], float, float]] = []
+        for item, ty in zip(side, ys):
+            tw = _text_width(item[2])
+            if side_right:
+                x_text = min(1.38, x_bound - tw)
+            else:
+                x_text = max(-1.38, -x_bound + tw)
+            placed.append((item, ty, x_text))
+        return placed
 
-    half_h = (ax_h_in / 2.0) / ipu
-    # Asymmetric x window: donut stays at 0, extra width goes to the heavier label side.
-    ax.set_xlim(-(1.0 + left_need / ipu), 1.0 + right_need / ipu)
-    ax.set_ylim(-half_h, half_h)
-    ax.set_aspect("equal")
-
-    r_out = 1.0
-    length1 = line_in * 0.55 / ipu
-    length2 = line_in * 0.45 / ipu
-    font = _donut_label_font(fp, font_size)
-    min_gap = max(0.11, (font_size + 1.6) / 72.0 / ipu)
-    y_top = half_h * 0.96
-    y_bot = -half_h * 0.96
-    text_color = "#52525b"
-
-    placed: list[dict] = []
-    for wedge, label, color in zip(wedges, labels, colors):
-        mid = np.deg2rad((wedge.theta1 + wedge.theta2) / 2.0)
-        c, s = float(np.cos(mid)), float(np.sin(mid))
-        x1, y1 = c * r_out, s * r_out
-        x2, y2 = c * (r_out + length1), s * (r_out + length1)
-        side = "right" if c >= 0 else "left"
-        placed.append({
-            "label": label,
-            "color": color,
-            "side": side,
-            "x1": x1,
-            "y1": y1,
-            "x2": x2,
-            "y2": y2,
-            "width_in": _label_width_inches(label, font_size),
-        })
-
-    for side, sign in (("right", 1.0), ("left", -1.0)):
-        group = [item for item in placed if item["side"] == side]
-        if not group:
-            continue
-        group.sort(key=lambda item: -item["y2"])
-        ys = _pack_label_ys([item["y2"] for item in group], y_bot, y_top, min_gap)
-        # Keep a consistent text column just outside the elbows, inside the axes.
-        elbows = [abs(item["x2"]) for item in group]
-        gap = text_pad_in / ipu
-        side_edge = (1.0 + (right_need if sign > 0 else left_need) / ipu)
-        # Align labels in one column, kept inside that side of the axes.
-        x_col = max(elbows) + length2
-        x_fit = min(side_edge - edge_pad_in / ipu - item["width_in"] / ipu - gap for item in group)
-        x_col = min(x_col, max(max(elbows) + 0.06, x_fit))
-        for item, y in zip(group, ys):
-            x_text = sign * x_col
-            item["x3"] = x_text
-            item["y3"] = y
-            ax.plot(
-                [item["x1"], item["x2"], x_text],
-                [item["y1"], item["y2"], y],
-                color=item["color"],
-                linewidth=0.85,
+    for side_right in (True, False):
+        sx = 1.0 if side_right else -1.0
+        for (x, y, label, color), ty, x_text in _layout(side_right):
+            x0, y0 = x * r0, y * r0
+            # Keep the horizontal elbow just before the text, still inside the ring gap.
+            if side_right:
+                x_elbow = min(max(x0 + 0.12, 1.18), max(x_text - 0.04, 1.12))
+            else:
+                x_elbow = max(min(x0 - 0.12, -1.18), min(x_text + 0.04, -1.12))
+            pie_ax.plot(
+                [x0, x_elbow, x_text],
+                [y0, ty, ty],
+                color=color,
+                linewidth=0.8,
                 solid_capstyle="round",
-                solid_joinstyle="round",
-                clip_on=False,
+                clip_on=True,
                 zorder=3,
             )
-            ax.text(
-                x_text + sign * gap,
-                y,
-                item["label"],
-                fontproperties=font,
-                color=text_color,
-                ha="left" if sign > 0 else "right",
+            text_kw = dict(
+                ha="left" if side_right else "right",
                 va="center",
-                clip_on=False,
+                color="#52525b",
+                fontsize=fontsize,
+                clip_on=True,
                 zorder=4,
             )
+            if font_props is not None:
+                text_kw["fontproperties"] = font_props
+            pie_ax.text(x_text, ty, label, **text_kw)
 
 def ret_color(val: float) -> str:
     if val > 0:
@@ -1636,6 +1824,44 @@ def _prepare_report_context(
     )
     metrics["end_nav"] = true_end_nav
     metrics["nav_frequency"] = freq
+    # Holding-period return must use trading-day NAVs (same source as 最新净值),
+    # not the weekly/monthly resampled series and not the prior-close convention.
+    if kind == "holding" and report_week_begin is not None:
+        holding_src = trading_raw if not trading_raw.empty else raw_df
+        if as_of is not None:
+            holding_src = holding_src[holding_src["date"] <= as_of].copy()
+        holding_end = as_of if as_of is not None else pd.Timestamp(holding_src["date"].iloc[-1]).normalize()
+        holding_ret = holding_period_simple_return(
+            holding_src, report_week_begin, holding_end, "adj_nav"
+        )
+        holding_bench = holding_period_simple_return(
+            holding_src, report_week_begin, holding_end, "csi300"
+        )
+        if holding_ret is not None:
+            metrics["week_return"] = holding_ret
+            if holding_bench is not None:
+                metrics["week_bench"] = holding_bench
+            metrics["week_excess"] = metrics["week_return"] - metrics["week_bench"]
+        # 持有期最大回撤 / 产品最大回撤 follow nav_frequency (weekly series
+        # for 周频, daily for 日频). Do not hardcode trading-day NAV; 持有期收益
+        # still uses trading-day start/end levels above.
+        mdd_src = metrics_df if not metrics_df.empty else holding_src
+        holding_mdd = holding_period_max_drawdown(
+            mdd_src, report_week_begin, holding_end, "adj_nav"
+        )
+        if holding_mdd is not None:
+            metrics["holding_max_drawdown"] = holding_mdd
+        if not mdd_src.empty:
+            product_start = pd.Timestamp(mdd_src["date"].iloc[0]).normalize()
+            product_mdd = holding_period_max_drawdown(
+                mdd_src, product_start, holding_end, "adj_nav"
+            )
+            if product_mdd is not None:
+                metrics["max_drawdown"] = product_mdd
+                annual_return = float(metrics.get("annual_return") or 0.0)
+                metrics["calmar"] = (
+                    annual_return / abs(product_mdd) if product_mdd < 0 else 0.0
+                )
 
     cur_year = int(as_of.year) if as_of is not None else int(daily_plot_df["date"].dt.year.max())
     year_row = next((r for r in interval_rows if r["year"] == cur_year), None)
@@ -1708,7 +1934,10 @@ def _make_weekly_report(
             "未找到可用的中文字体。请在服务器执行: bash scripts/deploy/setup-haitai-week-report.sh"
         )
 
-    fig_w, fig_h = 7.5, 12.5
+    holdings_mode = (report_variant or "").strip().lower() == "holdings"
+    # Holdings layout needs a taller page so the NAV chart stays readable
+    # after the 本周要点 card grows with a long 基金经理观点.
+    fig_w, fig_h = 7.5, (15.2 if holdings_mode else 12.5)
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=C_BG)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
@@ -1799,23 +2028,43 @@ def _make_weekly_report(
             ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
         ]
     else:
-        row2 = [
-            ("夏普比率", f"{metrics['sharpe']:.2f}", C_PRIMARY),
-            ("年化波动", fmt_pct(metrics["volatility"], signed=False), C_TEXT),
-            ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
-            ("超额收益", fmt_pct(metrics["excess_total"]), ret_color(metrics["excess_total"])),
-        ]
+        if ctx["kind"] == "holding":
+            holding_mdd = metrics.get("holding_max_drawdown", metrics["max_drawdown"])
+            row2 = [
+                ("夏普比率", f"{metrics['sharpe']:.2f}", C_PRIMARY),
+                ("持有期最大回撤", fmt_pct(holding_mdd), C_DOWN if holding_mdd < 0 else C_TEXT),
+                ("产品最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
+                ("持有期超额收益", fmt_pct(metrics["week_excess"]), ret_color(metrics["week_excess"])),
+            ]
+        else:
+            row2 = [
+                ("夏普比率", f"{metrics['sharpe']:.2f}", C_PRIMARY),
+                ("年化波动", fmt_pct(metrics["volatility"], signed=False), C_TEXT),
+                ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
+                ("超额收益", fmt_pct(metrics["excess_total"]), ret_color(metrics["excess_total"])),
+            ]
     for i, (label, value, color) in enumerate(row2):
         draw_kpi_card(ax, x0 + i * (kpi_w + gap), kpi_row2_y, kpi_w, kpi_h, label, value, fp, color)
 
     if holdings_mode:
         # Footer occupies y=0..0.06; FancyBbox pad/shadow extend ~0.013 below bottom_y.
-        bottom_h = min(0.28, max(0.25, 0.055 + len(holdings_highlights) * 0.017))
+        # Keep the monthly table and 本周要点 close to their 12.5-inch physical
+        # size; the extra page height goes to the NAV chart.
+        def _inch(h12: float) -> float:
+            return h12 * 12.5 / fig_h
+
         bottom_y = 0.088
-        table_bottom = bottom_y + bottom_h + 0.012
-        table_top = table_bottom + 0.125
-        chart_bottom = table_top + 0.016
+        n_hl = max(len(holdings_highlights), 1)
+        table_h = _inch(0.125)
+        gap_table, gap_chart = _inch(0.012), _inch(0.016)
         chart_top = 0.68
+        desired_bottom_h = max(_inch(0.25), 0.048 + n_hl * _inch(0.015))
+        min_chart_h = _inch(0.20)
+        max_bottom_h = chart_top - min_chart_h - gap_chart - table_h - gap_table - bottom_y
+        bottom_h = min(max(desired_bottom_h, _inch(0.22)), max_bottom_h)
+        table_bottom = bottom_y + bottom_h + gap_table
+        table_top = table_bottom + table_h
+        chart_bottom = table_top + gap_chart
     else:
         chart_top = 0.68
         chart_bottom = 0.41
@@ -1902,11 +2151,12 @@ def _make_weekly_report(
         draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
         line_step = 0.016
         if holdings_highlights:
-            line_step = min(0.016, (bottom_h - 0.05) / len(holdings_highlights))
+            line_step = min(0.016, (bottom_h - 0.050) / len(holdings_highlights))
+        text_size = 8.5 if line_step >= 0.013 else 7.5
         for i, line in enumerate(holdings_highlights):
             draw_text(
                 ax, 0.06, bottom_y + bottom_h - 0.042 - i * line_step,
-                line, fp, size=8.5, color=C_TEXT,
+                line, fp, size=text_size, color=C_TEXT,
             )
 
         draw_container_card(ax, 0.52, bottom_y, 0.44, bottom_h, "持仓饼图", fp_bold, fp)
@@ -1921,7 +2171,7 @@ def _make_weekly_report(
         if pie_slices:
             draw_strategy_donut(
                 fig,
-                [0.545, bottom_y + 0.01, 0.39, max(0.12, bottom_h - 0.058)],
+                [0.538, bottom_y + 0.016, 0.404, max(0.12, bottom_h - 0.070)],
                 pie_slices,
                 fp,
             )
@@ -2361,7 +2611,7 @@ def make_report(
     kind = normalize_report_kind(report_kind)
     layout = normalize_report_layout(report_layout, kind)
     variant = (report_variant or "curve").strip().lower()
-    if variant not in ("curve", "holdings") or kind != "weekly":
+    if variant not in ("curve", "holdings"):
         variant = "curve"
     variant_payload = load_report_variant_file(variant_file) if variant == "holdings" else {
         "manager_view": "",
@@ -2394,7 +2644,7 @@ def make_report(
     elif tagline == PRODUCT_TAGLINE and strategy_phrase != "FOF策略":
         tagline = f"低波动 · 稳健运作 · {strategy_phrase}"
 
-    if kind == "monthly" and layout == "review":
+    if kind == "monthly" and layout == "review" and variant != "holdings":
         png_path, pdf_path = _make_monthly_report(
             ctx,
             output_dir=output_dir,
@@ -2479,8 +2729,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--report-kind",
         default="weekly",
-        choices=["weekly", "monthly"],
-        help="报告类型：weekly=周报, monthly=月报",
+        choices=["weekly", "monthly", "holding"],
+        help="报告类型：weekly=周报, monthly=月报, holding=持有期报告",
     )
     parser.add_argument(
         "--report-layout",
@@ -2495,7 +2745,7 @@ def main(argv: list[str] | None = None) -> int:
         "--report-variant",
         default="curve",
         choices=["curve", "holdings"],
-        help="周报版式：curve=通用曲线, holdings=持仓饼图（无基准、基金经理观点）",
+        help="曲线/持仓版式：curve=曲线, holdings=持仓饼图（无基准、基金经理观点；周报/月报/持有期均可用）",
     )
     parser.add_argument(
         "--variant-file",

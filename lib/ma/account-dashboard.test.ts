@@ -4,6 +4,8 @@ import { describe, it } from "node:test"
 import {
   DEFAULT_ACCOUNT_CHARTS,
   chartSpan,
+  defaultWeeklyReportTemplate,
+  isChenpeifengAccount,
   sanitizeAccountDashboardPrefs,
 } from "./account-dashboard"
 
@@ -16,6 +18,7 @@ describe("account dashboard prefs", () => {
     assert.deepEqual(prefs.layout, {})
     assert.equal(prefs.landing, "overview")
     assert.equal(prefs.theme, "system")
+    assert.equal(prefs.weeklyReportTemplate, "weekly-track-curve")
   })
 
   it("keeps an explicit empty subscription", () => {
@@ -75,5 +78,24 @@ describe("account dashboard prefs", () => {
     assert.equal(prefs.holders[0].id, "slot_a")
     assert.equal(prefs.holders[0].chartId, null)
     assert.equal(prefs.holders[0].height, "l")
+  })
+
+  it("defaults chenpeifeng to the holdings weekly template", () => {
+    assert.equal(isChenpeifengAccount({ name: "chenpeifeng" }), true)
+    assert.equal(isChenpeifengAccount({ email: "chenpeifeng@example.com" }), true)
+    assert.equal(isChenpeifengAccount({ name: "cong shen" }), false)
+    assert.equal(defaultWeeklyReportTemplate({ name: "chenpeifeng" }), "weekly-track-holdings")
+    assert.equal(defaultWeeklyReportTemplate({ name: "cong shen" }), "weekly-track-curve")
+    const prefs = sanitizeAccountDashboardPrefs({}, true, { name: "chenpeifeng" })
+    assert.equal(prefs.weeklyReportTemplate, "weekly-track-holdings")
+  })
+
+  it("keeps an explicit weekly template even for chenpeifeng", () => {
+    const prefs = sanitizeAccountDashboardPrefs(
+      { weeklyReportTemplate: "weekly-track-curve" },
+      true,
+      { name: "chenpeifeng" },
+    )
+    assert.equal(prefs.weeklyReportTemplate, "weekly-track-curve")
   })
 })

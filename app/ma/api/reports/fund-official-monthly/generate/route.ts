@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server"
+import path from "path"
+import { getRequestUser } from "@/lib/server/users"
+import { tryRegisterOfficialSharedReport } from "@/lib/server/official-shared-reports"
 import {
   buildFundOfficialMonthlyDownloadToken,
   generateFundOfficialMonthlyReport,
@@ -12,6 +15,25 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as FundOfficialMonthlyReportRequest
     const result = await generateFundOfficialMonthlyReport(body)
+
+    const user = await getRequestUser(req)
+    tryRegisterOfficialSharedReport({
+      reportId: result.reportId,
+      section: "monthly",
+      source: "fund_official_monthly_generate",
+      title: result.reportTitle,
+      templateId: "monthly-fund-official",
+      templateName: "表格版",
+      typeLabel: "月报",
+      product_name: body.product_name,
+      beian_hao: body.beian_hao,
+      periodStart: result.monthStart,
+      periodEnd: result.monthEnd,
+      tmpDir: path.join(process.cwd(), ".tmp", "fund-official-monthly-reports", result.reportId),
+      ownerUserId: user?.id,
+      ownerName: user?.name || user?.email,
+      formats: ["png", "pdf"],
+    })
 
     return NextResponse.json({
       ...result,

@@ -96,7 +96,7 @@ test("managed weekly reports notify only when 已最新 is above 90 percent", ()
   assert.equal(managedSystemWeeklyDedupeKey("2026-11-11"), "managed_system_weekly_current:2026-11-09")
   const message = managedSystemWeeklyMessage({ total: 40, current: 37, ready: true })
   assert.match(message.body, /37\/40/)
-  assert.match(message.href, /side=rpt-mine/)
+  assert.match(message.href, /side=rpt-weekly/)
 })
 
 test("weekly excel is ready when at least half of this week's products have a print", () => {

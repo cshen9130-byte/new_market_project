@@ -116,13 +116,33 @@ export function startAutoWeeklyReportsEtlJob(options?: {
         }
       }
 
-job.status = "done"
+      // 月报 / 季报 / 持有期报告: same nightly script, own templates and cadence.
+      let officialNote = ""
+      try {
+        const { runAutoOfficialReportsEtl } = await import("./auto-official-reports")
+        const official = await runAutoOfficialReportsEtl()
+        const fmt = (label: string, r: { created: number; existed: number; skipped: number; failed: number }) =>
+          `${label} created=${r.created} existed=${r.existed} skipped=${r.skipped} failed=${r.failed}`
+        officialNote =
+          ` | ${fmt("holding", official.holding)}` +
+          ` | ${fmt("monthly", official.monthly)}` +
+          ` | ${fmt("quarterly", official.quarterly)}`
+        console.log(`[auto-official-etl] ${officialNote.trim()}`)
+      } catch (officialErr) {
+        console.error(
+          "[auto-official-etl] failed:",
+          officialErr instanceof Error ? officialErr.message : officialErr,
+        )
+      }
+
+      job.status = "done"
       job.message =
         `完成 created=${result.created} existed=${result.existed} ` +
         `skipped=${result.skipped} failed=${result.failed}` +
         (mineCreated || mineFailed
           ? ` | mine created=${mineCreated} failed=${mineFailed}`
-          : "")
+          : "") +
+        officialNote
       job.finishedAt = Date.now()
       job.result = result
       jobs.set(JOB_KEY, { ...job })

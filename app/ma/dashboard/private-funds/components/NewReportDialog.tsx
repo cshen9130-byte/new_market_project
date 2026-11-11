@@ -18,7 +18,7 @@ import { ProductQuarterlyReportDialog } from "./ProductQuarterlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGenerateDialog"
 
-type TemplateCategory = "weekly" | "monthly" | "quarterly" | "custom" | "other"
+type TemplateCategory = "weekly" | "holding" | "monthly" | "quarterly" | "custom"
 type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "fund-official-monthly" | "product-quarterly" | "custom-report"
 type FofWeeklyVariant = "curve" | "holdings"
 type FofMonthlyLayout = "curve" | "review"
@@ -37,72 +37,68 @@ const TEMPLATE_CATEGORIES: { key: TemplateCategory; label: string }[] = [
   { key: "weekly", label: "产品周报" },
   { key: "monthly", label: "产品月报" },
   { key: "quarterly", label: "产品季报" },
+  { key: "holding", label: "持有期报告" },
   { key: "custom", label: "自定义报告" },
-  { key: "other", label: "其他" },
 ]
 
-const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "quarterly" | "other", ReportTemplate[]> = {
-  weekly: [
+const WEEKLY_TEMPLATES: ReportTemplate[] = [
     {
       id: "weekly-track-curve",
-      title: "跟踪产品（通用曲线版）",
+      title: "跟踪产品（超额版）",
       description: "显示产品指标和曲线",
       badgeLabel: "周报",
       exampleUrl: "/ma/api/reports/fof-weekly/example",
     },
     {
       id: "weekly-track-holdings",
-      title: "跟踪产品（持仓饼图版）",
+      title: "跟踪产品（持仓版）",
       description: "无基准曲线，可填基金经理观点，展示二级策略持仓饼图",
       badgeLabel: "周报",
       exampleUrl: "/ma/api/reports/fof-weekly/example?variant=holdings&v=labeled",
-      exampleCaption: "低波稳健FOF 1号 · 持仓饼图版",
+      exampleCaption: "低波稳健FOF 1号 · 持仓版",
+    },
+]
+
+const TEMPLATES_BY_CATEGORY: Record<"weekly" | "holding" | "monthly" | "quarterly", ReportTemplate[]> = {
+  weekly: WEEKLY_TEMPLATES,
+  holding: [
+    {
+      id: "weekly-track-curve",
+      title: "跟踪产品（超额版）",
+      description: "显示产品指标和曲线",
+      badgeLabel: "持有期",
+      exampleUrl: "/ma/api/reports/fof-weekly/example?kind=holding",
+      exampleCaption: "低波稳健FOF 1号 · 持有期超额版",
     },
     {
-      id: "weekly-track-general",
-      title: "跟踪产品（通用版）",
-      description: "显示产品指标，无净值曲线",
-      badgeLabel: "周报",
-    },
-    {
-      id: "weekly-invest-general",
-      title: "投资周报通用版",
-      description: "包含内容描述和产品指标",
-      badgeLabel: "周报",
-    },
-    {
-      id: "weekly-track-group-curve",
-      title: "跟踪产品（分组曲线版）",
-      description: "按分组展示指标和收益曲线",
-      badgeLabel: "周报",
-    },
-    {
-      id: "weekly-invest-general-2",
-      title: "投资周报通用版2",
-      description: "包含内容描述和产品指标，公司产品包含曲线",
-      badgeLabel: "周报",
+      id: "weekly-track-holdings",
+      title: "跟踪产品（持仓版）",
+      description: "无基准曲线，可填基金经理观点，展示二级策略持仓饼图",
+      badgeLabel: "持有期",
+      exampleUrl: "/ma/api/reports/fof-weekly/example?variant=holdings&kind=holding",
+      exampleCaption: "低波稳健FOF 1号 · 持有期持仓版",
     },
   ],
   monthly: [
     {
       id: "monthly-track-curve",
-      title: "跟踪产品（通用曲线版）",
+      title: "跟踪产品（超额版）",
       description: "竖版月报 · 指标卡片与净值曲线",
       badgeLabel: "月报",
       exampleUrl: "/ma/api/reports/fof-monthly/example?layout=curve",
-      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 竖版曲线",
+      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 超额版",
     },
     {
       id: "monthly-review",
-      title: "跟踪产品（月度回顾版）",
+      title: "跟踪产品（马年版）",
       description: "深色仪表盘 · 3D卡片 · 月度收益环形图",
       badgeLabel: "月报",
       exampleUrl: "/ma/api/reports/fof-monthly/example?layout=review",
-      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 深色仪表盘版",
+      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 马年版",
     },
     {
       id: "monthly-pe-official",
-      title: "私募基金月报-官方",
+      title: "低中高波三产品版",
       description: "适用组合策略基金",
       badgeLabel: "月报",
       exampleUrl: "/ma/api/reports/product-monthly/example",
@@ -110,11 +106,19 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "quarterly" | "other"
     },
     {
       id: "monthly-fund-official",
-      title: "单产品投资月报",
+      title: "表格版",
       description: "产品概览 · 经理简介 · 净值走势 · 业绩与持仓",
       badgeLabel: "月报",
       exampleUrl: "/ma/api/reports/fund-official-monthly/example",
-      exampleCaption: "单产品官方投资月报版式示例",
+      exampleCaption: "表格版示例",
+    },
+    {
+      id: "monthly-track-holdings",
+      title: "跟踪产品（持仓版）",
+      description: "无基准曲线，可填基金经理观点，展示二级策略持仓饼图",
+      badgeLabel: "月报",
+      exampleUrl: "/ma/api/reports/fof-monthly/example?variant=holdings&kind=monthly",
+      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 月报持仓版",
     },
   ],
   quarterly: [
@@ -127,7 +131,6 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "quarterly" | "other"
       exampleCaption: "上市公司 / 机构投资者 · 持有满三个月季度投资报告",
     },
   ],
-  other: [],
 }
 
 function TemplateThumbnail({ badgeLabel }: { badgeLabel: string }) {
@@ -192,10 +195,12 @@ export function NewReportDialog({
   open,
   onClose,
   onCustomReportSaved,
+  initialCategory = "weekly",
 }: {
   open: boolean
   onClose: () => void
   onCustomReportSaved?: () => void
+  initialCategory?: TemplateCategory
 }) {
   const [step, setStep] = useState<ReportWizardStep>("pick")
   const [category, setCategory] = useState<TemplateCategory>("weekly")
@@ -204,24 +209,30 @@ export function NewReportDialog({
   const [selectedCustom, setSelectedCustom] = useState<ReportCustomTemplate | null>(null)
   const [monthlyLayout, setMonthlyLayout] = useState<FofMonthlyLayout>("review")
   const [weeklyVariant, setWeeklyVariant] = useState<FofWeeklyVariant>("curve")
+  const [weeklyReportKind, setWeeklyReportKind] = useState<"weekly" | "holding" | "monthly">("weekly")
 
   useEffect(() => {
     if (open) {
+      const nextCategory = TEMPLATE_CATEGORIES.some((item) => item.key === initialCategory)
+        ? initialCategory
+        : "weekly"
       setStep("pick")
-      setCategory("weekly")
+      setCategory(nextCategory)
       setExampleTemplate(null)
       setSelectedCustom(null)
       setMonthlyLayout("review")
       setWeeklyVariant("curve")
+      setWeeklyReportKind(nextCategory === "holding" ? "holding" : "weekly")
       setCustomTemplates(loadReportTemplates().map(normalizeTemplate))
     }
-  }, [open])
+  }, [open, initialCategory])
 
-  const officialTemplates = category === "custom" ? [] : TEMPLATES_BY_CATEGORY[category as "weekly" | "monthly" | "quarterly" | "other"]
+  const officialTemplates = category === "custom" ? [] : TEMPLATES_BY_CATEGORY[category]
 
   function handleUseOfficialTemplate(template: ReportTemplate) {
     if (template.id === "weekly-track-curve" || template.id === "weekly-track-holdings") {
       setWeeklyVariant(template.id === "weekly-track-holdings" ? "holdings" : "curve")
+      setWeeklyReportKind(category === "holding" ? "holding" : "weekly")
       setStep("fof-weekly")
       return
     }
@@ -241,6 +252,12 @@ export function NewReportDialog({
     }
     if (template.id === "monthly-fund-official") {
       setStep("fund-official-monthly")
+      return
+    }
+    if (template.id === "monthly-track-holdings") {
+      setWeeklyVariant("holdings")
+      setWeeklyReportKind("monthly")
+      setStep("fof-weekly")
       return
     }
     if (template.id === "quarterly-institutional") {
@@ -322,18 +339,11 @@ export function NewReportDialog({
                       </div>
                     )}
                   </>
-                ) : category === "other" ? (
-                  <>
-                    <p className="mb-5 text-sm text-zinc-400">联系客服，提交自定义模板。</p>
-                    <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-                      暂无模板
-                    </div>
-                  </>
                 ) : (
                   <div
                     className={[
                       "grid grid-cols-1 gap-4 sm:grid-cols-2",
-                      // Monthly has 4 official templates — keep 2x2 so the 4th isn't clipped below the fold.
+                      // Monthly has 5 official templates; 2 columns keeps cards readable and the list scrollable.
                       category === "monthly" ? "lg:grid-cols-2" : "lg:grid-cols-3",
                     ].join(" ")}
                   >
@@ -356,8 +366,10 @@ export function NewReportDialog({
             embedded
             open={open}
             variant={weeklyVariant}
+            reportKind={weeklyReportKind}
             onClose={onClose}
             onBack={() => setStep("pick")}
+            onSaved={() => onCustomReportSaved?.()}
           />
         )}
         {step === "fof-monthly" && (
@@ -367,16 +379,17 @@ export function NewReportDialog({
             layout={monthlyLayout}
             onClose={onClose}
             onBack={() => setStep("pick")}
+            onSaved={() => onCustomReportSaved?.()}
           />
         )}
         {step === "product-monthly" && (
-          <ProductMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+          <ProductMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} onSaved={() => onCustomReportSaved?.()} />
         )}
         {step === "fund-official-monthly" && (
-          <FundOfficialMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+          <FundOfficialMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} onSaved={() => onCustomReportSaved?.()} />
         )}
         {step === "product-quarterly" && (
-          <ProductQuarterlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+          <ProductQuarterlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} onSaved={() => onCustomReportSaved?.()} />
         )}
         {step === "custom-report" && selectedCustom && (
           <CustomReportGenerateDialog

@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { recordGeneratedOfficialReport } from "@/lib/ma/custom-report-storage"
 import { DateInput } from "@/components/ui/date-input"
 
 type ProductSource = "managed" | "private" | "custom_fund"
@@ -226,11 +227,13 @@ export function ProductQuarterlyReportDialog({
   onClose,
   onBack,
   embedded = false,
+  onSaved,
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
+  onSaved?: () => void
 }) {
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
@@ -337,7 +340,24 @@ export function ProductQuarterlyReportDialog({
       })
       const json = await resp.json()
       if (!resp.ok) throw new Error(json.error || "报告生成失败")
-      setResult(json as GenerateResult)
+      const next = json as GenerateResult
+      setResult(next)
+      recordGeneratedOfficialReport({
+        title: next.reportTitle || productName.trim(),
+        templateId: "quarterly-institutional",
+        templateName: "机构投资者持有期季报",
+        source: "product_quarterly_generate",
+        typeLabel: "季报",
+        download: next.download,
+        reportJobId: next.reportId,
+        inputValues: {
+          product_name: productName.trim(),
+          beian_hao: beianHao || "",
+          period_begin: periodBegin,
+          period_end: periodEnd,
+        },
+      })
+      onSaved?.()
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {

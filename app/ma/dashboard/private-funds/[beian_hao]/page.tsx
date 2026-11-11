@@ -49,6 +49,12 @@ import { NavChartSeriesLegend, NavPerformanceEChart } from "./components/NavPerf
 import { DrawdownSeriesLegend, DynamicDrawdownChart } from "./components/DynamicDrawdownChart"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { createFundCompareHref } from "@/lib/ma-product-selection-actions"
+import {
+  DEFAULT_NAV_TYPE,
+  NAV_TYPE_OPTIONS,
+  readPreferredNavType,
+  writePreferredNavType,
+} from "@/lib/ma/nav-type-preference"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -1067,7 +1073,7 @@ export default function PrivateFundDetailPage() {
   const [filterPeriod,   setFilterPeriod]   = useState<string>("成立以来")
   const [filterFrom,     setFilterFrom]     = useState<string>("")
   const [filterTo,       setFilterTo]       = useState<string>("")
-  const [filterNavType,  setFilterNavType]  = useState<string>("复权净值")
+  const [filterNavType,  setFilterNavType]  = useState<string>(DEFAULT_NAV_TYPE)
   const [filterFreq,     setFilterFreq]     = useState<string>("全部")
   const [filterBench,    setFilterBench]    = useState<string>("")
   // Applied values (only updated on 开始分析)
@@ -1080,6 +1086,11 @@ export default function PrivateFundDetailPage() {
   const [excessByDivision, setExcessByDivision] = useState(false)
   const [intervalExcess, setIntervalExcess] = useState(false)
   const [headlineRiskFreq, setHeadlineRiskFreq] = useState<HeadlineRiskFrequency>("日频")
+
+  // Restore a saved 净值类型 after mount (SSR stays on 复权净值 to avoid hydration mismatch).
+  useEffect(() => {
+    setFilterNavType(readPreferredNavType())
+  }, [])
 
   // When 净值频率 is applied as 日/周/月, drive header DD/Sharpe from the same series.
   useEffect(() => {
@@ -1277,7 +1288,7 @@ export default function PrivateFundDetailPage() {
     setFilterPeriod(period)
     setFilterFrom(range.from)
     setFilterTo(range.to)
-    setFilterNavType("复权净值")
+    setFilterNavType(DEFAULT_NAV_TYPE)
     setFilterFreq("全部")
     setFilterBench(benchmarkKey)
     setAppliedFrom("")
@@ -2146,10 +2157,14 @@ export default function PrivateFundDetailPage() {
           <span className="text-zinc-500 whitespace-nowrap">净值类型：</span>
           <select
             value={filterNavType}
-            onChange={e => setFilterNavType(e.target.value)}
+            onChange={e => {
+              const next = e.target.value
+              setFilterNavType(next)
+              writePreferredNavType(next)
+            }}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
           >
-            {["复权净值", "单位净值", "累计净值"].map(o => <option key={o}>{o}</option>)}
+            {NAV_TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}
           </select>
         </div>
 

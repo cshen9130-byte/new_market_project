@@ -36,7 +36,9 @@ import {
   type AccountDensity,
   type AccountLanding,
   type AccountTheme,
+  type AccountWeeklyReportTemplate,
 } from "@/lib/ma/account-dashboard"
+import { AUTO_WEEKLY_TEMPLATE_OPTIONS } from "@/lib/ma/auto-weekly-templates"
 import { cn } from "@/lib/utils"
 
 type SaveState = "idle" | "saving" | "saved" | "error"
@@ -56,6 +58,9 @@ const LANDING_OPTIONS: Array<{ id: AccountLanding; label: string }> = [
   { id: "overview", label: "系统总览" },
   { id: "account", label: "我的看板" },
 ]
+
+const WEEKLY_REPORT_TEMPLATE_OPTIONS: Array<{ id: AccountWeeklyReportTemplate; label: string }> =
+  AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item) => ({ id: item.id, label: item.shortName }))
 
 const COLUMN_OPTIONS: AccountBoardColumns[] = [1, 2, 3, 4]
 
@@ -1006,6 +1011,15 @@ export default function AccountDashboardPage() {
               options={LANDING_OPTIONS}
               onChange={(landing) => patch({ landing })}
             />
+            <section className="max-w-xl space-y-2">
+              <ChoiceGroup
+                label="产品周报默认模板"
+                value={prefs.weeklyReportTemplate}
+                options={WEEKLY_REPORT_TEMPLATE_OPTIONS}
+                onChange={(weeklyReportTemplate) => patch({ weeklyReportTemplate })}
+              />
+              <p className="text-xs text-muted-foreground">打开「产品周报 → 团队报告」时默认显示的版本，只影响当前账号。</p>
+            </section>
           </TabsContent>
 
           <TabsContent value="account" className="mt-4">
@@ -1040,6 +1054,18 @@ export default function AccountDashboardPage() {
                   <NotificationSettingsPanel />
                 ) : (
                   <div className="space-y-6">
+            <section className="space-y-4 rounded-lg border p-5">
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold">产品周报默认模板</h2>
+                <p className="text-xs text-muted-foreground">打开「产品周报 → 团队报告」时默认显示的版本，只影响当前账号，可随时在这里或报告页切换。</p>
+              </div>
+              <ChoiceGroup
+                label="默认显示"
+                value={prefs.weeklyReportTemplate}
+                options={WEEKLY_REPORT_TEMPLATE_OPTIONS}
+                onChange={(weeklyReportTemplate) => patch({ weeklyReportTemplate })}
+              />
+            </section>
             <AccountShortcutsCard
               user={user}
               shortcuts={prefs.shortcuts}
