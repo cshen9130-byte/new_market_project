@@ -87,6 +87,17 @@ const MIGRATE_NAV_COLUMNS = [
      ON ops_managed_fof_underlying (fof_product_name)`,
 ]
 
+/** Drop older valuation snapshots so each managed FOF keeps only its latest date.
+ *  A full refresh can race a product-code refresh and leave two dates in the table. */
+const SQL_DELETE_STALE_MANAGED_FOF_VALUATION_DATES = `
+  DELETE FROM ops_managed_fof_underlying m
+  WHERE m.valuation_date < (
+    SELECT MAX(m2.valuation_date)
+    FROM ops_managed_fof_underlying m2
+    WHERE m2.managed_product_id = m.managed_product_id
+  )
+`
+
 let tableEnsured = false
 let managedFofUnderlyingRefreshInFlight: Promise<number> | null = null
 
@@ -149,10 +160,19 @@ async function refreshManagedFofUnderlyingForProductCodes(
     await txQuery(`SET LOCAL statement_timeout = 0`)
     await txQuery(
       `DELETE FROM ops_managed_fof_underlying
-       WHERE UPPER(BTRIM(fof_product_code)) = ANY($1::text[])`,
-      [productCodes],
+       WHERE UPPER(BTRIM(fof_product_code)) = ANY($1::text[])
+          OR managed_product_id IN (
+            SELECT m.id
+            FROM managed_products m
+            INNER JOIN ops_email_valuation_records r
+              ON UPPER(BTRIM(r.product_code)) = ANY($1::text[])
+             AND ${fundMatch}
+            WHERE m.product_name <> '合计'
+              AND m.product_name NOT ILIKE $2
+          )`,
+      [productCodes, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
     )
-    return txQuery<{ n: string }>(
+    const insertedRows = await txQuery<{ n: string }>(
     `WITH latest_valuation AS (
        SELECT DISTINCT ON (m.id)
          m.id AS managed_product_id,
@@ -221,6 +241,8 @@ async function refreshManagedFofUnderlyingForProductCodes(
      SELECT COUNT(*)::text AS n FROM inserted`,
       [productCodes, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
     )
+    await txQuery(SQL_DELETE_STALE_MANAGED_FOF_VALUATION_DATES)
+    return insertedRows
   })
 
   const inserted = parseInt(rows[0]?.n ?? "0", 10)
@@ -375,6 +397,7 @@ export async function refreshManagedFofUnderlying(
     if (n === 0) {
       throw new Error("managed FOF underlying refresh inserted 0 rows; keeping previous snapshot")
     }
+    await txQuery(SQL_DELETE_STALE_MANAGED_FOF_VALUATION_DATES)
     return n
   })
 
@@ -1898,6 +1921,11 @@ export function managedUnderlyingMarketValueExpr(
     FROM ops_managed_fof_underlying mv
     WHERE COALESCE(mv.market_value, 0) > 0
       AND ${match}
+      AND mv.valuation_date = (
+        SELECT MAX(latest.valuation_date)
+        FROM ops_managed_fof_underlying latest
+        WHERE latest.managed_product_id = mv.managed_product_id
+      )
   )`
 }
 
@@ -1933,6 +1961,9 @@ export async function listUnderlyingHoldings(options: {
   const productName = options.productName.trim()
   const matchSql = managedUnderlyingMatchParamsSql("$1", "$2")
 
+  // Keep one row per FOF, from that product's latest valuation date only.
+  // The snapshot table is meant to hold just the latest date, but a full refresh
+  // can race a product-code refresh and leave an older date alongside the new one.
   const rows = await query<{
     id: string
     fof_product_name: string
@@ -1941,7 +1972,14 @@ export async function listUnderlyingHoldings(options: {
     market_value: string | null
     market_weight: string | null
   }>(
-    `SELECT
+    `WITH latest_holding AS (
+       SELECT managed_product_id, MAX(valuation_date) AS valuation_date
+       FROM ops_managed_fof_underlying
+       WHERE COALESCE(market_value, 0) > 0
+         AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}
+       GROUP BY managed_product_id
+     )
+     SELECT
        MIN(m.id)::text AS id,
        m.fof_product_name,
        m.valuation_date,
@@ -1949,6 +1987,9 @@ export async function listUnderlyingHoldings(options: {
        SUM(m.market_value)::text AS market_value,
        SUM(m.market_weight)::text AS market_weight
      FROM ops_managed_fof_underlying m
+     INNER JOIN latest_holding lh
+       ON lh.managed_product_id = m.managed_product_id
+      AND lh.valuation_date = m.valuation_date
      WHERE COALESCE(m.market_value, 0) > 0
        AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}
        AND ${matchSql}
