@@ -46,7 +46,7 @@ HEADER_COLUMNS = [
 ]
 
 TEXT_MAX_PAGES = 80
-OCR_MAX_PAGES = 10
+OCR_MAX_PAGES = 60
 MAX_IMAGE_WIDTH = 1400
 MAX_IMAGE_HEIGHT = 16000
 PREVIEW_ROWS = 12
@@ -212,12 +212,14 @@ def write_workbook(
 ) -> list[dict[str, object]]:
     sheets: list[dict[str, object]] = []
     used = {"概要"}
-    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+    tmp_path = xlsx_path.with_suffix(xlsx_path.suffix + ".tmp")
+    with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
         pd.DataFrame(meta_rows, columns=["字段", "值"]).to_excel(writer, sheet_name="概要", index=False)
         for name, frame in frames:
             sheet_name = unique_sheet_name(name, used)
             frame.to_excel(writer, sheet_name=sheet_name, index=False)
             sheets.append(frame_payload(sheet_name, frame))
+    tmp_path.replace(xlsx_path)
     return sheets
 
 
@@ -785,16 +787,43 @@ def page_to_rgb(doc: fitz.Document, page: fitz.Page) -> np.ndarray:
     return image
 
 
-def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, object]:
+
+def checkpoint_payload(
+    xlsx_path: Path,
+    meta: list[tuple[str, str]],
+    frames: list[tuple[str, pd.DataFrame]],
+    warnings: list[str],
+    page_total: int,
+) -> dict[str, object]:
+    sheets = write_workbook(xlsx_path, meta, frames)
+    return {
+        "detectedMode": "performance",
+        "method": "ocr",
+        "pageCount": page_total,
+        "meta": [{"field": field, "value": value} for field, value in meta],
+        "sheets": sheets,
+        "warnings": warnings,
+    }
+
+
+def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path, page_start: int | None = None, page_end: int | None = None, on_checkpoint=None) -> dict[str, object]:
     rapid_ocr = require_ocr()
     report(8, "正在加载识别模型")
     engine = rapid_ocr(params={"Global.log_level": "error", "Det.unclip_ratio": 1.15})
     fallback = None
     warnings = ["业绩表由截图 OCR 识别，百分比正负号请核对。"]
     page_total = doc.page_count
-    page_limit = min(page_total, OCR_MAX_PAGES)
-    if page_total > OCR_MAX_PAGES:
-        warnings.append(f"业绩截图仅处理前 {OCR_MAX_PAGES} 页。")
+    start = max(0, min(page_total, page_start or 0))
+    end = page_total if page_end is None else min(page_total, page_end)
+    if end < start:
+        end = start
+    selected = list(range(start, end))
+    if len(selected) > OCR_MAX_PAGES:
+        warnings.append(f"页数较多，已按顺序处理前 {OCR_MAX_PAGES} 页（共 {len(selected)} 页）。")
+        selected = selected[:OCR_MAX_PAGES]
+    page_limit = len(selected)
+    if not selected:
+        raise RuntimeError("PDF 没有可识别的页面。")
 
     frames: list[tuple[str, pd.DataFrame]] = []
     meta: list[tuple[str, str]] = [
@@ -802,8 +831,9 @@ def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, ob
         ("识别方式", "截图 OCR"),
         ("页数", str(page_total)),
     ]
-    for page_index in range(page_limit):
-        log(f"page {page_index + 1}/{page_limit}")
+    for offset, page_index in enumerate(selected):
+        log(f"page {page_index + 1}/{page_total}")
+        report(12 + (80 / max(page_limit, 1)) * offset, f"第 {page_index + 1}/{page_total} 页，正在准备图片")
         image = page_to_rgb(doc, doc[page_index])
         full_width = image.shape[1]
         image, shrunk = limit_image(image)
@@ -819,32 +849,34 @@ def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, ob
             *,
             phase: str = "first",
             page_index: int = page_index,
+            offset: int = offset,
             page_limit: int = page_limit,
+            page_total: int = page_total,
         ) -> None:
             span = 80 / max(page_limit, 1)
             # First pass uses the first 70% of this page. A retry continues
             # upward from there, so the bar does not sit still and then jump backward.
             if phase == "retry":
-                base = 12 + span * page_index + span * 0.7
+                base = 12 + span * offset + span * 0.7
                 width = span * 0.3
                 verb = "再识别"
             else:
-                base = 12 + span * page_index
+                base = 12 + span * offset
                 width = span * 0.7
                 verb = "识别"
             percent = base + width * (index / max(total, 1))
-            report(percent, f"第 {page_index + 1}/{page_limit} 页，{verb} {index}/{total} 段")
+            report(percent, f"第 {page_index + 1}/{page_total} 页，{verb} {index}/{total} 段")
 
         frame = None
         notes: list[str] = []
         try:
             boxes = ocr_image(engine, image, on_strip, gap)
-            report(12 + (80 / max(page_limit, 1)) * (page_index + 0.7), f"第 {page_index + 1}/{page_limit} 页，正在整理表格")
+            report(12 + (80 / max(page_limit, 1)) * (offset + 0.7), f"第 {page_index + 1}/{page_total} 页，正在整理表格")
             frame, notes = page_to_frame(image, boxes, gap)
         except RuntimeError:
             frame = None
         if frame is None or needs_ocr_retry(frame):
-            report(12 + (80 / max(page_limit, 1)) * (page_index + 0.7), "表头不完整，正在再识别一次")
+            report(12 + (80 / max(page_limit, 1)) * (offset + 0.7), f"第 {page_index + 1}/{page_total} 页，表头不完整，正在再识别一次")
             if fallback is None:
                 fallback = rapid_ocr(params={"Global.log_level": "error", "Det.unclip_ratio": 1.05})
             try:
@@ -861,36 +893,40 @@ def convert_performance_ocr(doc: fitz.Document, xlsx_path: Path) -> dict[str, ob
         meta.append((f"第{page_index + 1}页", " / ".join(notes)[:500]))
         meta.append((f"{name}行数", str(len(frame))))
         log(f"  rows={len(frame)} sheet={name}")
+        remaining = page_limit - (offset + 1)
+        page_warnings = list(warnings)
+        if remaining:
+            page_warnings.append(f"已完成 {offset + 1}/{page_limit} 页，正在继续识别后续页面。")
+        report(12 + (80 / max(page_limit, 1)) * (offset + 1), f"第 {page_index + 1}/{page_total} 页已完成")
+        payload = checkpoint_payload(xlsx_path, meta, frames, page_warnings, page_total)
+        if on_checkpoint:
+            on_checkpoint(payload)
 
     if not frames:
         raise RuntimeError("未从业绩 PDF 中识别到表格。请确认页面包含基金简称、管理人和策略等表头。")
-    sheets = write_workbook(xlsx_path, meta, frames)
-    return {
-        "detectedMode": "performance",
-        "method": "ocr",
-        "pageCount": page_total,
-        "meta": [{"field": field, "value": value} for field, value in meta],
-        "sheets": sheets,
-        "warnings": warnings,
-    }
+    report(96, "正在写入 Excel")
+    payload = checkpoint_payload(xlsx_path, meta, frames, warnings, page_total)
+    if on_checkpoint:
+        on_checkpoint(payload)
+    return payload
 
 
-def convert_performance(doc: fitz.Document, xlsx_path: Path) -> dict[str, object]:
+def convert_performance(doc: fitz.Document, xlsx_path: Path, page_start: int | None = None, page_end: int | None = None, on_checkpoint=None) -> dict[str, object]:
     if looks_like_screenshot(doc):
-        return convert_performance_ocr(doc, xlsx_path)
+        return convert_performance_ocr(doc, xlsx_path, page_start, page_end, on_checkpoint)
     report(12, "正在读取文字表格")
     rows, truncated = extract_rows(doc, TEXT_MAX_PAGES)
     if any(is_performance_header(row) for row in rows):
         return convert_text_tables(doc, xlsx_path, rows, truncated, "performance")
     if any(page_has_images(page) for page in doc):
-        return convert_performance_ocr(doc, xlsx_path)
+        return convert_performance_ocr(doc, xlsx_path, page_start, page_end, on_checkpoint)
     raise RuntimeError("未识别到业绩表。文字表需要管理人与基金简称/策略表头；截图 PDF 需要包含页面图片。")
 
 
-def convert_auto(doc: fitz.Document, xlsx_path: Path) -> dict[str, object]:
+def convert_auto(doc: fitz.Document, xlsx_path: Path, page_start: int | None = None, page_end: int | None = None, on_checkpoint=None) -> dict[str, object]:
     report(5, "正在判断 PDF 类型")
     if looks_like_screenshot(doc):
-        return convert_performance_ocr(doc, xlsx_path)
+        return convert_performance_ocr(doc, xlsx_path, page_start, page_end, on_checkpoint)
     report(12, "正在读取文字表格")
     rows, truncated = extract_rows(doc, TEXT_MAX_PAGES)
     if any(is_valuation_header(row) for row in rows):
@@ -900,11 +936,18 @@ def convert_auto(doc: fitz.Document, xlsx_path: Path) -> dict[str, object]:
     if rows and not looks_like_screenshot(doc):
         return convert_text_tables(doc, xlsx_path, rows, truncated, "valuation")
     if any(page_has_images(page) for page in doc):
-        return convert_performance_ocr(doc, xlsx_path)
+        return convert_performance_ocr(doc, xlsx_path, page_start, page_end, on_checkpoint)
     raise RuntimeError("未识别到可提取的表格。若这是业绩长图截图，请选择「业绩表」后重试。")
 
 
-def convert(pdf_path: Path, xlsx_path: Path, mode: str) -> dict[str, object]:
+def convert(
+    pdf_path: Path,
+    xlsx_path: Path,
+    mode: str,
+    page_start: int | None = None,
+    page_end: int | None = None,
+    on_checkpoint=None,
+) -> dict[str, object]:
     doc = fitz.open(pdf_path)
     try:
         if doc.needs_pass:
@@ -915,12 +958,18 @@ def convert(pdf_path: Path, xlsx_path: Path, mode: str) -> dict[str, object]:
             rows, truncated = extract_rows(doc, TEXT_MAX_PAGES)
             return convert_text_tables(doc, xlsx_path, rows, truncated, "valuation")
         if mode == "performance":
-            return convert_performance(doc, xlsx_path)
+            return convert_performance(doc, xlsx_path, page_start, page_end, on_checkpoint)
         if mode != "auto":
             raise RuntimeError("不支持的提取类型。")
-        return convert_auto(doc, xlsx_path)
+        return convert_auto(doc, xlsx_path, page_start, page_end, on_checkpoint)
     finally:
         doc.close()
+
+
+def write_summary(path: Path, summary: dict[str, object]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
 
 
 def main() -> int:
@@ -929,14 +978,29 @@ def main() -> int:
     parser.add_argument("xlsx")
     parser.add_argument("summary")
     parser.add_argument("--mode", choices=["auto", "valuation", "performance"], default="auto")
+    parser.add_argument("--page-from", type=int, default=None, help="1-based inclusive start page")
+    parser.add_argument("--page-to", type=int, default=None, help="1-based inclusive end page")
     args = parser.parse_args()
+    page_start = None if args.page_from is None else max(0, args.page_from - 1)
+    page_end = None if args.page_to is None else max(0, args.page_to)
+
+    def on_checkpoint(summary: dict[str, object]) -> None:
+        write_summary(Path(args.summary), summary)
+
     try:
-        summary = convert(Path(args.pdf), Path(args.xlsx), args.mode)
+        summary = convert(
+            Path(args.pdf),
+            Path(args.xlsx),
+            args.mode,
+            page_start=page_start,
+            page_end=page_end,
+            on_checkpoint=on_checkpoint,
+        )
     except Exception as exc:
         message = str(exc).strip() or "PDF 提取失败。"
         print(message, file=sys.stderr)
         return 1
-    Path(args.summary).write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    write_summary(Path(args.summary), summary)
     return 0
 
 

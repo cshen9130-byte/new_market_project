@@ -32,27 +32,41 @@ async function searchManagers(q: string, limit = 8): Promise<GlobalSearchManager
   const like = `%${q}%`
   const prefix = `${q}%`
   try {
+    // One AMAC registration number can appear in both amac_managers (legal name)
+    // and private_fund_managers_list (abbreviated name). Collapse to one row and
+    // prefer the official AMAC name, while ranking by the best alias match.
     return await query<GlobalSearchManager>(
       `SELECT registration_no, manager_name
        FROM (
-         SELECT registration_no, manager_name
-         FROM amac_managers
-         WHERE TRIM(COALESCE(manager_name, '')) <> ''
-           AND (manager_name ILIKE $1 OR registration_no ILIKE $1)
-         UNION
-         SELECT registration_no, manager_name
-         FROM private_fund_managers_list
-         WHERE TRIM(COALESCE(manager_name, '')) <> ''
-           AND TRIM(COALESCE(registration_no, '')) <> ''
-           AND (manager_name ILIKE $1 OR registration_no ILIKE $1)
-       ) t
+         SELECT
+           (ARRAY_AGG(TRIM(registration_no) ORDER BY src ASC, LENGTH(manager_name) DESC, manager_name))[1] AS registration_no,
+           (ARRAY_AGG(manager_name ORDER BY src ASC, LENGTH(manager_name) DESC, manager_name))[1] AS manager_name,
+           MIN(
+             CASE
+               WHEN TRIM(registration_no) ILIKE $2 THEN 0
+               WHEN manager_name ILIKE $2 THEN 1
+               ELSE 2
+             END
+           ) AS rank_score,
+           MIN(LENGTH(manager_name)) AS min_name_len
+         FROM (
+           SELECT registration_no, manager_name, 0 AS src
+           FROM amac_managers
+           WHERE TRIM(COALESCE(manager_name, '')) <> ''
+             AND TRIM(COALESCE(registration_no, '')) <> ''
+             AND (manager_name ILIKE $1 OR registration_no ILIKE $1)
+           UNION ALL
+           SELECT registration_no, manager_name, 1 AS src
+           FROM private_fund_managers_list
+           WHERE TRIM(COALESCE(manager_name, '')) <> ''
+             AND TRIM(COALESCE(registration_no, '')) <> ''
+             AND (manager_name ILIKE $1 OR registration_no ILIKE $1)
+         ) t
+         GROUP BY UPPER(TRIM(registration_no))
+       ) d
        ORDER BY
-         CASE
-           WHEN registration_no ILIKE $2 THEN 0
-           WHEN manager_name ILIKE $2 THEN 1
-           ELSE 2
-         END,
-         LENGTH(manager_name) ASC
+         rank_score,
+         min_name_len ASC
        LIMIT $3`,
       [like, prefix, limit],
     )

@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   Area,
   AreaChart,
@@ -27,7 +27,9 @@ import {
   X,
 } from "lucide-react"
 import { useAllWeatherCtpWatch } from "@/hooks/use-all-weather-ctp-watch"
+import { useAllWeatherLiveQuotes } from "@/hooks/use-all-weather-live-quotes"
 import { useCtpIndexFuturesFeed } from "@/hooks/use-ctp-index-futures-feed"
+import { overlaySinaQuote } from "@/lib/client/market-hours"
 import { authService } from "@/lib/auth"
 import type { CtpTick } from "@/lib/client/ctp-market"
 import { allWeatherFrozenMarks, allWeatherLiveBreakdown, allWeatherLiveMark } from "@/lib/client/all-weather-nav"
@@ -42,6 +44,7 @@ import {
   parseAllWeatherVariantId,
   type AllWeatherVariantId,
 } from "@/lib/all-weather/variants"
+import { AllWeatherIndexChart } from "@/components/all-weather/all-weather-index-chart"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -133,7 +136,7 @@ type Overview = {
     equity: number
     dailyPnl: number
     cumPnl: number
-    priceSource: "sina" | "snapshot"
+    priceSource: "sina" | "ctp" | "eastmoney" | "snapshot"
     pricesFetchedAt: string | null
     missingPrices: string[]
     lastRebalanceDate?: string | null
@@ -230,12 +233,50 @@ function liveMark(contract: string | undefined, quotes: Record<string, CtpTick>,
   return allWeatherLiveMark(contract, quotes, fallback)
 }
 
+function mergeAllWeatherQuotes(ctp: Record<string, CtpTick>, sina: Record<string, CtpTick>) {
+  const keys = new Set([...Object.keys(ctp), ...Object.keys(sina)])
+  const out: Record<string, CtpTick> = {}
+  for (const raw of keys) {
+    const key = raw.toUpperCase()
+    if (out[key]) continue
+    const merged = overlaySinaQuote(key, ctp[key] || ctp[raw], sina[key] || sina[raw])
+    if (merged) out[key] = merged
+  }
+  return out
+}
+
+function priceSourceLabel(source: string | null | undefined) {
+  if (source === "sina") return "新浪"
+  if (source === "ctp") return "CTP"
+  if (source === "eastmoney") return "东财"
+  return "回测快照"
+}
+
 const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
 const minutes = ["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"]
 
 export function AllWeatherApp() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-50" />}>
+      <AllWeatherPageContent />
+    </Suspense>
+  )
+}
+
+function AllWeatherPageContent() {
   const router = useRouter()
   const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const indexView = searchParams.get("view") === "index"
+
+  function setPageView(next: "paper" | "index") {
+    const params = new URLSearchParams(searchParams.toString())
+    if (next === "index") params.set("view", "index")
+    else params.delete("view")
+    const qs = params.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+  }
+
   const homeHref = pathname.startsWith("/ma/") ? "/ma/dashboard" : "/dashboard"
   const [authorized, setAuthorized] = useState<boolean | null>(null)
   const [canManage, setCanManage] = useState(false)
@@ -265,6 +306,7 @@ export function AllWeatherApp() {
   const extraFileInputRef = useRef<HTMLInputElement>(null)
   useAllWeatherCtpWatch(authorized === true)
   const ctp = useCtpIndexFuturesFeed()
+  const sinaQuotes = useAllWeatherLiveQuotes(authorized === true, variantId)
   const frozenMarksRef = useRef<Record<string, number>>({})
   const bookFingerprintRef = useRef("")
 
@@ -472,7 +514,7 @@ export function AllWeatherApp() {
 
   const live = useMemo(() => {
     if (!overview) return null
-    const quotes = ctp.quotes
+    const quotes = mergeAllWeatherQuotes(ctp.quotes, sinaQuotes.quotes)
     const rows = overview.book.positions.map((p) => ({
       symbol: p.contract,
       lots: p.lots,
@@ -521,7 +563,7 @@ export function AllWeatherApp() {
       }
     }
     return { ...breakdown, liveCount, marksByAsset }
-  }, [overview, ctp.quotes])
+  }, [overview, ctp.quotes, sinaQuotes.quotes])
 
   const sleeves = useMemo(() => {
     if (!overview) return []
@@ -655,13 +697,37 @@ export function AllWeatherApp() {
           <div className="flex items-center gap-3">
             <CloudSun className="h-6 w-6 text-amber-600" />
             <div>
-              <div className="text-lg font-semibold">全天候策略跟踪</div>
+              <div className="text-lg font-semibold">{indexView ? "全天候指数" : "全天候策略跟踪"}</div>
               <div className="text-xs text-slate-500">
-                四袖套等权 25 · 风险预算浮动 10%–40% · 模拟实盘 {formatCapitalWan(headerCapital)} · 波动目标 {volLabel(headerVol)}
+                {indexView
+                  ? "CI011001.WI 重建 · 国泰海通全天候指数"
+                  : `四袖套等权 25 · 风险预算浮动 10%–40% · 模拟实盘 ${formatCapitalWan(headerCapital)} · 波动目标 ${volLabel(headerVol)}`}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="mr-1 flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+              {([
+                { id: "paper" as const, label: "策略跟踪" },
+                { id: "index" as const, label: "全天候指数" },
+              ]).map((item) => {
+                const active = item.id === "index" ? indexView : !indexView
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setPageView(item.id)}
+                    className={`rounded px-2.5 py-1 text-xs ${
+                      active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                )
+              })}
+            </div>
+            {!indexView && (
+            <>
             <div className="mr-1 flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
               {ALL_WEATHER_VARIANTS.map((item) => {
                 const active = variantId === item.id
@@ -707,6 +773,8 @@ export function AllWeatherApp() {
               {loading ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-1 h-4 w-4" />}
               刷新行情
             </Button>
+            </>
+            )}
             <Button variant="ghost" size="sm" onClick={() => router.push(homeHref)}>
               <ArrowLeft className="mr-1 h-4 w-4" />
               返回
@@ -715,7 +783,11 @@ export function AllWeatherApp() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6">
+      <main className={indexView ? "mx-auto max-w-7xl px-4 py-6" : "mx-auto max-w-7xl space-y-6 px-4 py-6"}>
+        {indexView ? (
+          <AllWeatherIndexChart />
+        ) : (
+        <>
         {error && (
           <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>
         )}
@@ -737,7 +809,7 @@ export function AllWeatherApp() {
                 hint={`自 ${overview.book.startedAt} 起跟踪`}
                 className={pnlClass(sleeveTotals.cum)}
               />
-              <Kpi title="保证金占用" value={`${yuan(overview.totals.margin)}  ·  ${pct(overview.totals.marginUtil)}`} hint={`开仓 ${overview.totals.lots} 手 · ${(overview.settings?.contractTenor ?? "current") === "following" ? "下季/次主力" : "当月/主力"} · 行情 ${overview.book.priceSource === "sina" ? "新浪" : "回测快照"}`} />
+              <Kpi title="保证金占用" value={`${yuan(overview.totals.margin)}  ·  ${pct(overview.totals.marginUtil)}`} hint={`开仓 ${overview.totals.lots} 手 · ${(overview.settings?.contractTenor ?? "current") === "following" ? "下季/次主力" : "当月/主力"} · 行情 ${priceSourceLabel(overview.book.priceSource)}`} />
             </section>
 
             <Card className="border-slate-200 bg-white p-5 shadow-sm">
@@ -1229,6 +1301,8 @@ export function AllWeatherApp() {
               ) : null}
             </Tabs>
           </>
+        )}
+        </>
         )}
       </main>
     </div>

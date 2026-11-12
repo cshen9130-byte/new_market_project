@@ -48,6 +48,7 @@ import {
   OPS_MANAGED_FIELD_DEFAULT,
   OPS_FOF_FIELD_DEFAULT,
   PRODUCT_FIELD_DEFAULT,
+  combinePerfFeeText,
   readProductFieldConfig,
   writeProductFieldConfig,
 } from "@/lib/ma/product-field-config"
@@ -9802,7 +9803,7 @@ function OpsEditElementsDialog({
         setLockPeriodDesc(d.lock_period_desc ?? "")
         setFeeManageRate(d.fee_manage_rate ?? "")
         setFeeManageDesc(d.fee_manage ?? "")
-        setFeePayDesc(d.fee_pay ?? "")
+        setFeePayDesc(combinePerfFeeText(d.fee_pay, d.fee_pay_formula) ?? "")
         setRiskLevel(d.risk_level ?? "")
         setAddAmount(d.add_amount ?? "")
         if (d.fee_pay_formula_config?.mode) {
@@ -10135,8 +10136,8 @@ function OpsEditElementsDialog({
                   <input value={feeManageDesc} onChange={(e) => setFeeManageDesc(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
                 </div>
                 <div className="flex items-start gap-3">
-                  <OpsElementsFieldLabel className="pt-1.5">业绩报酬说明：</OpsElementsFieldLabel>
-                  <textarea value={feePayDesc} onChange={(e) => setFeePayDesc(e.target.value)} rows={3} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
+                  <OpsElementsFieldLabel className="pt-1.5">业绩报酬：</OpsElementsFieldLabel>
+                  <textarea value={feePayDesc} onChange={(e) => setFeePayDesc(e.target.value)} rows={6} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring resize-y" />
                 </div>
               </div>
               <div className="space-y-3">
@@ -10211,7 +10212,7 @@ function OpsEditElementsDialog({
                 </div>
               </div>
               <div className="col-span-2 pt-2 border-t mt-1">
-                <p className="text-sm text-zinc-600 mb-3">业绩报酬公式</p>
+                <p className="text-sm text-zinc-600 mb-3">业绩报酬计提方式</p>
                 <div className="space-y-2 text-sm">
                   {([
                     ["none", "无"],

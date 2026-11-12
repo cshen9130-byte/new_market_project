@@ -5,6 +5,7 @@ import {
   type PrivateFundBenchmarkOption,
 } from "@/lib/ma/private-fund-benchmark-options"
 import { loadCcidxCommodityIndexPrices } from "@/lib/server/ccidx-commodity-index"
+import { loadCi011001RebuildPrices } from "@/lib/server/ci011001-rebuild"
 
 type LoadableBenchmark = Exclude<PrivateFundBenchmarkOption, { key: "" }>
 
@@ -72,6 +73,13 @@ export async function loadPrivateFundBenchmarkSeries(
       data: rows
         .map((row) => ({ date: fmtIso(row.trade_date), value: n(row.close) }))
         .filter((row): row is { date: string; value: number } => row.value !== null),
+    }
+  }
+
+  if (meta.source === "ci011001_rebuild") {
+    return {
+      label: meta.label,
+      data: await loadCi011001RebuildPrices(from, to),
     }
   }
 

@@ -22,6 +22,7 @@ export const PRIVATE_FUND_BENCHMARK_OPTIONS = [
   { key: "H00300.CSI", label: "沪深300全收益", source: "ashare", tsCode: "H00300.CSI" },
   { key: "NHCI.NH", label: "南华商品指数", source: "nanhua", code: "NHCI.NH" },
   { key: "100001.CCI", label: "中证商品指数", source: "ccidx" },
+  { key: "CI011001.REBUILD", label: "全天候指数", source: "ci011001_rebuild" },
   { key: "511010.SH", label: "国债ETF", source: "etf", ticker: "511010.SH" },
   { key: "518880.SH", label: "黄金ETF", source: "etf", ticker: "518880.SH" },
 ] as const

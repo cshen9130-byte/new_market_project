@@ -75,7 +75,7 @@ const COLUMN_DEFS: { key: ColumnKey; label: string; defaultVisible: boolean; sor
   { key: "nav_frequency", label: "净值频率", defaultVisible: true },
   { key: "nav_source", label: "净值来源", defaultVisible: true },
   { key: "expected_ann_vol", label: "预期年化波动率", defaultVisible: true },
-  { key: "performance_fee_formula", label: "业绩报酬公式", defaultVisible: true },
+  { key: "performance_fee_formula", label: "业绩报酬", defaultVisible: true },
   { key: "fund_alias", label: "基金别名", defaultVisible: true },
   { key: "remark", label: "备注", defaultVisible: true },
 ]

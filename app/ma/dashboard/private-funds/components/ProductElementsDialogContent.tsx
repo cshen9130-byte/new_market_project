@@ -2,6 +2,7 @@
 
 import { formatTemporaryOpen } from "@/lib/ma/fund-elements-extra"
 import {
+  combinePerfFeeText,
   formatBareFeeRate,
   summarizeManageFee,
   summarizeOpenDay,
@@ -132,8 +133,7 @@ export function ProductElementsDialogContent({ data }: { data: ProductElementsDa
           <Row2 l1="平仓线" v1={data.stop_line} l2="锁定期说明" v2={data.lock_period_desc} multiline />
           <Row2 l1="管理费率" v1={displayManageRate(data.fee_manage_rate, data.fee_manage)} l2="托管费" v2={displayFeeText(data.fee_trust)} />
           <Row2 l1="管理费说明" v1={displayManageDesc(data.fee_manage)} l2="外包费" v2={displayFeeText(data.fee_admin_service)} multiline />
-          <FullRow label="业绩报酬说明" value={displayFeeText(data.fee_pay)} />
-          <FullRow label="业绩报酬公式" value={data.fee_pay_formula} />
+          <FullRow label="业绩报酬" value={displayFeeText(combinePerfFeeText(data.fee_pay, data.fee_pay_formula))} />
         </tbody>
       </table>
     </>

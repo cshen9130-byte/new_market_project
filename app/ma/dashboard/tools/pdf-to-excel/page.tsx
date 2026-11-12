@@ -117,6 +117,7 @@ export default function PdfToExcelToolPage() {
   const [progressValue, setProgressValue] = useState(0)
   const [progressMessage, setProgressMessage] = useState("")
   const [elapsedSec, setElapsedSec] = useState(0)
+  const [convertError, setConvertError] = useState("")
 
   const activeSheet = result?.sheets[sheetIndex] ?? result?.sheets[0]
   const shownProgress = result ? 100 : progressValue
@@ -138,6 +139,9 @@ export default function PdfToExcelToolPage() {
     }
     setPendingFile(file)
     setResult(null)
+    setConvertError("")
+    setProgressValue(0)
+    setProgressMessage("")
     setSheetIndex(0)
   }
 
@@ -151,6 +155,7 @@ export default function PdfToExcelToolPage() {
     setProgressMessage("正在上传")
     setElapsedSec(0)
     setResult(null)
+    setConvertError("")
     try {
       const formData = new FormData()
       formData.append("file", pendingFile)
@@ -172,11 +177,12 @@ export default function PdfToExcelToolPage() {
         description: summary.method === "ocr" ? "业绩截图已识别，下载前请核对百分比。" : "表格已提取，可以下载 Excel。",
       })
     } catch (error) {
-      setProgressValue(0)
-      setProgressMessage("")
+      const message = error instanceof Error ? error.message : "PDF 提取失败。"
+      setConvertError(message)
+      setProgressMessage(message)
       toast({
         title: "提取失败",
-        description: error instanceof Error ? error.message : "PDF 提取失败。",
+        description: message,
         variant: "destructive",
       })
     } finally {
@@ -220,6 +226,9 @@ export default function PdfToExcelToolPage() {
   function clearAll() {
     setPendingFile(null)
     setResult(null)
+    setConvertError("")
+    setProgressValue(0)
+    setProgressMessage("")
     setSheetIndex(0)
   }
 
@@ -242,8 +251,8 @@ export default function PdfToExcelToolPage() {
             <span>{isConverting ? `${shownProgress}% · ${formatElapsed(elapsedSec)}` : `${shownProgress}%`}</span>
           </div>
           <Progress value={shownProgress} />
-          <p className="text-xs text-muted-foreground">
-            {isConverting ? progressMessage || "正在识别" : result ? "提取完成" : "等待上传"}
+          <p className={`text-xs ${convertError && !isConverting && !result ? "text-destructive" : "text-muted-foreground"}`}>
+            {isConverting ? progressMessage || "正在识别" : result ? "提取完成" : convertError ? convertError : "等待上传"}
           </p>
         </div>
       </div>
@@ -344,7 +353,7 @@ export default function PdfToExcelToolPage() {
             </Button>
           </div>
           {isConverting && mode !== "valuation" ? (
-            <p className="text-sm text-muted-foreground">业绩长图会按段识别，进度会跟着往前走。页数多时可能要几分钟，请保持页面打开。</p>
+            <p className="text-sm text-muted-foreground">业绩长图会按段、按页识别，进度会跟着往前走。单页很长时也可能要十几分钟，请保持页面打开，无需拆分 PDF。</p>
           ) : null}
         </CardContent>
       </Card>

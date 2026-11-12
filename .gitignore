@@ -113,6 +113,7 @@ data/yinhe_settlement_email_config.json
 data/ops_crawl_emails.json
 data/ops_crawl_emails.json.bak
 data/ops_crawl_emails.json.tmp
+# Live 监控中心 passwords and import config; never commit. Production stores them in MARKET_DASHBOARD_STORAGE_DIR/account-risk/.
 data/account-risk/
 data/product-settlement/
 data/all-weather/

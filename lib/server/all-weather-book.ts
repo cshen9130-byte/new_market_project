@@ -17,7 +17,7 @@ import {
   variantEnforcesSleeveFloor,
   type AllWeatherVariantId,
 } from "@/lib/all-weather/variants"
-import { fetchLiveFuturesPrices, normalizeListedContract } from "@/lib/server/all-weather-prices"
+import { fetchLiveFuturesPrices, isLiveAllWeatherPriceSource, normalizeListedContract, type AllWeatherPriceSource } from "@/lib/server/all-weather-prices"
 import { isCffexContractExpired } from "@/lib/client/cffex-expiry"
 import { readAllWeatherSettings, type AllWeatherSettings } from "@/lib/server/all-weather-settings"
 
@@ -86,7 +86,7 @@ export type PaperBook = {
   equity: number
   dailyPnl: number
   cumPnl: number
-  priceSource: "sina" | "snapshot"
+  priceSource: AllWeatherPriceSource
   pricesFetchedAt: string | null
   missingPrices: string[]
   positions: BookPosition[]
@@ -103,7 +103,51 @@ function ensureDir(variantId: AllWeatherVariantId) {
 }
 
 function todayStamp(d = new Date()): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d)
+}
+
+function yesterdayStamp(d = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d)
+  const y = Number(parts.find((p) => p.type === "year")?.value)
+  const m = Number(parts.find((p) => p.type === "month")?.value)
+  const day = Number(parts.find((p) => p.type === "day")?.value)
+  const utc = Date.UTC(y, m - 1, day) - 24 * 60 * 60 * 1000
+  const prev = new Date(utc)
+  return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}-${String(prev.getUTCDate()).padStart(2, "0")}`
+}
+
+/** Live marks must cover held lots. Snapshot fallback is what made the production NAV chart jagged. */
+function usableLiveMarks(
+  quotes: { source: AllWeatherPriceSource; prices: Record<string, number>; missing: string[] },
+  existing: PaperBook | null,
+) {
+  if (!isLiveAllWeatherPriceSource(quotes.source)) return false
+  const held = (existing?.positions ?? []).filter((p) => (p.lots || 0) > 0)
+  if (!held.length) return Object.keys(quotes.prices).some((k) => quotes.prices[k] > 0)
+  const priced = held.filter((p) => quotes.prices[p.asset] != null && quotes.prices[p.asset] > 0).length
+  return priced >= Math.max(1, Math.ceil(held.length * 0.8))
+}
+
+function fillMissingFromBook(
+  prices: Record<string, number>,
+  existing: PaperBook | null,
+) {
+  if (!existing) return prices
+  const out = { ...prices }
+  for (const p of existing.positions) {
+    if ((out[p.asset] == null || !(out[p.asset] > 0)) && p.price > 0) out[p.asset] = p.price
+  }
+  return out
 }
 
 export function isMonthEndTradingDay(dateStr: string): boolean {
@@ -704,6 +748,18 @@ export async function refreshPaperBook(opts?: {
   const asOf = todayStamp()
   const enforceSleeveFloor = variantEnforcesSleeveFloor(variantId)
   const existing = opts?.reset ? null : readPaperBook(variantId)
+  // Never persist backtest-snapshot marks into book.daily. A failed Sina fetch
+  // was writing those prices, pinning NAV to a flat "magnet" then snapping back
+  // on the next live day — that is the jagged production 模拟净值 chart.
+  if (existing && !opts?.reset && !usableLiveMarks(quotes, existing)) {
+    console.error(
+      `[all-weather-book] skip write for ${variantId}: source=${quotes.source} missing=${quotes.missing.join(",") || "-"}`,
+    )
+    return toOverview(existing, variantId)
+  }
+  if (existing && quotes.missing.length) {
+    quotes.prices = fillMissingFromBook(quotes.prices, existing)
+  }
   const stale = existing && bookNeedsRebuild(existing, snapshot, settings.contractTenor, variantId)
 
   let book: PaperBook
@@ -803,14 +859,19 @@ export async function getOverview(
   const book = readPaperBook(id)
   const live = loadLiveStrategySnapshot(id)
   const settings = readAllWeatherSettings(id)
+  const today = todayStamp()
+  const oneDayBehind = Boolean(book && book.asOf < today && book.asOf >= yesterdayStamp())
   if (
     refresh ||
     !book ||
     book.positions.some((p) => !p.contract) ||
     bookNeedsRebuild(book, live, settings.contractTenor, id) ||
-    hasExpiredHeldContract(book.positions)
+    hasExpiredHeldContract(book.positions) ||
+    oneDayBehind
   ) {
     // Expired months roll via buildPositions + live calendar contracts (not initBook).
+    // A larger asOf gap is left alone so a failed multi-day catch-up cannot
+    // become one cliff on the NAV chart; backfill settlements first.
     return refreshPaperBook({ variantId: id })
   }
   return toOverview(book, id)

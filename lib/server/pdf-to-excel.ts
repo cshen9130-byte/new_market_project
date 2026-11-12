@@ -11,7 +11,8 @@ const execFileAsync = promisify(execFile)
 const SCRIPT_PATH = path.join(process.cwd(), "scripts", "ma", "pdf_to_excel.py")
 const STORE_DIR = path.join(os.tmpdir(), "ma-pdf-to-excel")
 const STORE_TTL_MS = 60 * 60 * 1000
-const PYTHON_TIMEOUT_MS = 10 * 60 * 1000
+const PYTHON_IDLE_TIMEOUT_MS = 8 * 60 * 1000
+const PYTHON_MAX_TIMEOUT_MS = 45 * 60 * 1000
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type PdfExcelMode = "auto" | "valuation" | "performance"
@@ -100,8 +101,10 @@ async function findPython(): Promise<PythonInvocation> {
 
 function pythonFailureMessage(error: unknown): string {
   const killed = Boolean((error as { killed?: boolean }).killed)
+  const messageText = error instanceof Error ? error.message : ""
+  if (messageText.includes("提取中断")) return messageText
   if (killed) {
-    return "提取超时。业绩截图页数较多时请拆分 PDF 后重试。"
+    return "提取中断：识别时间过长。长图业绩表会按页继续处理，请保持页面打开后重试；已识别的页面会尽量保留。"
   }
   const stderr = typeof (error as { stderr?: string }).stderr === "string" ? (error as { stderr: string }).stderr : ""
   const lines = stderr
@@ -155,6 +158,13 @@ export type PdfExcelProgress = {
   message: string
 }
 
+function timeoutErrorMessage(kind: "idle" | "max") {
+  if (kind === "idle") {
+    return "提取中断：较长时间没有新的进度，可能是某一页识别卡住了。请重试；已识别的页面会尽量保留。"
+  }
+  return "提取中断：已超过最长等待时间。长图业绩表无需拆分，请保持页面打开后重试；已识别的页面会尽量保留。"
+}
+
 function runPdfScript(
   python: PythonInvocation,
   args: string[],
@@ -167,27 +177,55 @@ function runPdfScript(
         ...process.env,
         PYTHONIOENCODING: "utf-8",
         PYTHONUTF8: "1",
+        PYTHONUNBUFFERED: "1",
       },
     })
     const decoder = new TextDecoder("utf-8")
     let pending = ""
     let errorLog = ""
-    const timer = setTimeout(() => {
-      child.kill()
-      reject(new Error("提取超时。业绩截图页数较多时请拆分 PDF 后重试。"))
-    }, PYTHON_TIMEOUT_MS)
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const startedAt = Date.now()
+
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (error) reject(error)
+      else resolve()
+    }
+
+    const armTimer = () => {
+      if (timer) clearTimeout(timer)
+      if (settled) return
+      const remainingTotal = PYTHON_MAX_TIMEOUT_MS - (Date.now() - startedAt)
+      if (remainingTotal <= 0) {
+        child.kill()
+        finish(new Error(timeoutErrorMessage("max")))
+        return
+      }
+      const kind: "idle" | "max" = remainingTotal <= PYTHON_IDLE_TIMEOUT_MS ? "max" : "idle"
+      timer = setTimeout(() => {
+        child.kill()
+        finish(new Error(timeoutErrorMessage(kind)))
+      }, Math.min(PYTHON_IDLE_TIMEOUT_MS, remainingTotal))
+    }
 
     const takeLine = (line: string) => {
       if (line.startsWith("PROGRESS\t")) {
         const parts = line.split("\t")
         const percent = Number(parts[1])
         const message = parts.slice(2).join("\t").trim()
-        if (Number.isFinite(percent)) onProgress?.({ percent, message })
+        if (Number.isFinite(percent)) {
+          armTimer()
+          onProgress?.({ percent, message })
+        }
         return
       }
       if (line.trim()) errorLog += `${line.trim()}\n`
     }
 
+    armTimer()
     child.stderr?.on("data", (chunk: Buffer) => {
       pending += decoder.decode(chunk, { stream: true })
       const lines = pending.split(/\r?\n/)
@@ -195,20 +233,35 @@ function runPdfScript(
       for (const line of lines) takeLine(line)
     })
     child.on("error", (error) => {
-      clearTimeout(timer)
-      reject(error)
+      finish(error)
     })
     child.on("close", (code) => {
-      clearTimeout(timer)
       if (pending.trim()) takeLine(pending)
       if (code === 0) {
-        resolve()
+        finish()
         return
       }
+      if (settled) return
       const message = errorLog.trim().split(/\n/).filter(Boolean).at(-1) || "PDF 提取失败。"
-      reject(Object.assign(new Error(message), { stderr: errorLog }))
+      finish(Object.assign(new Error(message), { stderr: errorLog }))
     })
   })
+}
+
+async function readPartialSummary(
+  xlsxPath: string,
+  summaryPath: string,
+): Promise<Omit<PdfExcelSummary, "sourceFileName" | "downloadId"> | null> {
+  try {
+    if (!existsSync(xlsxPath) || !existsSync(summaryPath)) return null
+    const summaryRaw = JSON.parse(await readFile(summaryPath, "utf8")) as unknown
+    if (!isSummary(summaryRaw) || !summaryRaw.sheets.length) return null
+    const info = await stat(xlsxPath)
+    if (!info.size) return null
+    return summaryRaw
+  } catch {
+    return null
+  }
 }
 
 export async function convertUploadedPdf(
@@ -228,26 +281,51 @@ export async function convertUploadedPdf(
   try {
     await writeFile(pdfPath, buffer)
     onProgress?.({ percent: 6, message: "正在打开 PDF" })
-    await runPdfScript(python, [SCRIPT_PATH, pdfPath, xlsxPath, summaryPath, "--mode", mode], onProgress)
-    const summaryRaw = JSON.parse(await readFile(summaryPath, "utf8")) as unknown
-    if (!isSummary(summaryRaw)) {
-      throw new Error("提取结果无法读取。")
+
+    const persistSummary = async (
+      summaryRaw: Omit<PdfExcelSummary, "sourceFileName" | "downloadId">,
+    ): Promise<PdfExcelSummary> => {
+      const xlsx = await readFile(xlsxPath)
+      await mkdir(STORE_DIR, { recursive: true })
+      await sweepStore()
+      const downloadId = randomUUID()
+      const downloadName = `${sanitizeBaseName(fileName)}.xlsx`
+      await writeFile(path.join(STORE_DIR, `${downloadId}.xlsx`), xlsx)
+      await writeFile(path.join(STORE_DIR, `${downloadId}.json`), JSON.stringify({ downloadName }), "utf8")
+      return {
+        ...summaryRaw,
+        sourceFileName: fileName,
+        downloadId,
+      }
     }
-    const xlsx = await readFile(xlsxPath)
-    await mkdir(STORE_DIR, { recursive: true })
-    await sweepStore()
-    const downloadId = randomUUID()
-    const downloadName = `${sanitizeBaseName(fileName)}.xlsx`
-    await writeFile(path.join(STORE_DIR, `${downloadId}.xlsx`), xlsx)
-    await writeFile(path.join(STORE_DIR, `${downloadId}.json`), JSON.stringify({ downloadName }), "utf8")
-    return {
-      ...summaryRaw,
-      sourceFileName: fileName,
-      downloadId,
+
+    try {
+      await runPdfScript(python, [SCRIPT_PATH, pdfPath, xlsxPath, summaryPath, "--mode", mode], onProgress)
+      const summaryRaw = JSON.parse(await readFile(summaryPath, "utf8")) as unknown
+      if (!isSummary(summaryRaw)) {
+        throw new Error("提取结果无法读取。")
+      }
+      return await persistSummary(summaryRaw)
+    } catch (error) {
+      const partial = await readPartialSummary(xlsxPath, summaryPath)
+      if (partial) {
+        const warning = "提取在全部页面完成前中断，已保留已识别的表格。请核对该结果，必要时再试一次。"
+        if (!partial.warnings.includes(warning)) partial.warnings = [...partial.warnings, warning]
+        console.warn("[pdf-to-excel] returning partial result after", error instanceof Error ? error.message : error)
+        onProgress?.({ percent: 96, message: "已保留已识别的页面，正在导出 Excel" })
+        return await persistSummary(partial)
+      }
+      if (error instanceof Error && error.message.startsWith("提取结果")) throw error
+      if (error instanceof Error && /PDF|提取|加密|未识别|未从|依赖|超时|中断/.test(error.message) && !("stderr" in (error as object))) {
+        throw error
+      }
+      const message = pythonFailureMessage(error)
+      console.error("[pdf-to-excel]", message)
+      throw new Error(message)
     }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("提取结果")) throw error
-    if (error instanceof Error && /PDF|提取|加密|未识别|未从|依赖|超时/.test(error.message) && !("stderr" in (error as object))) {
+    if (error instanceof Error && /PDF|提取|加密|未识别|未从|依赖|超时|中断/.test(error.message) && !("stderr" in (error as object))) {
       throw error
     }
     const message = pythonFailureMessage(error)

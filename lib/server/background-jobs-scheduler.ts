@@ -52,6 +52,14 @@ export async function registerBackgroundJobs(): Promise<void> {
     refreshAllWeatherBooksIfStale().catch((e) => console.error("[all-weather-book] daily refresh error:", e))
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
+  // Retry later in the session so a failed 09:35 Sina fetch cannot leave the
+  // book stuck. Failed refreshes no longer set asOf=today from snapshot prices.
+  for (const expr of ["5 10 * * 1-5", "5 13 * * 1-5", "5 15 * * 1-5"] as const) {
+    cron.schedule(expr, () => {
+      refreshAllWeatherBooksIfStale().catch((e) => console.error("[all-weather-book] daily refresh retry error:", e))
+    }, { timezone: "Asia/Shanghai" })
+  }
+
   // Dedicated 17:00 Beijing tick so a blocked FOF/cache minute does not drop
   // the whole CFMMC window. isDue still no-ops if the minute poll already ran it.
   cron.schedule("0 17 * * 1-5", () => {
@@ -335,6 +343,31 @@ cron.schedule("30 18 * * 1-5", () => {
       }
     })()
   })
+
+  // 05:15 Beijing: rebuild CI011001 all-weather index and upsert daily levels.
+  // Runs after 03:00 stock-market ETL so the 000300.SH splice is fresh.
+  cron.schedule("15 5 * * *", () => {
+    void (async () => {
+      try {
+        const { runScheduledCi011001RebuildEtl } = await import("./ci011001-rebuild-etl-job")
+        runScheduledCi011001RebuildEtl()
+      } catch (e) {
+        console.error("[ci011001-rebuild-etl] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
+  // Weekday 19:00 Beijing catch-up after afternoon futures / Nanhua prices land.
+  cron.schedule("0 19 * * 1-5", () => {
+    void (async () => {
+      try {
+        const { runScheduledCi011001RebuildEtl } = await import("./ci011001-rebuild-etl-job")
+        runScheduledCi011001RebuildEtl()
+      } catch (e) {
+        console.error("[ci011001-rebuild-etl] afternoon scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
   // Every 5 minutes: checkpoint poll mailboxes for new NAV / 估值表 mail.
   // Already-processed UIDs are skipped (empty polls should finish in seconds).

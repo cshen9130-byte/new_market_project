@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { CheckCircle2, FileSearch, FileText, Loader2, Pencil, PlusCircle, Upload, X } from "lucide-react"
 import { OperationsElementExtractBatchPanel } from "./OperationsElementExtractBatchPanel"
+import { combinePerfFeeText } from "@/lib/ma/product-field-config"
 
 type ExtractedFundElements = {
   fund_name: string | null
@@ -94,6 +95,14 @@ const SUBSCRIPTION_KEYS: ElementKey[] = [
   "fee_pay_formula",
 ]
 
+const SUBSCRIPTION_DISPLAY_KEYS: ElementKey[] = SUBSCRIPTION_KEYS.filter((key) => key !== "fee_pay_formula")
+
+function elementFieldValue(el: ExtractedFundElements | null | undefined, key: ElementKey): string | null {
+  if (!el) return null
+  if (key === "fee_pay") return combinePerfFeeText(el.fee_pay, el.fee_pay_formula)
+  return el[key]
+}
+
 const FIELD_LABELS: Record<ElementKey, string> = {
   fund_name: "产品全称",
   register_number: "备案编号",
@@ -114,7 +123,7 @@ const FIELD_LABELS: Record<ElementKey, string> = {
   fee_trust: "托管费",
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
-  fee_pay: "业绩报酬说明",
+  fee_pay: "业绩报酬",
   risk_level: "风险等级",
   lock_period_desc: "锁定期说明",
   fee_pay_formula: "业绩报酬公式",
@@ -187,7 +196,8 @@ function displayValue(value: string | null | undefined) {
 function buildDefaultSelection(extracted: ExtractedFundElements | null): Record<ElementKey, boolean> {
   const out = {} as Record<ElementKey, boolean>
   for (const key of BASIC_KEYS) out[key] = false
-  for (const key of SUBSCRIPTION_KEYS) out[key] = Boolean(extracted?.[key]?.trim())
+  for (const key of SUBSCRIPTION_DISPLAY_KEYS) out[key] = Boolean(elementFieldValue(extracted, key)?.trim())
+  out.fee_pay_formula = false
   return out
 }
 
@@ -210,7 +220,10 @@ function buildApplyPayload(job: ContractJob): Record<string, unknown> | null {
   }
   for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
     if (!job.selectedFields[key]) continue
-    const value = job.extracted[key]
+    if (key === "fee_pay_formula") continue
+    const value = key === "fee_pay"
+      ? elementFieldValue(job.extracted, key)
+      : job.extracted[key]
     if (!value?.trim()) continue
     if (key === "custodian") payload.custodian = value
     else payload[key] = value
@@ -696,7 +709,7 @@ function InstantExtractPanel() {
 
   function renderFieldTable(job: ContractJob, keys: ElementKey[], title: string) {
     const source = editingExtracted && editDraft ? editDraft : job.extracted
-    const selectableKeys = keys.filter((key) => source?.[key]?.trim())
+    const selectableKeys = keys.filter((key) => elementFieldValue(source, key)?.trim())
     const allSelected = selectableKeys.length > 0 && selectableKeys.every((key) => job.selectedFields[key])
 
     return (
@@ -733,8 +746,8 @@ function InstantExtractPanel() {
                 <FieldCompareRow
                   key={key}
                   fieldKey={key}
-                  extracted={source?.[key] ?? null}
-                  current={job.currentElements?.[key] ?? null}
+                  extracted={elementFieldValue(source, key)}
+                  current={elementFieldValue(job.currentElements, key)}
                   selected={job.selectedFields[key]}
                   onToggle={(checked) => toggleField(key, checked)}
                   editing={editingExtracted}
@@ -1103,7 +1116,7 @@ function InstantExtractPanel() {
             ) : (
               <>
                 {renderFieldTable(activeJob, BASIC_KEYS, "基本信息")}
-                {renderFieldTable(activeJob, SUBSCRIPTION_KEYS, "申赎信息")}
+                {renderFieldTable(activeJob, SUBSCRIPTION_DISPLAY_KEYS, "申赎信息")}
               </>
             )}
           </div>

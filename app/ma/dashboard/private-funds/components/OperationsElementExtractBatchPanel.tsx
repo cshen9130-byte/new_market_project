@@ -22,6 +22,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { combinePerfFeeText } from "@/lib/ma/product-field-config"
 
 type ExtractedFundElements = {
   fund_name: string | null
@@ -126,6 +127,14 @@ const SUBSCRIPTION_KEYS: ElementKey[] = [
   "fee_pay_formula",
 ]
 
+const SUBSCRIPTION_DISPLAY_KEYS: ElementKey[] = SUBSCRIPTION_KEYS.filter((key) => key !== "fee_pay_formula")
+
+function elementFieldValue(el: ExtractedFundElements | null | undefined, key: ElementKey): string | null {
+  if (!el) return null
+  if (key === "fee_pay") return combinePerfFeeText(el.fee_pay, el.fee_pay_formula)
+  return el[key]
+}
+
 const FIELD_LABELS: Record<ElementKey, string> = {
   fund_name: "产品全称",
   register_number: "备案编号",
@@ -146,7 +155,7 @@ const FIELD_LABELS: Record<ElementKey, string> = {
   fee_trust: "托管费",
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
-  fee_pay: "业绩报酬说明",
+  fee_pay: "业绩报酬",
   risk_level: "风险等级",
   lock_period_desc: "锁定期说明",
   fee_pay_formula: "业绩报酬公式",
@@ -358,9 +367,10 @@ function buildDefaultSelection(
 ): Record<ElementKey, boolean> {
   const out = {} as Record<ElementKey, boolean>
   for (const key of BASIC_KEYS) out[key] = false
-  for (const key of SUBSCRIPTION_KEYS) {
-    out[key] = status === "applied" ? false : Boolean(extracted?.[key]?.trim())
+  for (const key of SUBSCRIPTION_DISPLAY_KEYS) {
+    out[key] = status === "applied" ? false : Boolean(elementFieldValue(extracted, key)?.trim())
   }
+  out.fee_pay_formula = false
   return out
 }
 
@@ -796,11 +806,12 @@ export function OperationsElementExtractBatchPanel() {
       const saved = (json.data ?? {}) as ExtractJob
       const nextExtracted = saved.extracted_json ?? editDraft
       const nextSelected = { ...selectedFields }
-      for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
-        const hasValue = Boolean(nextExtracted[key]?.trim())
+      for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_DISPLAY_KEYS]) {
+        const hasValue = Boolean(elementFieldValue(nextExtracted, key)?.trim())
         if (!hasValue) nextSelected[key] = false
-        else if (!activeJob.extracted_json?.[key]?.trim()) nextSelected[key] = true
+        else if (!elementFieldValue(activeJob.extracted_json, key)?.trim()) nextSelected[key] = true
       }
+      nextSelected.fee_pay_formula = false
       skipSelectionResetRef.current = activeJob.id
       setJobs((prev) =>
         prev.map((job) =>
@@ -845,9 +856,9 @@ export function OperationsElementExtractBatchPanel() {
     const payload: Record<string, string | null> = {}
     const extracted = activeJob.extracted_json
     if (!extracted) return
-    for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
+    for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_DISPLAY_KEYS]) {
       if (!selectedFields[key]) continue
-      const value = extracted[key]
+      const value = key === "fee_pay" ? elementFieldValue(extracted, key) : extracted[key]
       if (!value?.trim()) continue
       payload[key] = value
     }
@@ -884,8 +895,8 @@ export function OperationsElementExtractBatchPanel() {
       return
     }
     const payload: Record<string, string | null> = {}
-    for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_KEYS]) {
-      const value = extracted[key]
+    for (const key of [...BASIC_KEYS, ...SUBSCRIPTION_DISPLAY_KEYS]) {
+      const value = key === "fee_pay" ? elementFieldValue(extracted, key) : extracted[key]
       if (!value?.trim()) continue
       payload[key] = value
     }
@@ -921,13 +932,13 @@ export function OperationsElementExtractBatchPanel() {
     }
   }
 
-  const selectedCount = [...BASIC_KEYS, ...SUBSCRIPTION_KEYS].filter(
-    (key) => selectedFields[key] && activeJob?.extracted_json?.[key]?.trim(),
+  const selectedCount = [...BASIC_KEYS, ...SUBSCRIPTION_DISPLAY_KEYS].filter(
+    (key) => selectedFields[key] && elementFieldValue(activeJob?.extracted_json, key)?.trim(),
   ).length
 
   function renderFieldTable(keys: ElementKey[], title: string) {
     const extracted = editingExtracted && editDraft ? editDraft : activeJob?.extracted_json
-    const selectableKeys = keys.filter((key) => extracted?.[key]?.trim())
+    const selectableKeys = keys.filter((key) => elementFieldValue(extracted, key)?.trim())
     const allSelected = selectableKeys.length > 0 && selectableKeys.every((key) => selectedFields[key])
     return (
       <div className="rounded-lg border overflow-hidden">
@@ -969,8 +980,8 @@ export function OperationsElementExtractBatchPanel() {
                 <FieldCompareRow
                   key={key}
                   fieldKey={key}
-                  extracted={extracted?.[key] ?? null}
-                  current={currentElements?.[key] ?? null}
+                  extracted={elementFieldValue(extracted, key)}
+                  current={elementFieldValue(currentElements, key)}
                   selected={selectedFields[key]}
                   onToggle={(checked) => setSelectedFields((prev) => ({ ...prev, [key]: checked }))}
                   editing={editingExtracted}
@@ -1558,7 +1569,7 @@ export function OperationsElementExtractBatchPanel() {
             ) : (
               <>
                 {renderFieldTable(BASIC_KEYS, "基本信息")}
-                {renderFieldTable(SUBSCRIPTION_KEYS, "申赎信息")}
+                {renderFieldTable(SUBSCRIPTION_DISPLAY_KEYS, "申赎信息")}
               </>
             )}
           </div>

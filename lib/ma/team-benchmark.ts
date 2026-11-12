@@ -14,6 +14,13 @@ export const TEAM_BENCHMARK_OPTIONS = [
 export function normalizeBenchmarkKey(raw: string | null | undefined): string {
   const text = (raw ?? "").replace(/\s+/g, "")
   if (!text) return ""
+  if (
+    text.includes("CI011001") ||
+    text.includes("全天候指数") ||
+    text.includes("国泰海通全天候")
+  ) {
+    return "CI011001.REBUILD"
+  }
   if (text.includes("沪深300全收益")) return "H00300.CSI"
   if (text.includes("中证1000") || text.includes("1000指增")) return "IM"
   if (text.includes("中证2000")) return "932000.CSI"

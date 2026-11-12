@@ -4,6 +4,7 @@ import {
   extractClosedPeriodFromText,
   extractFeeAdminFromText,
   extractFeePayFormulaFromText,
+  extractFeePurchaseFromText,
   extractFeeRedeemFromText,
   extractFeeTrustFromText,
   extractLockPeriodFromText,
@@ -28,6 +29,8 @@ import {
 } from "../../lib/server/fund-contract-element-keywords.ts"
 import { formatTemporaryOpen } from "../../lib/ma/fund-elements-extra.ts"
 import {
+  combinePerfFeeText,
+  mergePerfFeeFields,
   summarizeManageFee,
   summarizeOpenDay,
   summarizePerfFee,
@@ -654,3 +657,112 @@ assert.equal(floorFilled.fee_pay, floorPay)
 assert.equal(floorFilled.fee_pay_formula, floorFormula)
 
 console.log("fund-contract-element-keywords: ok")
+
+// ── segmented / tiered redeem and purchase fee tables ──────────────────────
+const jundanRedeemTable = `
+（七）申购、赎回的费用
+1、申购费
+本基金不收取申购费用，申购费率为0%。
+2、赎回费
+本基金的赎回费率如下表：
+份额持有天数（D）
+赎回费率
+D＜3个月
+0.5%
+D≥3个月
+0%
+基金终止或清算
+0%
+本基金红利再投份额不收取赎回费（含短期赎回费）；本基金赎回费（含短期赎回费）全额归入整体基金资产。
+`
+assert.equal(extractFeeRedeemFromText(jundanRedeemTable), "持有不足90天赎回费0.5%，满90天0%。")
+assert.equal(extractFeePurchaseFromText(jundanRedeemTable), "0%")
+const jundanFilledZero = fillMissingElementsFromKeywords(jundanRedeemTable, { fee_redeem: "0%", fee_purchase: null })
+assert.equal(jundanFilledZero.fee_redeem, "持有不足90天赎回费0.5%，满90天0%。")
+assert.equal(jundanFilledZero.fee_purchase, "0%")
+
+const yaosuFourTier = `
+2、赎回费用
+持有天数（天） 赎回费率
+【0】天-【90】天 【1】%
+【90】天（含）-【180】天 【0.5】%
+【180】天（含）-【365】天 【0.25】%
+【365】天（含）以上 【0】%
+`
+assert.equal(
+  extractFeeRedeemFromText(yaosuFourTier),
+  "持有不足90天赎回费1%，90天（含）至180天0.5%，180天（含）至365天0.25%，满365天0%。",
+)
+const fourTierFilled = fillMissingElementsFromKeywords(yaosuFourTier, { fee_redeem: "0%" })
+assert.equal(
+  fourTierFilled.fee_redeem,
+  "持有不足90天赎回费1%，90天（含）至180天0.5%，180天（含）至365天0.25%，满365天0%。",
+)
+
+const purchaseAmountTiers = `
+认购费
+认购金额 认购费率
+100万以下 1%
+100万-300万 0.5%
+300万以上 0%
+`
+assert.equal(extractFeePurchaseFromText(purchaseAmountTiers), "100万元以下1%，100万-300万元0.5%，300万元及以上0%。")
+
+const jundanManage = "本基金A 类份额的年管理费率R 为1%，B 类份额的年管理费率R 为0.5%。每日计提，按季支付。"
+assert.ok(summarizeFeeManageDesc(jundanManage)?.includes("A类"), summarizeFeeManageDesc(jundanManage))
+assert.ok(summarizeFeeManageDesc(jundanManage)?.includes("0.5%"), summarizeFeeManageDesc(jundanManage))
+const jundanManageFilled = fillMissingElementsFromKeywords(jundanManage, { fee_manage: "年管理费率1%，每日计提，按自然季度支付。" })
+assert.ok(jundanManageFilled.fee_manage?.includes("B类"), jundanManageFilled.fee_manage)
+assert.ok(jundanManageFilled.fee_manage?.includes("0.5%"), jundanManageFilled.fee_manage)
+
+const jundanPerf = `
+3、基金管理人收取的业绩报酬
+管理人将根据委托人每笔投资的期间年化收益率（R），当期间年化收益率大
+于【8】%时，对所有收益按照【50】%的比例收取业绩报酬，且计提后该笔份额
+的期间年化收益率不低于【8】%。
+①期间年化收益率计算
+R = [（P1-P0）/P0x] ×（365÷T）×100%
+②管理人以超额比例的方式提取业绩报酬，具体计算公式如下：
+E = min[N×P0x×R×50%×( T÷365 ), N×P0x×( R-8%)×( T÷365 )]
+`
+const jundanPay = summarizeFeePayDesc(jundanPerf)
+assert.ok(jundanPay && jundanPay.includes("8%") && jundanPay.includes("50%"), jundanPay)
+const jundanFormula = extractFeePayFormulaFromText(jundanPerf)
+assert.ok(jundanFormula && jundanFormula.includes("50%") && jundanFormula.includes("P0x"), jundanFormula)
+const jundanPayFilled = fillMissingElementsFromKeywords(jundanPerf, {
+  fee_pay: "按业绩基准计提，业绩基准8%。",
+  fee_pay_formula: "基准8%；R = [（P1-P0）/P0x] ×（365÷T）×100%",
+})
+assert.ok(jundanPayFilled.fee_pay?.includes("50%"), jundanPayFilled.fee_pay)
+assert.ok(jundanPayFilled.fee_pay_formula?.includes("50%"), jundanPayFilled.fee_pay_formula)
+
+const combinedFromParts = combinePerfFeeText(
+  "本基金对所有收益按照50%的比例收取业绩报酬，且计提后该笔份额年化收益率不低于8%。",
+  "基准8%；全额收益计提比例50%，计提后不低于基准；R = [（P1-P0）/P0x] ×（365÷T）×100%；R≥8%取MIN(R×50%,R-8%)。",
+)
+assert.ok(combinedFromParts?.includes("50%"), combinedFromParts)
+assert.ok(combinedFromParts?.includes("8%"), combinedFromParts)
+assert.ok(combinedFromParts?.includes("P0x"), combinedFromParts)
+assert.ok(combinedFromParts?.includes("MIN"), combinedFromParts)
+assert.equal(combinePerfFeeText("全额收益计提50%，计提后不低于8%。", "—"), "全额收益计提50%，计提后不低于8%。")
+assert.equal(combinePerfFeeText("—", "R = (P1-P0)/P0x"), "R = (P1-P0)/P0x")
+assert.equal(
+  combinePerfFeeText("计提比例50%；R=(A-B)/C×100%", "R=(A-B)/C×100%"),
+  "计提比例50%；R=(A-B)/C×100%",
+)
+
+const longPay = "本基金业绩报酬计提基准日为除息日（若有）、赎回申请日和基金终止日。对持有期全额收益按50%比例进行计提，但计提后年化收益率不低于8%。基准8%；R = [（P1-P0）/P0x] ×（365÷T）×100%；R≥8%取MIN(R×50%,R-8%)。"
+assert.ok(!isWeakFeePay(longPay), longPay)
+assert.ok(isWeakFeePay("按业绩基准计提，业绩基准0%"))
+
+const mergedJundan = mergePerfFeeFields({
+  fee_pay: "对所有收益按照50%的比例收取业绩报酬，计提后年化不低于8%。",
+  fee_pay_formula: "R = [（P1-P0）/P0x] ×（365÷T）×100%；MIN(R×50%,R-8%)",
+})
+assert.ok(mergedJundan.fee_pay.includes("50%"), mergedJundan.fee_pay)
+assert.ok(mergedJundan.fee_pay.includes("P0x"), mergedJundan.fee_pay)
+assert.ok(mergedJundan.fee_pay.includes("8%"), mergedJundan.fee_pay)
+assert.equal(mergedJundan.fee_pay_formula, "R = [（P1-P0）/P0x] ×（365÷T）×100%；MIN(R×50%,R-8%)")
+
+const keepLong = fillMissingElementsFromKeywords(jundanPerf, { fee_pay: longPay })
+assert.ok(keepLong.fee_pay?.includes("P0x"), keepLong.fee_pay)

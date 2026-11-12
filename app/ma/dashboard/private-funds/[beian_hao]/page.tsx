@@ -661,6 +661,15 @@ type MaterialChartMark = {
   filename: string
 }
 
+// Hide any bfl pool/tag on product-page badges and pickers; do not drop membership.
+function isHiddenProductPageBflLabel(value: string | null | undefined) {
+  return (value ?? "").replace(/\s+/g, "").toLowerCase().includes("bfl")
+}
+
+function isHiddenProductPagePool(pool: { pool_key?: string; pool_label?: string; key?: string; label?: string }) {
+  return isHiddenProductPageBflLabel(pool.pool_key ?? pool.key) || isHiddenProductPageBflLabel(pool.pool_label ?? pool.label)
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function PrivateFundDetailPage() {
@@ -791,7 +800,7 @@ export default function PrivateFundDetailPage() {
   const [savingPools, setSavingPools] = useState(false)
 
   function openPoolModal() {
-    setEditPools([...fundPools])
+    setEditPools(fundPools.filter((p) => !isHiddenProductPagePool(p)))
     setShowPoolModal(true)
     fetch("/ma/api/tracking-funds/pools?scope=team", { cache: "no-store" })
       .then((r) => r.json())
@@ -799,7 +808,11 @@ export default function PrivateFundDetailPage() {
         if (!Array.isArray(d?.data)) return
         setAvailTeamPools(
           d.data
-            .filter((p: { pool_key?: string }) => p?.pool_key && !String(p.pool_key).startsWith("__"))
+            .filter((p: { pool_key?: string; label?: string }) =>
+              p?.pool_key &&
+              !String(p.pool_key).startsWith("__") &&
+              !isHiddenProductPagePool({ pool_key: p.pool_key, pool_label: p.label }),
+            )
             .map((p: { pool_key: string; label: string }) => ({ key: p.pool_key, label: p.label })),
         )
       })
@@ -817,8 +830,11 @@ export default function PrivateFundDetailPage() {
     if (!data) return
     setSavingPools(true)
     const productName = data.info.product_name ?? ""
-    const toAdd = editPools.filter(p => !fundPools.some(q => q.pool_key === p.pool_key))
-    const toRemove = fundPools.filter(p => !editPools.some(q => q.pool_key === p.pool_key))
+    const hiddenPools = fundPools.filter((p) => isHiddenProductPagePool(p))
+    const visibleEditPools = editPools.filter((p) => !isHiddenProductPagePool(p))
+    const nextPools = [...hiddenPools, ...visibleEditPools]
+    const toAdd = nextPools.filter(p => !fundPools.some(q => q.pool_key === p.pool_key))
+    const toRemove = fundPools.filter(p => !isHiddenProductPagePool(p) && !visibleEditPools.some(q => q.pool_key === p.pool_key))
     try {
       await Promise.all([
         ...toAdd.map(p =>
@@ -838,7 +854,7 @@ export default function PrivateFundDetailPage() {
         ...toAdd.map((p) => p.pool_key),
         ...toRemove.map((p) => p.pool_key),
       ])
-      setFundPools(editPools)
+      setFundPools(nextPools)
       setShowPoolModal(false)
     } finally {
       setSavingPools(false)
@@ -1142,7 +1158,7 @@ export default function PrivateFundDetailPage() {
       strategyL2: data.info.strategy_l2,
       strategyL3: data.info.strategy_l3,
       productName: data.info.product_name,
-      extraHints: [...fundTags, ...fundPools.map((p) => p.pool_label)],
+      extraHints: [...fundTags.filter((tag) => !isHiddenProductPageBflLabel(tag)), ...fundPools.filter((p) => !isHiddenProductPagePool(p)).map((p) => p.pool_label)],
     })
     setFilterBench(benchmarkKey)
     setAppliedBench(benchmarkKey)
@@ -1283,7 +1299,7 @@ export default function PrivateFundDetailPage() {
       strategyL2: data.info.strategy_l2,
       strategyL3: data.info.strategy_l3,
       productName: data.info.product_name,
-      extraHints: [...fundTags, ...fundPools.map((p) => p.pool_label)],
+      extraHints: [...fundTags.filter((tag) => !isHiddenProductPageBflLabel(tag)), ...fundPools.filter((p) => !isHiddenProductPagePool(p)).map((p) => p.pool_label)],
     })
     setFilterPeriod(period)
     setFilterFrom(range.from)
@@ -1780,7 +1796,7 @@ export default function PrivateFundDetailPage() {
           )}
 
           {/* ── 团队标签 ── */}
-          {fundTags.map((tag) => (
+          {fundTags.filter((tag) => !isHiddenProductPageBflLabel(tag)).map((tag) => (
             <span
               key={tag}
               className="px-1.5 py-0.5 rounded whitespace-nowrap text-xs"
@@ -1802,9 +1818,9 @@ export default function PrivateFundDetailPage() {
           )}
 
           {/* ── 池 ── */}
-          {fundPools.length > 0 && (
+          {fundPools.filter((p) => !isHiddenProductPagePool(p)).length > 0 && (
             <>
-              {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3 || fundTags.length > 0 || info.working_state === "提前清算") && (
+              {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3 || fundTags.some((tag) => !isHiddenProductPageBflLabel(tag)) || info.working_state === "提前清算") && (
                 <span className="text-zinc-300 select-none mx-0.5">|</span>
               )}
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-500 flex-shrink-0"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
@@ -1813,7 +1829,7 @@ export default function PrivateFundDetailPage() {
                 <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
               </button>
               <span className="text-zinc-300 select-none mx-0.5">|</span>
-              {fundPools.map((p) => (
+              {fundPools.filter((p) => !isHiddenProductPagePool(p)).map((p) => (
                 <span
                   key={p.pool_key}
                   className="px-1.5 py-0.5 rounded whitespace-nowrap text-xs"
@@ -2973,7 +2989,7 @@ export default function PrivateFundDetailPage() {
             <div className="flex items-start gap-3">
               <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right pt-1">产品池：</label>
               <div className="flex-1 border border-zinc-200 rounded px-2.5 py-2 min-h-[40px] flex flex-wrap gap-1.5">
-                {editPools.map(p => (
+                {editPools.filter((p) => !isHiddenProductPagePool(p)).map(p => (
                   <span
                     key={p.pool_key}
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"

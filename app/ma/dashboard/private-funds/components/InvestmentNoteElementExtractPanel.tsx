@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { CheckCircle2, FileSearch, Loader2, X } from "lucide-react"
 import { fundElementSourceKindLabel } from "@/lib/ma/fund-element-source-file"
+import { combinePerfFeeText } from "@/lib/ma/product-field-config"
 import { cn } from "@/lib/utils"
 
 export type ExtractedFundElements = {
@@ -90,7 +91,7 @@ const FIELD_LABELS: Record<keyof ExtractedFundElements, string> = {
   fee_trust: "托管费",
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
-  fee_pay: "业绩报酬说明",
+  fee_pay: "业绩报酬",
   risk_level: "风险等级",
   lock_period_desc: "锁定期说明",
   fee_pay_formula: "业绩报酬公式",
@@ -142,7 +143,9 @@ export function parseExtractJob(raw: unknown): InvestmentNoteExtractJob | null {
 
 function writableFields(extracted: ExtractedFundElements | null): Array<keyof ExtractedFundElements> {
   if (!extracted) return []
-  return SUBSCRIPTION_KEYS.filter((key) => extracted[key]?.trim())
+  const keys = SUBSCRIPTION_KEYS.filter((key) => key !== "fee_pay_formula" && extracted[key]?.trim())
+  if (!keys.includes("fee_pay") && extracted.fee_pay_formula?.trim()) keys.push("fee_pay")
+  return keys
 }
 
 function productProfileUrl(beianHao: string) {
@@ -260,7 +263,9 @@ export function InvestmentNoteElementExtractPanel({
     const extracted = activeJob.extracted_json
     const payload: Record<string, string | null> = {}
     for (const key of fields) {
-      const value = extracted?.[key]
+      const value = key === "fee_pay"
+        ? combinePerfFeeText(extracted?.fee_pay, extracted?.fee_pay_formula)
+        : extracted?.[key]
       if (!value?.trim()) continue
       payload[key] = value
     }

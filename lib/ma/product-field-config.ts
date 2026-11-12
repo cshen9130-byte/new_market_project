@@ -85,6 +85,7 @@ function appendNewDefaultElementFields(
 
 const LEGACY_PRODUCT_FIELD_LABELS: Record<string, string> = {
   "业绩报酬说明": "业绩报酬",
+  "业绩报酬公式": "业绩报酬",
 }
 
 function normalizeProductFieldLabel(label: string): string {
@@ -92,7 +93,47 @@ function normalizeProductFieldLabel(label: string): string {
 }
 
 function isPerfFeeField(label: string) {
-  return label === "业绩报酬" || label === "业绩报酬说明"
+  return label === "业绩报酬" || label === "业绩报酬说明" || label === "业绩报酬公式"
+}
+
+const BLANK_PERF_FEE_RE = /^(?:—+|-|无|暂无|见合同|详见合同|同上)$/
+
+/** True when a 业绩报酬 cell is empty, a dash, or a placeholder. */
+export function isBlankPerfFeeText(value: string | null | undefined): boolean {
+  const s = String(value ?? "").trim()
+  return !s || BLANK_PERF_FEE_RE.test(s)
+}
+
+function normalizePerfFeeForCompare(value: string): string {
+  return value.replace(/\s+/g, "").replace(/[;；]/g, "；")
+}
+
+/**
+ * Join legacy 业绩报酬说明 + 业绩报酬公式 into one display/extract string.
+ * Skips empty or dash values, and does not repeat a formula already inside the description.
+ */
+export function combinePerfFeeText(
+  desc: string | null | undefined,
+  formula: string | null | undefined,
+): string | null {
+  const a = isBlankPerfFeeText(desc) ? "" : String(desc).trim()
+  const b = isBlankPerfFeeText(formula) ? "" : String(formula).trim()
+  if (!a) return b || null
+  if (!b) return a
+  const an = normalizePerfFeeForCompare(a)
+  const bn = normalizePerfFeeForCompare(b)
+  if (an.includes(bn)) return a
+  if (bn.includes(an)) return b
+  return `${a}\n${b}`
+}
+
+/** Fold 公式 into 说明 after both have been extracted, without dropping either side. */
+export function mergePerfFeeFields<T extends { fee_pay?: string | null; fee_pay_formula?: string | null }>(
+  extracted: T,
+): T {
+  const combined = combinePerfFeeText(extracted.fee_pay, extracted.fee_pay_formula)
+  if (!combined || combined === extracted.fee_pay) return extracted
+  return { ...extracted, fee_pay: combined }
 }
 
 export function readProductFieldConfig(storageKey: string, defaultFields: readonly string[]): string[] {
@@ -159,8 +200,9 @@ export function getProductFieldTextValue(row: Record<string, unknown>, label: st
     "开放日": pick("open_day"),
     "管理费": pick("fee_manage") || pick("fee_manage_rate"),
     "管理费说明": pick("fee_manage") || pick("fee_manage_rate"),
-    "业绩报酬": pick("fee_pay"),
-    "业绩报酬说明": pick("fee_pay"),
+    "业绩报酬": combinePerfFeeText(pick("fee_pay"), pick("fee_pay_formula")),
+    "业绩报酬说明": combinePerfFeeText(pick("fee_pay"), pick("fee_pay_formula")),
+    "业绩报酬公式": combinePerfFeeText(pick("fee_pay"), pick("fee_pay_formula")),
     "赎回费": pick("fee_redeem"),
   }
   return values[label] ?? null

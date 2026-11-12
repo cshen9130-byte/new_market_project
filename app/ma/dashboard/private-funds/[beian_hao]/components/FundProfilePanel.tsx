@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useState } from "react"
 import { amacFundUrl } from "@/lib/amac-urls"
+import { combinePerfFeeText } from "@/lib/ma/product-field-config"
 
 interface ProfileData {
   fund_name: string | null
@@ -186,26 +187,24 @@ function SubscriptionInfoSection({ data }: { data: ProfileData }) {
       { label: "管理费说明", value: data.fee_manage, multiline: true },
       { label: "外包费", value: data.fee_admin_service },
     ],
-    [
-      { label: "业绩报酬说明", value: data.fee_pay, multiline: true },
-      { label: "业绩报酬公式", value: data.fee_pay_formula, multiline: true },
-    ],
   ]
 
   return (
     <div className="border border-zinc-100 rounded-lg overflow-hidden text-sm">
-      {rows.map(([left, right], index) => (
+      {rows.map(([left, right]) => (
         <div
           key={left.label}
-          className={[
-            "grid grid-cols-2 items-start border-b border-zinc-100",
-            index === rows.length - 1 ? "border-b-0" : "",
-          ].join(" ")}
+          className="grid grid-cols-2 items-start border-b border-zinc-100"
         >
           <SubscriptionField {...left} borderedRight />
           <SubscriptionField {...right} />
         </div>
       ))}
+      <SubscriptionField
+        label="业绩报酬"
+        value={combinePerfFeeText(data.fee_pay, data.fee_pay_formula)}
+        multiline
+      />
     </div>
   )
 }

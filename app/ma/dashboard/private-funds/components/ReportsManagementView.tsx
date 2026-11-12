@@ -26,6 +26,11 @@ import {
   resolveAutoWeeklyTemplate,
 } from "@/lib/ma/auto-weekly-templates"
 import { loadCustomReports, type SavedCustomReport } from "@/lib/ma/custom-report-storage"
+import {
+  ReportPngWithTitle,
+  compositeReportTitleBlobFromBuffer,
+  downloadReportPngWithTitle,
+} from "./ReportPngWithTitle"
 
 type ScopeTab = "team" | "mine"
 export type ReportListSection = "weekly" | "monthly" | "quarterly" | "holding"
@@ -267,8 +272,9 @@ function buildReportZipEntryName(
   row: Pick<WeeklyReportRow, "product_name" | "title" | "weekStart" | "weekEnd" | "reportId">,
   ext: "pdf" | "png" | "pptx",
   periodToken = "周报",
+  displayTitle?: string,
 ): string {
-  const product = sanitizeFileToken(row.product_name || row.title || row.reportId || "报告").slice(0, 60)
+  const product = sanitizeFileToken(displayTitle || row.product_name || row.title || row.reportId || "报告").slice(0, 60)
   const range = formatWeekRangeToken(row.weekStart, row.weekEnd)
   const stem = range ? `${product}_${periodToken}_${range}` : `${product}_${periodToken}`
   return `${stem}.${ext}`
@@ -346,9 +352,9 @@ function ReportPreviewThumb({
               {title}
             </div>
             <div className="overflow-auto max-h-[calc(78vh-2rem)] bg-zinc-100 dark:bg-zinc-900">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <ReportPngWithTitle
                 src={src}
+                title={title}
                 alt={title}
                 className="block w-full h-auto object-contain bg-white"
               />
@@ -1171,7 +1177,16 @@ export function ReportsManagementView({
           const resp = await fetch(url, { headers: userFetchHeaders() })
           if (!resp.ok) continue
           const buf = await resp.arrayBuffer()
-          zip.file(buildReportZipEntryName(row, format, SECTION_META[section].periodToken), buf)
+          const displayTitle = resolveReportTitle(row, titleNameMode)
+          let payload: Blob | ArrayBuffer = buf
+          if (format === "png") {
+            try {
+              payload = await compositeReportTitleBlobFromBuffer(buf, displayTitle)
+            } catch {
+              payload = buf
+            }
+          }
+          zip.file(buildReportZipEntryName(row, format, SECTION_META[section].periodToken, displayTitle), payload)
           added += 1
         }
       }
@@ -1696,7 +1711,8 @@ export function ReportsManagementView({
               {filtered.map((r) => {
                 const png = withInlinePng(r.download?.png)
                 const pngHref = r.download?.png || ""
-                const pngName = `${sanitizeFileToken(r.product_name || r.title || "report")}_${formatWeekRangeToken(r.weekStart, r.weekEnd) || r.reportId || "nav"}.png`
+                const displayTitle = resolveReportTitle(r, titleNameMode)
+                const pngName = `${sanitizeFileToken(displayTitle || r.product_name || r.title || "report")}_${formatWeekRangeToken(r.weekStart, r.weekEnd) || r.reportId || "nav"}.png`
                 return (
                   <div
                     key={`${r.kind}-${r.id}`}
@@ -1705,15 +1721,15 @@ export function ReportsManagementView({
                     <div className="px-3 py-2 border-b flex items-center gap-2 min-w-0">
                       <div className="text-sm font-medium truncate flex-1 min-w-0">{resolveReportTitle(r, titleNameMode)}</div>
                       {pngHref ? (
-                        <a
-                          href={pngHref}
-                          download={pngName}
+                        <button
+                          type="button"
+                          onClick={() => void downloadReportPngWithTitle(png || pngHref, displayTitle, pngName)}
                           className="shrink-0 inline-flex items-center gap-1.5 h-7 px-2 rounded-md border border-border bg-background hover:bg-muted text-xs font-medium text-zinc-700 dark:text-zinc-200"
                           title="下载 PNG"
                         >
                           <Download className="h-3.5 w-3.5" />
                           下载 PNG
-                        </a>
+                        </button>
                       ) : null}
                     </div>
                     <div className="px-3 py-1.5 text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-0.5">
@@ -1723,8 +1739,7 @@ export function ReportsManagementView({
                     </div>
                     <div className="bg-white">
                       {png ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={png} alt={resolveReportTitle(r, titleNameMode)} className="w-full bg-white" />
+                        <ReportPngWithTitle src={png} title={displayTitle} alt={displayTitle} className="w-full bg-white" />
                       ) : (
                         <div className="h-40 flex items-center justify-center text-xs text-zinc-400">无预览</div>
                       )}
@@ -1736,14 +1751,14 @@ export function ReportsManagementView({
                         </a>
                       )}
                       {pngHref ? (
-                        <a
-                          href={pngHref}
-                          download={pngName}
+                        <button
+                          type="button"
+                          onClick={() => void downloadReportPngWithTitle(png || pngHref, displayTitle, pngName)}
                           className="inline-flex items-center gap-1 text-sky-600 hover:underline"
                         >
                           <Download className="h-3 w-3" />
                           下载 PNG
-                        </a>
+                        </button>
                       ) : null}
                     </div>
                   </div>

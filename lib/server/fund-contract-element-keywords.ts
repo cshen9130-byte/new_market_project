@@ -132,6 +132,9 @@ function isUnlabeledMultiRuleFeePay(s: string): boolean {
   return new Set(benches).size >= 2
 }
 
+const FEE_PAY_MAX = 1600
+const FEE_PAY_CHAPTER_DUMP_RE = /费用的种类|基金费用的种类|--\s*\d+\s*of\s*\d+\s*--|划款指令|收费账户|可以在基金财产中列支/
+
 export function isWeakFeePay(value: string | null | undefined): boolean {
   const s = (value ?? "").trim()
   if (!s || s === "—" || /^-+$/.test(s) || /^详见/.test(s)) return true
@@ -141,7 +144,11 @@ export function isWeakFeePay(value: string | null | undefined): boolean {
   if (isZeroBenchmarkWithoutCarry(s)) return true
   if (isHurdleWithoutCarry(s)) return true
   if (isUnlabeledMultiRuleFeePay(s)) return true
-  return isDumpText(s, 90)
+  // Combined 说明+公式 text is intentionally longer than a one-line summary.
+  // Only reject chapter dumps / oversized blobs, not a complete 业报 write-up.
+  if (FEE_PAY_CHAPTER_DUMP_RE.test(s)) return true
+  if (s.length > FEE_PAY_MAX) return true
+  return false
 }
 
 /** True when the text already names a 10%+ carry / 计提比例. */
@@ -767,28 +774,43 @@ function extractFullReturnFloorPerf(text: string): { desc: string; formula: stri
   const eq =
     s.match(/R\s*<\s*([\d.]+)\s*%[^。]{0,180}?MIN[^。]{0,100}?R\s*[*×x]\s*([\d.]+)\s*%[^。]{0,140}?R\s*-\s*\1\s*%/i)
     || s.match(/R\s*<\s*([\d.]+)\s*%[^。]{0,180}?MIN[^。]{0,120}?R\s*-\s*\1\s*%[^。]{0,140}?R\s*[*×x]\s*([\d.]+)\s*%/i)
-  const prose = /全额收益/.test(s) && /不低于/.test(s) && /计提基准/.test(s)
+  const hasAllReturn = /全额收益|所有收益|全部收益/.test(s)
+  const hasFloor = /不低于/.test(s)
+  const prose = hasAllReturn && hasFloor && /计提基准|年化收益率/.test(s)
   if (!prose && !eq) return null
 
   const rate = parseCarryPct(
     s.match(/提取比例[^。]{0,48}?为\s*[【[]?\s*([\d.]+)\s*%/)?.[1]
     || s.match(/全额收益按\s*[【[]?\s*([\d.]+)\s*%/)?.[1]
+    || s.match(/对(?:所有|全部|全额)收益按照?\s*[【\[［]?\s*([\d.]+)\s*[】\]］]?\s*%/)?.[1]
+    || s.match(/按照?\s*[【\[［]?\s*([\d.]+)\s*[】\]］]?\s*%\s*的?比例收取(?:业绩报酬)?/)?.[1]
     || s.match(/按\s*[【[]\s*([\d.]+)\s*%\s*[】]]\s*比例/)?.[1]
     || eq?.[2],
   )
   const benchRaw =
     s.match(/计提基准[^。]{0,60}?[（(]\s*([\d.]+)\s*%\s*[)）]/)?.[1]
     || s.match(/当\s*R\s*<\s*([\d.]+)\s*%/)?.[1]
+    || s.match(/年化收益率大于\s*[【\[［]?\s*([\d.]+)\s*[】\]］]?\s*%/)?.[1]
+    || s.match(/不低于\s*[【\[［]?\s*([\d.]+)\s*[】\]］]?\s*%/)?.[1]
     || eq?.[1]
   const benchN = benchRaw ? parseFloat(benchRaw) : NaN
   if (!rate || !Number.isFinite(benchN) || benchN <= 0 || benchN > 50) return null
   const bench = pct(benchRaw!)
   const desc = `按业绩基准计提，业绩基准${bench}，全额收益计提比例${rate}，计提后年化不低于基准。`
-  const formula = `基准${bench}；全额收益计提比例${rate}，计提后不低于基准；R<${bench}为0，R≥${bench}取MIN(R×${rate},R-${bench})×HWM'×T/365×F；R=(NAVe-HWM)×365/(HWM'×T)。`
+  const p0xR = s.match(/R\s*[=＝]\s*\[[^\]]{0,60}P0x[^\]]{0,40}\][^。]{0,48}100\s*%/)
+  const eMinN = s.match(/E\s*[=＝]\s*min\s*[\[【][^\]】]{0,220}P0x[^\]】]{0,220}[\]】]/i)
+  let formula: string
+  if (p0xR || eMinN) {
+    const bits = [`基准${bench}`, `全额收益计提比例${rate}，计提后不低于基准`]
+    if (p0xR) bits.push(collapseWs(p0xR[0]).replace(/＝/g, "="))
+    if (eMinN) bits.push(collapseWs(eMinN[0]).replace(/＝/g, "="))
+    formula = bits.join("；")
+  } else {
+    formula = `基准${bench}；全额收益计提比例${rate}，计提后不低于基准；R<${bench}为0，R≥${bench}取MIN(R×${rate},R-${bench})×HWM'×T/365×F；R=(NAVe-HWM)×365/(HWM'×T)。`
+  }
   if (desc.length > FEE_DESC_MAX || formula.length > FORMULA_MAX) return null
   return { desc, formula }
 }
-
 function formulaHeadFromScope(scope: string): string[] {
   const s = flatten(scope)
   const { bench, rate } = formulaBenchRate(s)
@@ -907,6 +929,8 @@ function shareClassManageRates(text: string): string | null {
     }
     const found =
       s.match(new RegExp(`${cls}\\s*类年(?:化)?管理费率\\s*([\\d.]+)\\s*%`))
+      || s.match(new RegExp(`${cls}\\s*类(?:基金)?份额的?年(?:化)?管理费率\\s*R?\\s*[为是：:]*\\s*([\\d.]+)\\s*%`))
+      || s.match(new RegExp(`${cls}\\s*类(?:基金)?份额[^。]{0,40}?年(?:化)?管理费率\\s*R?\\s*[为是：:]*\\s*([\\d.]+)\\s*%`))
       || s.match(new RegExp(`${cls}\\s*类份额[^。]{0,90}?([\\d.]+)\\s*%的年费率`))
       || s.match(new RegExp(`${cls}\\s*类份额\\s+([\\d.]+)\\s*%`))
     if (found?.[1] && parseFloat(found[1]) <= 5) {
@@ -1467,9 +1491,360 @@ export function extractFeeAdminFromText(text: string): string | null {
 
 const HOLD_LT_RE = /持有(?:时间|期限|期)?\s*(?:低于|小于|不足|少于|不满)/
 const REDEEM_RATE_RE = /赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%/
+const BRACKET_NUM = `[【\\[［]?\\s*([\\d.]+)\\s*[】\\]］]?`
+const HOLD_UNIT = `(?:个?(?:自然)?(?:日|天)|个?月|年)`
+
+type RedeemTier = {
+  fromDays: number | null
+  toDays: number | null
+  fromInclusive: boolean
+  toInclusive: boolean
+  rate: string
+}
+
+function holdUnitToDays(raw: string, unit: string): number | null {
+  const n = parseFloat(raw)
+  if (!Number.isFinite(n) || n < 0) return null
+  if (/年/.test(unit)) return Math.round(n * 365)
+  if (/月/.test(unit)) return Math.round(n * 30)
+  return Math.round(n)
+}
+
+function rateToken(raw: string | undefined): string | null {
+  if (!raw) return null
+  const n = parseFloat(raw)
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null
+  return pct(raw)
+}
+
+function isSpecialRedeemRow(label: string): boolean {
+  return /基金终止|清算|清盘|红利再投|强制赎回/.test(label)
+}
+
+function looksLikePurchaseRatePrefix(before: string): boolean {
+  return /(?:申购|认购)\s*费\s*率[为是]?$/.test(before) || /不收取(?:申购|认购)费/.test(before.slice(-24))
+}
+
+/** Slice the contract around each 赎回费 heading so nearby 管理费 / 业绩报酬 percents are ignored. */
+function redeemFeeWindows(s: string): string[] {
+  const windows: string[] = []
+  const re = /赎回\s*费/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(s)) !== null) {
+    const start = Math.max(0, match.index - 60)
+    let end = Math.min(s.length, match.index + 1800)
+    const rest = s.slice(match.index + match[0].length, end)
+    const cut = rest.search(
+      /(?:[（(][八九十]|[八九]、|十、|（九）|拒绝或暂停申购|基金份额的转让|基金份额的转托管|基金转换|基金当事人|托管费的计算公式|管理费的计算公式)/,
+    )
+    if (cut >= 80) end = match.index + match[0].length + cut
+    windows.push(s.slice(start, end))
+  }
+  if (!windows.length && /持有/.test(s) && REDEEM_RATE_RE.test(s)) windows.push(s)
+  return windows
+}
+
+function tierFromPrefix(before: string, rate: string): RedeemTier | null {
+  if (isSpecialRedeemRow(before.slice(-30))) return null
+  if (looksLikePurchaseRatePrefix(before.replace(/\s+/g, ""))) return null
+
+  const range = before.match(
+    new RegExp(
+      `${BRACKET_NUM}\\s*(${HOLD_UNIT})\\s*(?:（含）)?\\s*[-–—~～至到]+\\s*${BRACKET_NUM}\\s*(?:（含）)?\\s*(?:${HOLD_UNIT})?\\s*(?:（含）)?\\s*(?:赎回\\s*费\\s*率[为是]?)?\\s*$`,
+    ),
+  )
+  if (range) {
+    const unit = range[2] || "天"
+    const fromDays = holdUnitToDays(range[1], unit)
+    const toDays = holdUnitToDays(range[3], range[4] || unit)
+    if (fromDays != null && toDays != null) {
+      const fromInclusive = fromDays > 0
+      return { fromDays, toDays, fromInclusive, toInclusive: false, rate }
+    }
+  }
+
+  const openEnd = before.match(
+    new RegExp(
+      `${BRACKET_NUM}\\s*(${HOLD_UNIT})\\s*(?:（含）)?\\s*(?:以上|及以上|及以后)\\s*(?:赎回\\s*费\\s*率[为是]?)?\\s*$`,
+    ),
+  )
+  if (openEnd) {
+    const fromDays = holdUnitToDays(openEnd[1], openEnd[2])
+    if (fromDays != null) {
+      return { fromDays, toDays: null, fromInclusive: true, toInclusive: true, rate }
+    }
+  }
+
+  const dLt = before.match(new RegExp(`D\\s*[＜<]\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})\\s*(?:赎回\\s*费\\s*率[为是]?)?\\s*$`))
+  if (dLt) {
+    const toDays = holdUnitToDays(dLt[1], dLt[2])
+    if (toDays != null) return { fromDays: 0, toDays, fromInclusive: true, toInclusive: false, rate }
+  }
+  const dLe = before.match(new RegExp(`D\\s*[≤≦]\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})\\s*(?:赎回\\s*费\\s*率[为是]?)?\\s*$`))
+  if (dLe) {
+    const toDays = holdUnitToDays(dLe[1], dLe[2])
+    if (toDays != null) return { fromDays: 0, toDays, fromInclusive: true, toInclusive: true, rate }
+  }
+  const dGe = before.match(new RegExp(`D\\s*[≥>=]\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})\\s*(?:赎回\\s*费\\s*率[为是]?)?\\s*$`))
+  if (dGe) {
+    const fromDays = holdUnitToDays(dGe[1], dGe[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: true, toInclusive: true, rate }
+  }
+  const dGt = before.match(new RegExp(`D\\s*[＞>]\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})\\s*(?:赎回\\s*费\\s*率[为是]?)?\\s*$`))
+  if (dGt) {
+    const fromDays = holdUnitToDays(dGt[1], dGt[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: false, toInclusive: true, rate }
+  }
+
+  const holdLt = before.match(
+    new RegExp(
+      `持有(?:时间|期限|期)?\\s*(?:低于|小于|不足|少于|不满)\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})(?:（不含）)?(?:[^%]{0,24}赎回\\s*费\\s*率[为是]?)?\\s*$`,
+    ),
+  )
+  if (holdLt) {
+    const toDays = holdUnitToDays(holdLt[1], holdLt[2])
+    if (toDays != null) return { fromDays: 0, toDays, fromInclusive: true, toInclusive: false, rate }
+  }
+  const holdGe = before.match(
+    new RegExp(
+      `持有(?:时间|期限|期)?(?:在)?\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})\\s*(?:（含）)?\\s*(?:及以上|以上|及以后)(?:[^%]{0,24}赎回\\s*费\\s*率[为是]?)?\\s*$`,
+    ),
+  )
+  if (holdGe) {
+    const fromDays = holdUnitToDays(holdGe[1], holdGe[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: true, toInclusive: true, rate }
+  }
+  const holdGt = before.match(
+    new RegExp(
+      `(?:持有(?:时间|期限|期)?\\s*)?(?:大于|满|不少于)\\s*(\\d+(?:\\.\\d+)?)\\s*(${HOLD_UNIT})(?:（含）)?(?:[^%]{0,24}赎回\\s*费\\s*率[为是]?)?\\s*$`,
+    ),
+  )
+  if (holdGt) {
+    const fromDays = holdUnitToDays(holdGt[1], holdGt[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: true, toInclusive: true, rate }
+  }
+  return null
+}
+
+function collectRedeemTiersFromPairs(s: string): RedeemTier[] {
+  const tiers: RedeemTier[] = []
+  const rateRe = new RegExp(`${BRACKET_NUM}\\s*%`, "g")
+  let match: RegExpExecArray | null
+  while ((match = rateRe.exec(s)) !== null) {
+    const rate = rateToken(match[1])
+    if (!rate) continue
+    const before = s.slice(Math.max(0, match.index - 90), match.index)
+    const tier = tierFromPrefix(before, rate)
+    if (tier) tiers.push(tier)
+  }
+  return tiers
+}
+
+function parseHoldBound(token: string): Omit<RedeemTier, "rate"> | "skip" | null {
+  const t = token.replace(/\s+/g, "")
+  if (isSpecialRedeemRow(t)) return "skip"
+  const range = t.match(new RegExp(`^${BRACKET_NUM}(${HOLD_UNIT})(?:（含）)?[-–—~～至到]+${BRACKET_NUM}(?:（含）)?(?:${HOLD_UNIT})?(?:（含）)?$`))
+  if (range) {
+    const unit = range[2] || "天"
+    const fromDays = holdUnitToDays(range[1], unit)
+    const toDays = holdUnitToDays(range[3], range[4] || unit)
+    if (fromDays != null && toDays != null) {
+      return { fromDays, toDays, fromInclusive: fromDays > 0, toInclusive: false }
+    }
+  }
+  const openEnd = t.match(new RegExp(`^${BRACKET_NUM}(${HOLD_UNIT})(?:（含）)?(?:以上|及以上|及以后)$`))
+  if (openEnd) {
+    const fromDays = holdUnitToDays(openEnd[1], openEnd[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: true, toInclusive: true }
+  }
+  const dLt = t.match(new RegExp(`^D[＜<](\\d+(?:\\.\\d+)?)(${HOLD_UNIT})$`))
+  if (dLt) {
+    const toDays = holdUnitToDays(dLt[1], dLt[2])
+    if (toDays != null) return { fromDays: 0, toDays, fromInclusive: true, toInclusive: false }
+  }
+  const dLe = t.match(new RegExp(`^D[≤≦](\\d+(?:\\.\\d+)?)(${HOLD_UNIT})$`))
+  if (dLe) {
+    const toDays = holdUnitToDays(dLe[1], dLe[2])
+    if (toDays != null) return { fromDays: 0, toDays, fromInclusive: true, toInclusive: true }
+  }
+  const dGe = t.match(new RegExp(`^D[≥>=](\\d+(?:\\.\\d+)?)(${HOLD_UNIT})$`))
+  if (dGe) {
+    const fromDays = holdUnitToDays(dGe[1], dGe[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: true, toInclusive: true }
+  }
+  const dGt = t.match(new RegExp(`^D[＞>](\\d+(?:\\.\\d+)?)(${HOLD_UNIT})$`))
+  if (dGt) {
+    const fromDays = holdUnitToDays(dGt[1], dGt[2])
+    if (fromDays != null) return { fromDays, toDays: null, fromInclusive: false, toInclusive: true }
+  }
+  return null
+}
+
+function collectColumnMajorRedeemTiers(s: string): RedeemTier[] {
+  const header = s.search(/(?:份额)?持有(?:天数|期限|时间|期)/)
+  const rateHdr = s.search(/赎回\s*费\s*率/)
+  if (header < 0 || rateHdr < 0 || header >= rateHdr) return []
+  const periodSlice = s.slice(header, rateHdr)
+  if (/%/.test(periodSlice)) return []
+  const rateSlice = s.slice(rateHdr, Math.min(s.length, rateHdr + 400))
+  const tokenRe = new RegExp(
+    `D\\s*[＜<≤≦≥>=＞>]\\s*\\d+(?:\\.\\d+)?\\s*${HOLD_UNIT}|${BRACKET_NUM}\\s*${HOLD_UNIT}\\s*(?:（含）)?\\s*[-–—~～至到]+\\s*${BRACKET_NUM}\\s*(?:${HOLD_UNIT})?\\s*(?:（含）)?|${BRACKET_NUM}\\s*${HOLD_UNIT}\\s*(?:（含）)?\\s*(?:以上|及以上|及以后)|基金终止或清算|基金清算`,
+    "g",
+  )
+  const periods = [...periodSlice.matchAll(tokenRe)].map((m) => m[0])
+  const rates = [...rateSlice.matchAll(new RegExp(`${BRACKET_NUM}\\s*%`, "g"))].map((m) => rateToken(m[1]))
+  if (periods.length < 2 || rates.length < 2) return []
+  const tiers: RedeemTier[] = []
+  const n = Math.min(periods.length, rates.length)
+  for (let i = 0; i < n; i++) {
+    const rate = rates[i]
+    if (!rate) continue
+    const bound = parseHoldBound(periods[i])
+    if (bound === "skip" || !bound) continue
+    tiers.push({ ...bound, rate })
+  }
+  return tiers
+}
+
+function dedupeRedeemTiers(tiers: RedeemTier[]): RedeemTier[] {
+  const out: RedeemTier[] = []
+  for (const tier of tiers) {
+    const key = `${tier.fromDays}:${tier.toDays}:${tier.rate}`
+    if (!out.some((item) => `${item.fromDays}:${item.toDays}:${item.rate}` === key)) out.push(tier)
+  }
+  out.sort((a, b) => (a.fromDays ?? 0) - (b.fromDays ?? 0) || (a.toDays ?? 99_999) - (b.toDays ?? 99_999))
+  return out
+}
+
+function formatRedeemTiers(tiers: RedeemTier[]): string | null {
+  const uniq = dedupeRedeemTiers(tiers)
+  if (uniq.length === 2) {
+    const [first, second] = uniq
+    const threshold = first.toDays ?? second.fromDays
+    const firstIsLower = (first.fromDays == null || first.fromDays === 0) && first.toDays != null
+    const secondIsOpen = second.toDays == null && (second.fromDays === threshold || second.fromDays == null)
+    if (threshold && firstIsLower && first.toDays === threshold && secondIsOpen) {
+      return `持有不足${threshold}天赎回费${first.rate}，满${threshold}天${second.rate}。`
+    }
+  }
+  if (uniq.length < 2) return null
+  const parts: string[] = []
+  for (const tier of uniq) {
+    if ((tier.fromDays == null || tier.fromDays === 0) && tier.toDays != null) {
+      parts.push(parts.length === 0 ? `持有不足${tier.toDays}天赎回费${tier.rate}` : `不足${tier.toDays}天${tier.rate}`)
+      continue
+    }
+    if (tier.toDays == null && tier.fromDays != null) {
+      parts.push(`满${tier.fromDays}天${tier.rate}`)
+      continue
+    }
+    if (tier.fromDays != null && tier.toDays != null) {
+      const incl = tier.fromInclusive ? "（含）" : ""
+      parts.push(`${tier.fromDays}天${incl}至${tier.toDays}天${tier.rate}`)
+    }
+  }
+  if (parts.length < 2) return null
+  if (!parts.some((part) => /赎回费/.test(part))) parts[0] = `赎回费${parts[0]}`
+  return `${parts.join("，")}。`
+}
+
+function extractRedeemSchedule(text: string): string | null {
+  const windows = redeemFeeWindows(text)
+  let best: RedeemTier[] = []
+  for (const window of windows.length ? windows : [text]) {
+    const tiers = [...collectRedeemTiersFromPairs(window), ...collectColumnMajorRedeemTiers(window)]
+    if (dedupeRedeemTiers(tiers).length > dedupeRedeemTiers(best).length) best = tiers
+  }
+  return formatRedeemTiers(best)
+}
+
+function purchaseFeeWindows(s: string): string[] {
+  const windows: string[] = []
+  const re = /(?:认购|申购)\s*费/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(s)) !== null) {
+    const start = Math.max(0, match.index - 40)
+    let end = Math.min(s.length, match.index + 1200)
+    const rest = s.slice(match.index + match[0].length, end)
+    const cut = rest.search(/(?:2、\s*赎回费|赎回费|（八）|管理费的计算公式)/)
+    if (cut >= 40) end = match.index + match[0].length + cut
+    windows.push(s.slice(start, end))
+  }
+  return windows
+}
+
+type PurchaseTier = { fromWan: number | null; toWan: number | null; rate: string }
+
+function collectPurchaseTiers(s: string): PurchaseTier[] {
+  const tiers: PurchaseTier[] = []
+  const rateRe = new RegExp(`${BRACKET_NUM}\\s*%`, "g")
+  let match: RegExpExecArray | null
+  while ((match = rateRe.exec(s)) !== null) {
+    const rate = rateToken(match[1])
+    if (!rate) continue
+    const before = s.slice(Math.max(0, match.index - 60), match.index)
+    if (/赎回/.test(before.slice(-24))) continue
+    const range = before.match(/(\d+(?:\.\d+)?)\s*万(?:元)?\s*[-–—~～至到]+\s*(\d+(?:\.\d+)?)\s*万(?:元)?\s*(?:（含）)?(?:认购\s*费\s*率|申购\s*费\s*率)?[为是]?\s*$/)
+    if (range) {
+      tiers.push({ fromWan: parseFloat(range[1]), toWan: parseFloat(range[2]), rate })
+      continue
+    }
+    const lower = before.match(/(\d+(?:\.\d+)?)\s*万(?:元)?\s*(?:以下|以内|及以下|不超过)\s*(?:认购\s*费\s*率|申购\s*费\s*率)?[为是]?\s*$/)
+    if (lower) {
+      tiers.push({ fromWan: 0, toWan: parseFloat(lower[1]), rate })
+      continue
+    }
+    const upper = before.match(/(\d+(?:\.\d+)?)\s*万(?:元)?\s*(?:以上|及以上|（含）以上)\s*(?:认购\s*费\s*率|申购\s*费\s*率)?[为是]?\s*$/)
+    if (upper) {
+      tiers.push({ fromWan: parseFloat(upper[1]), toWan: null, rate })
+    }
+  }
+  return tiers
+}
+
+function formatPurchaseTiers(tiers: PurchaseTier[]): string | null {
+  const uniq: PurchaseTier[] = []
+  for (const tier of tiers) {
+    const key = `${tier.fromWan}:${tier.toWan}:${tier.rate}`
+    if (!uniq.some((item) => `${item.fromWan}:${item.toWan}:${item.rate}` === key)) uniq.push(tier)
+  }
+  uniq.sort((a, b) => (a.fromWan ?? 0) - (b.fromWan ?? 0))
+  if (uniq.length < 2) return null
+  const parts = uniq.map((tier) => {
+    if ((tier.fromWan == null || tier.fromWan === 0) && tier.toWan != null) return `${tier.toWan}万元以下${tier.rate}`
+    if (tier.toWan == null && tier.fromWan != null) return `${tier.fromWan}万元及以上${tier.rate}`
+    if (tier.fromWan != null && tier.toWan != null) return `${tier.fromWan}万-${tier.toWan}万元${tier.rate}`
+    return `${tier.rate}`
+  })
+  return `${parts.join("，")}。`
+}
+
+export function extractFeePurchaseFromText(text: string): string | null {
+  const s = flattenCjk(text)
+  const scopes = purchaseFeeWindows(s)
+  const windows = scopes.length ? scopes : [s]
+  let best: PurchaseTier[] = []
+  let flat: string | null = null
+  for (const window of windows) {
+    const tiers = collectPurchaseTiers(window)
+    if (tiers.length > best.length) best = tiers
+    if (/(?:本基金)?不收取(?:申购|认购)费|(?:申购|认购)费率为零|不设置(?:申购|认购)费|本基金不收取申购费用/.test(window)) {
+      flat = flat ?? "0%"
+    }
+    const single =
+      window.match(/本基金(?:不收取申购费用，)?(?:申购|认购)\s*费\s*率[为是]?\s*([\d.]+)\s*%/)
+      || window.match(/(?:申购|认购)\s*费\s*率[为是]?\s*([\d.]+)\s*%/)
+    if (single?.[1]) flat = pct(single[1])
+  }
+  const schedule = formatPurchaseTiers(best)
+  if (schedule) return schedule
+  return flat
+}
 
 export function extractFeeRedeemFromText(text: string): string | null {
   const s = flattenCjk(text)
+  const schedule = extractRedeemSchedule(s)
+  if (schedule) return schedule
   const band = s.match(
     /持有(?:时间|期限|期)?\s*(?:低于|小于|不足|少于|不满)\s*(\d+)\s*个?(?:自然日|天)[^。]{0,48}赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%[^。]{0,160}赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%/,
   ) || s.match(
@@ -1486,9 +1861,17 @@ export function extractFeeRedeemFromText(text: string): string | null {
   }
   if (classes.length) return `赎回费${classes.join("，")}。`
   const timed = HOLD_LT_RE.test(s) && REDEEM_RATE_RE.test(s)
-  if (!timed && /赎回\s*费\s*率为\s*0\s*%|不收取赎回费|赎回费率为零|不设置赎回费/.test(s)) return "0%"
+  const scheduleHint = /赎回费率如下表|份额持有天数|持有天数（天）|D\s*[＜<≥>=]/.test(s)
+  if (!timed && !scheduleHint) {
+    const waiver = [...s.matchAll(/不收取赎回费|免赎回费|不设置赎回费|赎回费率为零/g)]
+    const genuineWaiver = waiver.some((item) => {
+      const ctx = nearby(s, item.index ?? 0, 18, 8)
+      return !/红利再投|再投资|临时开放/.test(ctx)
+    })
+    if (genuineWaiver || /本基金的?赎回\s*费\s*率为\s*0\s*%/.test(s)) return "0%"
+  }
   const single = s.match(/本基金的?赎回\s*费\s*率[为是]?\s*([\d.]+)\s*%/)
-  if (single && !timed) return pct(single[1])
+  if (single && !timed && !scheduleHint) return pct(single[1])
   return null
 }
 
@@ -1499,6 +1882,13 @@ function isFlatFeePercent(value: string | null | undefined): boolean {
 function isTimedRedeemFee(value: string | null | undefined): boolean {
   const s = value ?? ""
   return /持有/.test(s) && /赎回?费/.test(s)
+}
+
+function isTieredFeeText(value: string | null | undefined): boolean {
+  const s = value ?? ""
+  const pctCount = (s.match(/%/g) ?? []).length
+  if (pctCount >= 2 && /持有|不足|以上|以下|满\d+|万元/.test(s)) return true
+  return isTimedRedeemFee(s)
 }
 
 /** "90天以上无赎回费" names the zero band but drops 「低于 / 不含 / 及以上」. */
@@ -1514,7 +1904,7 @@ export function shouldUpgradeFeeRedeem(
   current: string | null | undefined,
   next: string | null | undefined,
 ): boolean {
-  if (!isTimedRedeemFee(next)) return false
+  if (!isTimedRedeemFee(next) && !isTieredFeeText(next)) return false
   return isFlatFeePercent(current) || isLooseRedeemWaiver(current)
 }
 
@@ -1526,6 +1916,58 @@ function preferFeeRedeem(
   if (isWeakShortFee(current)) return compact
   if (!compact) return current
   if (shouldUpgradeFeeRedeem(current, compact)) return compact
+  if ((current ?? "").length > compact.length + 20) return compact
+  return current
+}
+
+function preferFeePurchase(
+  current: string | null | undefined,
+  next: string | null,
+): string | null | undefined {
+  const compact = next && !isWeakShortFee(next) ? next : null
+  if (isWeakShortFee(current)) return compact
+  if (!compact) return current
+  if (isFlatFeePercent(current) && isTieredFeeText(compact)) return compact
+  if ((current ?? "").length > compact.length + 20) return compact
+  return current
+}
+
+function classManageRateMap(value: string | null | undefined): Record<string, string> {
+  const s = value ?? ""
+  const out: Record<string, string> = {}
+  for (const cls of ["A", "B", "C", "D"]) {
+    if (new RegExp(`${cls}\\s*类不计提`).test(s)) {
+      out[cls] = "0%"
+      continue
+    }
+    const found = s.match(new RegExp(`${cls}\\s*类[^；;。]{0,24}?([\\d.]+)\\s*%`))
+    if (found?.[1]) out[cls] = pct(found[1])
+  }
+  return out
+}
+
+function shouldUpgradeFeeManage(
+  current: string | null | undefined,
+  next: string | null | undefined,
+): boolean {
+  const nxt = (next ?? "").trim()
+  if (!nxt || isWeakFeeManage(nxt)) return false
+  if (isWeakFeeManage(current)) return true
+  const nextMap = classManageRateMap(nxt)
+  const rates = Object.values(nextMap)
+  if (Object.keys(nextMap).length < 2 || new Set(rates).size < 2) return false
+  const curMap = classManageRateMap(current)
+  return Object.keys(curMap).length < 2
+}
+
+function preferFeeManage(
+  current: string | null | undefined,
+  next: string | null,
+): string | null | undefined {
+  const compact = next && !isWeakFeeManage(next) ? next : null
+  if (isWeakFeeManage(current)) return compact
+  if (!compact) return current
+  if (shouldUpgradeFeeManage(current, compact)) return compact
   if ((current ?? "").length > compact.length + 20) return compact
   return current
 }
@@ -1629,6 +2071,18 @@ export function shouldUpgradeFormula(
   return hasNumericCarryRate(nxt) && !hasNumericCarryRate(current ?? "")
 }
 
+/** Keep a complete long 业绩报酬 write-up; only upgrade if current is weak, missing carry, or missing class labels. */
+function preferFeePay(
+  current: string | null | undefined,
+  next: string | null,
+): string | null | undefined {
+  const compact = next && !isWeakFeePay(next) ? next : null
+  if (compact && hasNumericCarryRate(compact) && !hasNumericCarryRate(current ?? "")) return compact
+  if (compact && shareClassLabelCount(compact) > shareClassLabelCount(current ?? "")) return compact
+  if (isWeakFeePay(current)) return compact
+  return current
+}
+
 function preferCarryComplete(
   current: string | null | undefined,
   next: string | null,
@@ -1650,10 +2104,9 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
   out.lock_period_desc = preferCompact(out.lock_period_desc, extractLockPeriodFromText(source), isWeakLockPeriod)
   if (isWeakLockPeriod(out.lock_period_desc)) out.lock_period_desc = "不设置"
   out.fee_pay_formula = preferCarryComplete(out.fee_pay_formula, extractFeePayFormulaFromText(source), isWeakFormula)
-  out.fee_manage = preferCompact(
+  out.fee_manage = preferFeeManage(
     out.fee_manage,
     summarizeFeeManageDesc(source, out.fee_manage, out.fee_manage_rate),
-    isWeakFeeManage,
   )
   // Derive fee_manage_rate from fee_manage text when the rate field is missing
   if (!out.fee_manage_rate || parseFloat(String(out.fee_manage_rate)) === 0) {
@@ -1663,9 +2116,10 @@ export function fillMissingElementsFromKeywords<T extends KeywordFillable>(
       if (Number.isFinite(n) && n > 0 && n <= 10) out.fee_manage_rate = `${n}%`
     }
   }
-  out.fee_pay = preferCarryComplete(out.fee_pay, summarizeFeePayDesc(source), isWeakFeePay)
+  out.fee_pay = preferFeePay(out.fee_pay, summarizeFeePayDesc(source))
   out.add_amount = preferCompact(out.add_amount, extractAddAmountFromText(source), isWeakAddAmount)
   out.fee_redeem = preferFeeRedeem(out.fee_redeem, extractFeeRedeemFromText(source))
+  out.fee_purchase = preferFeePurchase(out.fee_purchase, extractFeePurchaseFromText(source))
   out.closed_period = preferCompact(out.closed_period, extractClosedPeriodFromText(source), isWeakShortFee)
   if (isWeakShortFee(out.closed_period)) out.closed_period = "不设置"
   out.fee_trust = preferCompact(out.fee_trust, extractFeeTrustFromText(source), isWeakShortFee)

@@ -5,7 +5,7 @@
 
 import { query } from "@/lib/db"
 import { applyEmailProductCodeOverride, type ExtractedNavData } from "./email-nav-extract"
-import { fundNicknameMatchesFullName } from "@/lib/server/fund-name-match"
+import { fundNicknameMatchesFullName, isPlausibleEmailProductCode } from "@/lib/server/fund-name-match"
 
 export type EmailNavInsert = ExtractedNavData & {
   crawlEmailAccount: string
@@ -170,6 +170,14 @@ function receiverEmailValue(r: EmailNavInsert): string {
   return String(r.receiverEmail ?? "").trim().toLowerCase()
 }
 
+/** Keep 期 / A类, drop the legal suffix so full and short names share an identity. */
+function fundNameIdentity(name: string | null | undefined): string {
+  return String(name ?? "").trim().replace(/\s+/g, "").replace(
+    /(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)$/u,
+    "",
+  )
+}
+
 /**
  * `添运1号历史净值.xlsx` has no 备案号. Reuse a code already stored on a
  * longer legal name (众量资产添运1号…) so the series lands on the same fund.
@@ -192,21 +200,122 @@ async function fillMissingEmailNavProductCodes(records: EmailNavInsert[]): Promi
        AND (${missingNames.map((_, i) => `fund_name ILIKE '%' || $${i + 1} || '%'`).join(" OR ")})`,
     missingNames,
   )
-  if (known.length === 0) return
-
-  const codeByNickname = new Map<string, string>()
-  for (const nick of missingNames) {
-    const hits = known.filter((row) => fundNicknameMatchesFullName(nick, row.fund_name))
-    const codes = [...new Set(hits.map((row) => row.product_code))]
-    if (codes.length === 1 && codes[0]) codeByNickname.set(nick, codes[0])
+  if (known.length > 0) {
+    const codeByNickname = new Map<string, string>()
+    for (const nick of missingNames) {
+      const hits = known.filter((row) => fundNicknameMatchesFullName(nick, row.fund_name))
+      const codes = [...new Set(hits.map((row) => row.product_code))]
+      if (codes.length === 1 && codes[0]) codeByNickname.set(nick, codes[0])
+    }
+    for (const record of records) {
+      if (String(record.productCode ?? "").trim()) continue
+      const nick = String(record.fundName ?? "").trim()
+      const code = codeByNickname.get(nick)
+      if (code) record.productCode = code
+    }
   }
-  if (codeByNickname.size === 0) return
+
+  await fillMissingEmailNavProductCodesFromCatalog(records)
+}
+
+/**
+ * When email history has no product_code (泓湖稳健宏观对冲), look up a unique 备案号
+ * in private_fund_info / tracking cache. Identity is exact after dropping the
+ * legal suffix so 基金3期 / A类 cannot steal the parent code.
+ */
+async function fillMissingEmailNavProductCodesFromCatalog(records: EmailNavInsert[]): Promise<void> {
+  const missingNames = [
+    ...new Set(
+      records
+        .filter((r) => !String(r.productCode ?? "").trim() && String(r.fundName ?? "").trim())
+        .map((r) => String(r.fundName).trim()),
+    ),
+  ]
+  if (missingNames.length === 0) return
+
+  const identities = [...new Set(missingNames.map((name) => fundNameIdentity(name)).filter(Boolean))]
+  if (identities.length === 0) return
+
+  const likePred = identities.map((_, i) => (
+    `replace(COALESCE(product_name, '') || COALESCE(short_name, ''), ' ', '') ILIKE '%' || $${i + 1} || '%'`
+  )).join(" OR ")
+
+  const catalog = await query<{ beian_hao: string; product_name: string; short_name: string | null }>(
+    `SELECT beian_hao, product_name, short_name FROM (
+       SELECT BTRIM(beian_hao) AS beian_hao,
+              BTRIM(product_name) AS product_name,
+              NULL::text AS short_name
+         FROM private_fund_info
+        WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+          AND NULLIF(BTRIM(product_name), '') IS NOT NULL
+       UNION ALL
+       SELECT BTRIM(beian_hao),
+              BTRIM(product_name),
+              NULLIF(BTRIM(short_name), '')
+         FROM ops_tracking_funds_list_cache
+        WHERE NULLIF(BTRIM(beian_hao), '') IS NOT NULL
+     ) t
+     WHERE ${likePred}`,
+    identities,
+  ).catch(() => [] as { beian_hao: string; product_name: string; short_name: string | null }[])
+
+  if (catalog.length === 0) return
+
+  const codeByName = new Map<string, string>()
+  for (const nick of missingNames) {
+    const identity = fundNameIdentity(nick)
+    if (!identity) continue
+    const codes = [...new Set(
+      catalog
+        .filter((row) => (
+          fundNameIdentity(row.product_name) === identity
+          || fundNameIdentity(row.short_name) === identity
+        ))
+        .map((row) => row.beian_hao.trim().toUpperCase())
+        .filter((code) => isPlausibleEmailProductCode(code)),
+    )]
+    if (codes.length === 1 && codes[0]) codeByName.set(nick, codes[0])
+  }
+  if (codeByName.size === 0) return
 
   for (const record of records) {
     if (String(record.productCode ?? "").trim()) continue
-    const nick = String(record.fundName ?? "").trim()
-    const code = codeByNickname.get(nick)
+    const code = codeByName.get(String(record.fundName ?? "").trim())
     if (code) record.productCode = code
+  }
+}
+
+/**
+ * Unique key is (account, uid, date, filename, product_code). Two named funds
+ * in one workbook with no 备案号 would otherwise overwrite each other. When the
+ * incoming batch has that collision, tag each fund with a stable name identity.
+ * Skip when only one fund is missing a code (do not rewrite historical empty codes).
+ */
+function disambiguateEmptyProductCodes(records: EmailNavInsert[]): void {
+  const groups = new Map<string, EmailNavInsert[]>()
+  for (const record of records) {
+    const navDate = String(record.navDate ?? "").slice(0, 10)
+    if (!navDate) continue
+    const code = String(record.productCode ?? "").trim().toUpperCase()
+    const key = [
+      record.crawlEmailAccount,
+      record.emailUid,
+      navDate,
+      record.attachmentFilename ?? "",
+      code,
+    ].join("\0")
+    const list = groups.get(key)
+    if (list) list.push(record)
+    else groups.set(key, [record])
+  }
+  for (const group of groups.values()) {
+    if (group.some((record) => String(record.productCode ?? "").trim())) continue
+    const identities = new Set(group.map((record) => fundNameIdentity(record.fundName)).filter(Boolean))
+    if (identities.size < 2) continue
+    for (const record of group) {
+      const identity = fundNameIdentity(record.fundName)
+      if (identity) record.productCode = `NAME:${identity}`
+    }
   }
 }
 
@@ -214,6 +323,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
   if (records.length === 0) return 0
   await ensureEmailNavTable()
   await fillMissingEmailNavProductCodes(records)
+  disambiguateEmptyProductCodes(records)
 
   // Custody 净值表 often forward-fills Fri onto Sat/Sun — never persist those as NAV dates.
   const { isChinaTradingDay } = await import("@/lib/server/china-trading-calendar")

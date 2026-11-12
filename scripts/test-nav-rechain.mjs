@@ -34,6 +34,7 @@ import { deriveNetAssetValue, resolveEmailFundMetrics, isImplausibleAumJump } fr
 import {
   extractNavFromCiticsAnnouncementText,
   extractNavTableFromBuffer,
+  isNavTableAttachmentFilename,
   isNavTableZipFilename,
   selectNavTableAttachments,
 } from "../lib/server/email-nav-attachment.ts"
@@ -1380,6 +1381,52 @@ const cmsMultiAnalysis = analyzeNavWorkbook(cmsMultiBuf, "每日净值表.xls")
 assert(
   "cms multi-product workbook dedupes by date+code",
   cmsMultiAnalysis.rows.filter((r) => r.date === "2026-07-23").length === 2,
+)
+
+// Manager 净值信息 workbook: two funds, same weekly dates, 产品名称 only (no 产品代码).
+// Previously deduped on date+empty-code, so later rows overwrote the first fund.
+const honghuNavSubject = "泓湖博喻+稳健周净值数据"
+const honghuNavFilename = "净值信息-20261109112148.xlsx"
+assert(
+  "净值信息-YYYYMMDDHHMMSS.xlsx is a NAV table attachment by filename",
+  isNavTableAttachmentFilename(honghuNavFilename) === true,
+)
+assert(
+  "净值信息 xlsx is selected even without a 净值数据 subject",
+  selectNavTableAttachments("周报附件", [{ filename: honghuNavFilename, part: "2" }]).length === 1,
+)
+const honghuSheet = XLSX.utils.aoa_to_sheet([
+  ["产品名称", "净值日期", "单位净值", "累计单位净值", "净值来源"],
+  ["泓湖稳健宏观对冲私募证券投资基金", "2025-01-17", 7.8306, 7.8306, "托管行下发"],
+  ["泓湖稳健宏观对冲私募证券投资基金", "2025-01-24", 7.8147, 7.8147, "托管行下发"],
+  ["泓湖稳健宏观对冲私募证券投资基金", "2026-10-23", 8.3253, 8.3253, "托管行下发"],
+  ["泓湖稳健宏观对冲私募证券投资基金", "2026-10-30", 8.3253, 8.3253, "托管行下发"],
+  ["泓湖高腾博喻宏观策略私募证券投资基金", "2025-01-24", 1.3801, 1.3951, "托管行下发"],
+  ["泓湖高腾博喻宏观策略私募证券投资基金", "2026-10-23", 1.6666, 1.6912, "托管行下发"],
+  ["泓湖高腾博喻宏观策略私募证券投资基金", "2026-10-30", 1.6666, 1.6912, "托管行下发"],
+])
+const honghuBook = XLSX.utils.book_new()
+XLSX.utils.book_append_sheet(honghuBook, honghuSheet, "净值信息")
+const honghuBuf = XLSX.write(honghuBook, { type: "buffer", bookType: "xlsx" })
+const honghuAnalysis = analyzeNavWorkbook(honghuBuf, honghuNavFilename)
+assert(
+  "name-only multi-product workbook keeps both funds on the same date",
+  honghuAnalysis.rows.filter((r) => r.date === "2026-10-23").length === 2
+    && honghuAnalysis.rows.filter((r) => r.date === "2026-10-30").length === 2
+    && honghuAnalysis.rows.filter((r) => r.date === "2025-01-24").length === 2
+    && honghuAnalysis.rows.filter((r) => r.date === "2025-01-17").length === 1,
+)
+assert(
+  "name-only multi-product workbook does not treat 8.x vs 1.x as a spike",
+  honghuAnalysis.rows.some((r) => r.date === "2026-10-23" && r.fundName.includes("泓湖稳健") && r.unitNav === 8.3253)
+    && honghuAnalysis.rows.some((r) => r.date === "2026-10-23" && r.fundName.includes("博喻") && r.unitNav === 1.6666),
+)
+const honghuAttach = extractNavTableFromBuffer(honghuBuf, honghuNavFilename, honghuNavSubject)
+assert(
+  "name-only 净值信息 attachment keeps both same-date funds",
+  honghuAttach.filter((r) => r.navDate === "2026-10-30").length === 2
+    && honghuAttach.some((r) => r.navDate === "2026-10-30" && r.fundName.includes("泓湖稳健") && r.nav === 8.3253)
+    && honghuAttach.some((r) => r.navDate === "2026-10-30" && r.fundName.includes("博喻") && r.nav === 1.6666),
 )
 
 const shanxinAug21Subject =

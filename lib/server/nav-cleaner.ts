@@ -626,11 +626,34 @@ function filterImplausibleWorkbookNavRowsOneProduct(
   return cutFrom < filtered.length ? filtered.slice(0, cutFrom) : filtered
 }
 
+/** Normalize a workbook 产品名称 for identity: keep 期 / A类, drop legal suffix. */
+function navRowFundNameIdentity(name: string | null | undefined): string {
+  const trimmed = (name ?? "").trim().replace(/\s+/g, "")
+  if (!trimmed) return ""
+  return trimmed.replace(
+    /(私募证券投资基金|证券投资私募基金|私募基金|证券投资基金|投资基金)$/u,
+    "",
+  )
+}
+
+/**
+ * Identity for multi-product 净值表 rows. Product codes (CMS 备案号) come first;
+ * when a manager workbook only has 产品名称, the name must still keep both funds
+ * (泓湖稳健宏观对冲 vs 泓湖高腾博喻宏观策略 share dates but have no 产品代码).
+ */
+function navRowProductIdentity(row: Pick<NavCleanerRow, "productCode" | "fundName">): string {
+  const code = (row.productCode ?? "").trim().toUpperCase()
+  if (code) return `code:${code}`
+  const name = navRowFundNameIdentity(row.fundName)
+  if (name) return `name:${name}`
+  return ""
+}
+
 /** Run spike/return-index filters per product so multi-product sheets are not cross-contaminated. */
 function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: string[]): NavCleanerRow[] {
   const groups = new Map<string, NavCleanerRow[]>()
   for (const row of rows) {
-    const key = (row.productCode ?? "").trim().toUpperCase()
+    const key = navRowProductIdentity(row)
     const list = groups.get(key)
     if (list) list.push(row)
     else groups.set(key, [row])
@@ -642,12 +665,12 @@ function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: strin
   return out.sort((left, right) => {
     const byDate = left.date.localeCompare(right.date)
     if (byDate !== 0) return byDate
-    return (left.productCode ?? "").localeCompare(right.productCode ?? "")
+    return navRowProductIdentity(left).localeCompare(navRowProductIdentity(right))
   })
 }
 
 function navRowDedupeKey(row: NavCleanerRow): string {
-  return `${row.date}\0${(row.productCode ?? "").trim().toUpperCase()}`
+  return `${row.date}\0${navRowProductIdentity(row)}`
 }
 
 function formatTemplateDate(isoDate: string) {
@@ -749,7 +772,8 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     throw new Error("无法提取有效净值数据，请检查日期列和净值列内容。")
   }
 
-  // Deduplicate per (date, productCode) so multi-product CMS 净值表 sheets keep both funds.
+  // Deduplicate per (date, product identity) so multi-product 净值表 sheets keep
+  // both funds even when the workbook has 产品名称 but no 产品代码.
   const dedupedByKey = new Map<string, NavCleanerRow>()
   for (const row of parsedRows) {
     dedupedByKey.set(navRowDedupeKey(row), row)
@@ -758,7 +782,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
   const dedupedRows = [...dedupedByKey.values()].sort((left, right) => {
     const byDate = left.date.localeCompare(right.date)
     if (byDate !== 0) return byDate
-    return (left.productCode ?? "").localeCompare(right.productCode ?? "")
+    return navRowProductIdentity(left).localeCompare(navRowProductIdentity(right))
   })
   const duplicateDateCount = parsedRows.length - dedupedRows.length
   const nonTradingDayCount = dedupedRows.filter((row) => !row.isChinaTradingDay).length

@@ -27,6 +27,7 @@ import {
   parseFeePayFormulaConfig,
   type FeePayFormulaConfig,
 } from "@/lib/ma/fund-elements-extra"
+import { mergePerfFeeFields } from "@/lib/ma/product-field-config"
 import { parseValuationWorkbookFilename } from "@/lib/server/valuation-filename"
 import {
   fillMissingElementsFromKeywords,
@@ -357,7 +358,7 @@ const CONTRACT_SECTION_WINDOWS: ContractSectionWindow[] = [
   { re: /业绩报酬的?计算?公式|计提公式/g, before: 200, after: 2800, priority: 12, group: "perf" },
   { re: /业绩报酬|业绩提成|提取比例|高水位/g, before: 500, after: 4200, priority: 10, group: "perf" },
   { re: /年化收益率|计提比例/g, before: 300, after: 2800, priority: 9, group: "perf" },
-  { re: /申购费|赎回费/g, before: 180, after: 1800, priority: 8, group: "subscription" },
+  { re: /申购费|赎回费|赎回费率如下表|份额持有天数/g, before: 240, after: 2800, priority: 8, group: "subscription" },
   { re: /开放日|临时开放|临开/g, before: 180, after: 2000, priority: 8, group: "subscription" },
   { re: /固定开放日\s*[为是：:]|每(?:个自然)?周(?:的)?(?:第|[一二三四五六日天]|最后)|每个交易日开放|申购开放日|赎回开放日/g, before: 80, after: 600, priority: 12, group: "subscription" },
   { re: /封闭期|锁定期|份额锁定|不满.{0,12}不得赎回/g, before: 180, after: 2200, priority: 11, group: "lock" },
@@ -532,7 +533,7 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - is_temporary_open: "可临开"、"否"、"不可临开"、"可临开回" 之一；不要填 0、1、2。
 - fee_purchase: 申购费率，如 "0%"。
 - add_amount: 追加/申购金额限制，一两句，如「首次净申购不低于100万元」。
-- fee_redeem: 赎回费。持有期分档必须保留，例如「持有不足90天1%，满90天0%」。禁止因为最后一档是 0% 就只填「0%」。无赎回费才填「0%」。不要摘录计算过程。
+- fee_redeem: 赎回费。持有期分档必须保留，例如「持有不足90天赎回费1%，90天（含）至180天0.5%，满365天0%」或「持有不足90天赎回费0.5%，满90天0%」。表格里的【】数字也要展开。禁止因为最后一档是 0% 或文中有「红利再投不收取赎回费」就只填「0%」。无赎回费才填「0%」。不要摘录计算过程。
 - precautious_line: 预警线；无则填 "不设置预警线"
 - closed_period: 封闭期，如「不设置」或「6个月」。不要摘录释义。
 - stop_line: 平仓线/止损线；无则填 "不设置平仓线"
@@ -542,8 +543,8 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - fee_trust: 托管费，最多一句，如「年托管费率0.015%，每日计提，按自然季度支付。」禁止 H＝E 公式和划款流程。
 - fee_manage: 管理费说明，最多一句，如「年管理费率1%，每日计提，按自然季度支付。」禁止 H＝E 公式、费用种类清单、划款流程。
 - fee_admin_service: 外包费/运营服务费，最多一句，如「年运营服务费率0.015%，每日计提，按自然季度支付。」
-- fee_pay: 业绩报酬说明，一两句：必须同时写计提基准（若有）和计提比例，以及份额差异、计提时点。不要整章费用与税收。R>0% 只是超额计提起点，不是业绩基准；合同写明「计提基准为年化 X%」才填业绩基准。禁止只写「A类份额计提基准：年化10%」而漏掉「计提比例50%」——分类表里的计提比例就是超过基准以上部分管理人提取的比例。
-- fee_pay_formula: 只保留公式本身，一两行，如「R>6%时提取40%。R=(A-B)/C×365/N；E=K×T1×(R-B)×T/365×40%。」禁止费用种类清单、管理费/托管费公式、页码。A/B/C 比例不同时按类别列出。公式里的 Q 若合同已写明计提比例，必须写成具体百分数（如 ×50%），不要留 Q。
+- fee_pay: 业绩报酬（唯一文本字段）。把合同里所有业绩报酬内容写在这一格：计提/支付时点、份额差异、计提基准、计提比例、高水位、保底/下限、例外规则，以及公式本身。说明和公式不要拆开，公式可另起一行写在同一字段末尾。不要整章费用与税收。R>0% 只是超额计提起点，不是业绩基准；合同写明「计提基准为年化 X%」才填业绩基准。禁止只写「A类份额计提基准：年化10%」而漏掉「计提比例50%」——分类表里的计提比例就是超过基准以上部分管理人提取的比例。公式里的 Q 若合同已写明计提比例，必须写成具体百分数（如 ×50%），不要留 Q。A/B/C 比例不同时按类别列出。
+- fee_pay_formula: 必须填 null。公式已经写在 fee_pay 中，不要再单独填写。
 - fee_pay_formula_config: 若能归纳为单一主份额公式则输出对象，否则 null。格式：
   {"mode":"annual_gradient"|"excess_gradient"|"fixed"|"none","gradients":[{"fromPct":"0","toPct":"6","ratePct":"20"}]}
 
@@ -559,11 +560,9 @@ const EXTRACTION_PROMPT = `你是私募基金合同要素提取专家。请从�
 - 示例（管理费说明）：「年管理费率1%，每日计提，按季支付。」
 - 示例（托管费）：「年托管费率0.015%，每日计提，按自然季度支付。」
 - 示例（外包费）：「年运营服务费率0.015%，每日计提，按自然季度支付。」
-- 示例（业绩报酬说明）：「按业绩基准计提，业绩基准6%，计提比例40%。」
+- 示例（业绩报酬）：「按业绩基准计提，业绩基准6%，计提比例40%。基准6%；超额计提40%；R=(A-B)/C×365/N。」
 - 示例（分类表业绩报酬）：「A类计提基准年化10%，计提比例50%；B类不计提。」禁止只写计提基准。
-- 示例（多份额业绩报酬）：「A类超额计提30%；B类超额计提20%；C类不收取。」禁止只写「业绩基准0%」。
-- 示例（业绩报酬公式）：「基准6%；超额计提40%；R=(A-B)/C×365/N。」
-- 示例（多份额公式）：「A类超额计提30%；B类超额计提20%；C类不收取；R=(A-B)/C×100%；H=(R-0%)×20%×C×F。」
+- 示例（多份额业绩报酬）：「A类超额计提30%；B类超额计提20%；C类不收取。R=(A-B)/C×100%；H=(R-0%)×20%×C×F。」禁止只写「业绩基准0%」。
 - fee_manage_rate：各类相同则填该年化费率（如 "1.00%"）；各类不同时填 A 类或主份额费率，细节仍须写在 fee_manage 中。
 
 若文本是补充协议、修订协议、合同变更，或业绩报酬减免说明函、费率调整说明等非合同文件：这些文件同样会影响产品要素。请提取 fund_name、register_number，以及本文件明确变更或重申的最新规则（尤其是 fee_pay、fee_manage）；未提及的字段填 null。
@@ -625,10 +624,10 @@ export function applyContractKeywordFallbacks(
   text: string,
   extracted?: ExtractedFundElements | null,
 ): ExtractedFundElements {
-  const filled = fillMissingElementsFromKeywords(text, softenWeakExtractedFields({
+  const filled = mergePerfFeeFields(fillMissingElementsFromKeywords(text, softenWeakExtractedFields({
     ...EMPTY_ELEMENTS,
     ...(extracted ?? {}),
-  }))
+  })))
   const out: ExtractedFundElements = {
     ...filled,
     is_temporary_open: formatTemporaryOpen(filled.is_temporary_open) ?? filled.is_temporary_open,
@@ -1201,7 +1200,7 @@ export const FUND_ELEMENT_FIELD_LABELS: Record<ExtractedFundElementTextKey, stri
   fee_trust: "托管费",
   fee_manage: "管理费说明",
   fee_admin_service: "外包费",
-  fee_pay: "业绩报酬说明",
+  fee_pay: "业绩报酬",
   risk_level: "风险等级",
   lock_period_desc: "锁定期说明",
   fee_pay_formula: "业绩报酬公式",

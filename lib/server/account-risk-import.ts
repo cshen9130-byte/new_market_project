@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto"
 import { spawn, spawnSync } from "child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs"
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs"
 import path from "path"
 import * as XLSX from "xlsx"
 
@@ -28,6 +28,7 @@ import {
   type ImportBookSource,
 } from "@/lib/server/account-risk-books"
 import { appendJobLog } from "@/lib/server/account-risk-job-log"
+import { getServerStoragePath } from "@/lib/server/storage"
 import {
   isCfmmcWrongPasswordError,
   resolveCfmmcAccountStatus,
@@ -121,8 +122,41 @@ export type DownloadedFile = {
 }
 
 const DATA_ROOT = path.join(process.cwd(), "data", "account-risk")
-const EMAIL_CONFIG_FILE = path.join(DATA_ROOT, "email_config.json")
-const CFMMC_CONFIG_FILE = path.join(DATA_ROOT, "cfmmc_config.json")
+
+// Live 监控中心 / mailbox passwords live outside the git checkout so a
+// server git pull, reset --hard, or git clean cannot overwrite them.
+function accountRiskSecretDir(): string {
+  const fromEnv = process.env.ACCOUNT_RISK_CONFIG_DIR?.trim()
+  return fromEnv ? path.resolve(fromEnv) : getServerStoragePath("account-risk")
+}
+
+function resolveSecretConfigFile(name: "cfmmc_config.json" | "email_config.json"): string {
+  const destDir = accountRiskSecretDir()
+  const dest = path.join(destDir, name)
+  const legacy = path.join(DATA_ROOT, name)
+  if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
+  if (!existsSync(dest) && existsSync(legacy)) {
+    try {
+      if (!lstatSync(legacy).isSymbolicLink()) copyFileSync(legacy, dest)
+    } catch {
+      // Reader treats a missing dest as empty config.
+    }
+  }
+  return dest
+}
+
+function emailConfigFile(): string {
+  return resolveSecretConfigFile("email_config.json")
+}
+
+function cfmmcConfigFile(): string {
+  return resolveSecretConfigFile("cfmmc_config.json")
+}
+
+function ensureSecretDir() {
+  const dir = accountRiskSecretDir()
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+}
 
 const DEFAULT_EMAIL: AccountRiskEmailConfig = {
   email: "",
@@ -316,9 +350,9 @@ function cfmmcFetchEnv(account: CfmmcAccount): NodeJS.ProcessEnv {
 // ── email config ──────────────────────────────────────────────────────────────
 
 export function readEmailConfig(): AccountRiskEmailConfig {
-  if (!existsSync(EMAIL_CONFIG_FILE)) return { ...DEFAULT_EMAIL }
+  if (!existsSync(emailConfigFile())) return { ...DEFAULT_EMAIL }
   try {
-    const raw = JSON.parse(readFileSync(EMAIL_CONFIG_FILE, "utf-8")) as Partial<AccountRiskEmailConfig>
+    const raw = JSON.parse(readFileSync(emailConfigFile(), "utf-8")) as Partial<AccountRiskEmailConfig>
     return { ...DEFAULT_EMAIL, ...raw }
   } catch {
     return { ...DEFAULT_EMAIL }
@@ -326,8 +360,8 @@ export function readEmailConfig(): AccountRiskEmailConfig {
 }
 
 export function writeEmailConfig(cfg: AccountRiskEmailConfig): void {
-  ensureDataRoot()
-  writeFileSync(EMAIL_CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8")
+  ensureSecretDir()
+  writeFileSync(emailConfigFile(), JSON.stringify(cfg, null, 2), "utf-8")
 }
 
 export function publicEmailConfig(): AccountRiskEmailConfig {
@@ -356,9 +390,9 @@ export function saveEmailConfig(body: Partial<AccountRiskEmailConfig>): AccountR
 // ── CFMMC config ──────────────────────────────────────────────────────────────
 
 export function readCfmmcConfig(): CfmmcConfig {
-  if (!existsSync(CFMMC_CONFIG_FILE)) return { ...DEFAULT_CFMMC, accounts: [] }
+  if (!existsSync(cfmmcConfigFile())) return { ...DEFAULT_CFMMC, accounts: [] }
   try {
-    const raw = JSON.parse(readFileSync(CFMMC_CONFIG_FILE, "utf-8")) as Partial<CfmmcConfig>
+    const raw = JSON.parse(readFileSync(cfmmcConfigFile(), "utf-8")) as Partial<CfmmcConfig>
     const stored = Array.isArray(raw.accounts) ? raw.accounts : []
     const justPaused: string[] = []
     const accounts = stored.map((a) => {
@@ -389,8 +423,8 @@ export function readCfmmcConfig(): CfmmcConfig {
 }
 
 export function writeCfmmcConfig(cfg: CfmmcConfig): void {
-  ensureDataRoot()
-  writeFileSync(CFMMC_CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8")
+  ensureSecretDir()
+  writeFileSync(cfmmcConfigFile(), JSON.stringify(cfg, null, 2), "utf-8")
 }
 
 export function publicCfmmcConfig(): CfmmcConfig {

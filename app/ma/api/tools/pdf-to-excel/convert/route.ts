@@ -2,7 +2,7 @@ import { convertUploadedPdf, parsePdfExcelMode, type PdfExcelSummary } from "@/l
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-export const maxDuration = 600
+export const maxDuration = 3600
 
 const MAX_BYTES = 40 * 1024 * 1024
 
@@ -44,7 +44,10 @@ export async function POST(request: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`))
+        const line = `${JSON.stringify(event)}\n`
+        // Pad so proxies / Next dev do not buffer the first progress events.
+        const pad = line.length < 2048 ? " ".repeat(2048 - line.length) + "\n" : ""
+        controller.enqueue(encoder.encode(line + pad))
       }
       try {
         send({ type: "progress", percent: 4, message: "已收到文件，开始识别" })

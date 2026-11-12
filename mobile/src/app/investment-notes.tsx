@@ -32,6 +32,22 @@ type Props = { onBack?: () => void }
 
 const PRIVATE_FUND_CATEGORY = "私募基金"
 
+function combinePerfFeeText(desc?: string | null, formula?: string | null): string | null {
+  const blank = (v?: string | null) => {
+    const s = String(v ?? "").trim()
+    return !s || /^(?:—+|-|无|暂无|见合同|详见合同|同上)$/.test(s)
+  }
+  const a = blank(desc) ? "" : String(desc).trim()
+  const b = blank(formula) ? "" : String(formula).trim()
+  if (!a) return b || null
+  if (!b) return a
+  const an = a.replace(/\s+/g, "")
+  const bn = b.replace(/\s+/g, "")
+  if (an.includes(bn)) return a
+  if (bn.includes(an)) return b
+  return `${a}\n${b}`
+}
+
 export default function InvestmentNotesScreen({ onBack }: Props) {
   const [keyword, setKeyword] = useState("")
   const [rows, setRows] = useState<InvestmentNoteListItem[]>([])
@@ -413,8 +429,7 @@ function AssociatedProductCard({ association }: { association: InvestmentNoteAss
           />
           <ElementFullRows
             rows={[
-              { label: "业绩报酬说明", value: profile?.fee_pay },
-              { label: "业绩报酬公式", value: profile?.fee_pay_formula },
+              { label: "业绩报酬", value: combinePerfFeeText(profile?.fee_pay, profile?.fee_pay_formula) },
             ]}
           />
           {!profile ? (

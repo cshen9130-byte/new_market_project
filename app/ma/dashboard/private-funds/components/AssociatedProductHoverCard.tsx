@@ -7,6 +7,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card"
 import { TrendHoverChart } from "@/components/ma/trend-hover-chart"
+import { combinePerfFeeText } from "@/lib/ma/product-field-config"
 
 type ProfileData = {
   fund_name: string | null
@@ -173,10 +174,14 @@ function ProductHoverBody({
                   { label: "锁定期说明", value: profile.lock_period_desc },
                   { label: "管理费说明", value: profile.fee_manage },
                   { label: "外包费", value: profile.fee_admin_service },
-                  { label: "业绩报酬说明", value: profile.fee_pay },
-                  { label: "业绩报酬公式", value: profile.fee_pay_formula },
                 ]}
               />
+              <div className="mt-1.5">
+                <div className="text-[11px] text-zinc-400">业绩报酬</div>
+                <div className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">
+                  {display(combinePerfFeeText(profile.fee_pay, profile.fee_pay_formula))}
+                </div>
+              </div>
             </div>
           </>
         ) : (

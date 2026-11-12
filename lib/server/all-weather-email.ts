@@ -421,7 +421,7 @@ export function renderDailyEmailHtml(overview: OverviewPayload, extraNames: stri
     }
     <p style="margin-top:8px;color:#94a3b8;font-size:12px;">
       手数按最近一次月末再平衡目标权重（${strategy.lastRebalance}）缩放至 ${yuan(book.initialCapital)} 元。
-      价格来源：${book.priceSource === "sina" ? "新浪行情" : "回测快照"}。债券仅 T，权益为 IF/IC/IM。合约按设置使用${
+      价格来源：${book.priceSource === "sina" ? "新浪行情" : book.priceSource === "ctp" ? "CTP行情" : book.priceSource === "eastmoney" ? "东财行情" : "回测快照"}。债券仅 T，权益为 IF/IC/IM。合约按设置使用${
         overview.settings?.contractTenor === "following" ? "下季/次主力" : "当月/主力"
       }月份。
     </p>

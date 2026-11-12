@@ -1,3 +1,4 @@
+import { combinePerfFeeText } from "@/lib/ma/product-field-config"
 import { publicQuery, query } from "@/lib/db"
 import { loadExtractedElementDisplayValues } from "@/lib/server/fund-elements-write"
 import { resolveFundElementsBeianKeys } from "@/lib/server/fund-elements-lookup"
@@ -58,9 +59,7 @@ function formatFeeStructure(el: {
   fee_pay_formula?: string | null
 }): string {
   const manage = clean(el.fee_manage) || (clean(el.fee_manage_rate) ? `管理费${clean(el.fee_manage_rate)}` : "")
-  const perf = clean(el.fee_pay) || (clean(el.fee_pay_formula) && clean(el.fee_pay_formula) !== "无"
-    ? clean(el.fee_pay_formula)
-    : "")
+  const perf = combinePerfFeeText(el.fee_pay, el.fee_pay_formula) || ""
   return [manage, perf].filter(Boolean).join(" + ")
 }
 

@@ -53,9 +53,10 @@ const AMAC_LIST_SOURCE = `(
 ) i`
 
 /**
- * AMAC + BFL-only rows (share-class tiers from 要素提取 / 分级创建).
+ * AMAC + catalog-only rows (share-class tiers from 要素提取 / 分级创建, and
+ * type6 team-data share classes such as TG733C that are not in AMAC / BFL).
  * Used for keyword search so AJD58B-style products are findable; browse stays AMAC-only.
- * BFL-only rows have no stored manager; inheritShareClassParentFields fills it from the parent.
+ * Catalog-only rows have no stored manager; inheritShareClassParentFields fills it from the parent.
  */
 const SEARCH_LIST_SOURCE = `(
   SELECT ${LIST_INFO_COLUMNS}
@@ -84,6 +85,44 @@ const SEARCH_LIST_SOURCE = `(
   WHERE NOT EXISTS (
     SELECT 1 FROM private_fund_info p WHERE p.beian_hao = b.beian_hao
   )
+  UNION ALL
+  SELECT
+    t.register_number AS beian_hao,
+    COALESCE(NULLIF(BTRIM(t.fund_name), ''), NULLIF(BTRIM(t.fund_short_name), '')) AS product_name,
+    COALESCE(NULLIF(BTRIM(t.fund_short_name), ''), t.fund_name) AS stored_product_name,
+    t.company_strategy_one AS strategy_l1,
+    t.company_strategy_two AS strategy_l2,
+    ''::text AS manager,
+    NULL::date AS inception_date,
+    NULL::text AS benchmark,
+    NULL AS ret_1w,
+    NULL AS ret_1m,
+    NULL AS ret_3m,
+    NULL AS ret_6m,
+    NULL AS ret_1y,
+    NULL AS sharpe_1y,
+    NULL AS calmar_1y,
+    NULL AS latest_nav,
+    NULL AS latest_nav_date
+  FROM (
+    SELECT DISTINCT ON (BTRIM(register_number))
+      BTRIM(register_number) AS register_number,
+      fund_name,
+      fund_short_name,
+      company_strategy_one,
+      company_strategy_two
+    FROM type6_ops_team_full
+    WHERE register_number IS NOT NULL AND BTRIM(register_number) <> ''
+    ORDER BY BTRIM(register_number), updated_at DESC NULLS LAST, id DESC
+  ) t
+  WHERE t.register_number IS NOT NULL
+    AND COALESCE(NULLIF(BTRIM(t.fund_name), ''), NULLIF(BTRIM(t.fund_short_name), '')) IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM private_fund_info p WHERE p.beian_hao = t.register_number
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM private_fund_info_bfl b WHERE b.beian_hao = t.register_number
+    )
 ) i`
 
 const ALLOWED_SORT: Record<string, string> = {

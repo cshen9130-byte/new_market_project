@@ -59,7 +59,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("account-dashboard", "我的看板", "/ma/dashboard/account", "我的看板", "any", ["账户看板", "个人看板", "图表订阅", "账户设置"]),
   p("event-calendar", "事件日历", "/ma/dashboard/event-calendar", "事件日历", "any", ["财经日历", "宏观日历", "经济日历"]),
   p("macro", "宏观市场", "/ma/dashboard/macro-market", "宏观市场", "any", ["宏观", "PCA", "货币信用", "FOMC", "CPI", "全球", "美国", "失业", "FedWatch"]),
-  p("stock", "股票市场", "/ma/dashboard/stock-market", "股票市场", "any", ["股票", "A股"]),
+  p("stock", "股票市场", "/ma/dashboard/stock-market", "股票市场", "any", ["股票", "A股", "拥挤度", "国家队", "净申赎", "观察池"]),
   p("futures", "期货市场", "/ma/dashboard/futures-market", "期货市场", "any", ["期货", "南华", "商品期货"]),
   p("options", "期权市场", "/ma/dashboard/options-market", "期权市场", "any", ["期权"]),
   p("realtime", "实时行情", "/ma/dashboard/realtime-quotes", "实时行情", "any", ["CTP", "股指期货行情"]),
