@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { requestIsHttps, sessionCookieHeader, signSession } from "@/lib/server/mcp-oauth"
 import { clientIpFromRequest } from "@/lib/server/deploy-readiness"
 import { recordLoginAttempt } from "@/lib/server/login-history"
 import { verifyLogin } from "@/lib/server/users"
@@ -45,7 +46,9 @@ export async function POST(req: Request) {
       userAgent,
       user: { id: user.id, name: user.name, email: user.email },
     })
-    return NextResponse.json({ ok: true, user })
+    const res = NextResponse.json({ ok: true, user })
+    res.headers.append("Set-Cookie", sessionCookieHeader(signSession(user.id), requestIsHttps(req)))
+    return res
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "服务器错误" }, { status: 500 })
   }

@@ -30,6 +30,14 @@ export function accountNumericId(account: string): string {
   return digits.replace(/^0+/, "") || "0"
 }
 
+/** True when `ids` is the same set as QUANT_ACCOUNT_IDS (order ignored). */
+export function isDefaultQuantIds(ids: Iterable<number>): boolean {
+  const a = [...ids].sort((x, y) => x - y)
+  if (a.length !== QUANT_ACCOUNT_IDS.length) return false
+  const b = [...QUANT_ACCOUNT_IDS].sort((x, y) => x - y)
+  return a.every((n, i) => n === b[i])
+}
+
 export function parseQuantIdList(raw: string | null | undefined, useDefaultIfMissing = true): number[] {
   if (raw == null) return useDefaultIfMissing ? [...QUANT_ACCOUNT_IDS] : []
   if (!raw.trim()) return []

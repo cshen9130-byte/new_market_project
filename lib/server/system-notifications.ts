@@ -575,8 +575,11 @@ export async function notifyMomVarBudget(source: string): Promise<MomVarNotifyRe
 export async function notifyMomDecisionSignals(source: string): Promise<MomVarNotifyResult> {
   const { briefingDecisionHits, momDecisionSignalMessage } = await import("@/lib/mom-decision-signal")
   const { GET } = await import("@/app/ma/api/mom-analysis/quant-vs-subjective/route")
-  const response = await GET(new Request("http://localhost/ma/api/mom-analysis/quant-vs-subjective"))
-  const json = await response.json().catch(() => null) as {
+  const { QUANT_ACCOUNT_IDS } = await import("@/lib/ma/quant-accounts")
+  const { expandQuantVsSubjectivePayload } = await import("@/lib/ma/quant-vs-subjective-payload")
+  const qs = new URLSearchParams({ quantIds: QUANT_ACCOUNT_IDS.join(",") })
+  const response = await GET(new Request(`http://localhost/ma/api/mom-analysis/quant-vs-subjective?${qs}`))
+  const json = expandQuantVsSubjectivePayload(await response.json().catch(() => null)) as {
     ok?: boolean
     date?: string | null
     quantShare?: number

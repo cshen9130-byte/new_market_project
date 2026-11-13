@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -25,6 +25,7 @@ import {
 import { ACTION_ORDER, MomSignalTable, compareByAction } from "@/components/ma/mom-signal-table"
 import QuantVsSubjectiveHoldingTs, { type HoldingChartPart, type HoldingFocus, type HoldingTs } from "@/components/ma/quant-vs-subjective-holding-ts"
 import { QUANT_ACCOUNT_IDS, accountNumericId } from "@/lib/ma/quant-accounts"
+import { expandQuantVsSubjectivePayload } from "@/lib/ma/quant-vs-subjective-payload"
 import {
   HelpConsensusKpi,
   HelpDivKpi,
@@ -87,7 +88,7 @@ interface ApiData {
   volDays?: number
   sectors: CompareRow[]
   products: CompareRow[]
-  sectorTs: {
+  sectorTs?: {
     date: string
     sector: string
     quantNetPct: number
@@ -430,6 +431,7 @@ export default function QuantVsSubjectiveCharts({ part }: { part?: QuantVsSubjec
   const [quantAccs, setQuantAccs] = useState<string[]>([])
   const [subjAccs, setSubjAccs] = useState<string[]>([])
   const [asOf, setAsOf] = useState("")
+  const loadGen = useRef(0)
 
   useEffect(() => {
     const seenKey = "ma-qvs-quant-ids-seen"
@@ -459,30 +461,69 @@ export default function QuantVsSubjectiveCharts({ part }: { part?: QuantVsSubjec
     try { localStorage.setItem(QUANT_IDS_STORAGE, JSON.stringify(ids)) } catch { /* ignore */ }
   }
 
+  const applyPayload = useCallback((raw: ApiData, isLight: boolean) => {
+    const j = expandQuantVsSubjectivePayload(raw)
+    setData((prev) => {
+      if (isLight && prev) {
+        return {
+          ...j,
+          sectorTs: j.sectorTs?.length ? j.sectorTs : prev.sectorTs,
+          productTs: j.productTs?.length ? j.productTs : prev.productTs,
+          holdingTs: j.holdingTs ?? prev.holdingTs,
+        }
+      }
+      return j
+    })
+    setQuantAccs(j.groups?.quant.accounts ?? [])
+    setSubjAccs(j.groups?.subjective.accounts ?? [])
+    if (!isLight) {
+      const secs = [...new Set((j.sectorTs ?? []).map((x) => x.sector))]
+      setTsSector((prev) => (prev && secs.includes(prev) ? prev : secs[0] ?? ""))
+      const prodCodes = [...new Set((j.productTs ?? []).map((x) => x.product))]
+      const ranked = (j.products ?? []).map((p) => p.key).filter((k) => prodCodes.includes(k))
+      const pick = ranked[0] ?? prodCodes[0] ?? ""
+      setTsProd((prev) => (prev && prodCodes.includes(prev) ? prev : pick))
+    }
+    if (asOf && j.date && j.date !== asOf) setAsOf(j.date)
+  }, [asOf])
+
   const load = useCallback(() => {
     if (!quantIds) return
+    const seq = ++loadGen.current
     setLoading(true)
     setError(null)
     const qs = new URLSearchParams({ quantIds: quantIds.join(",") })
     if (asOf) qs.set("date", asOf)
-    fetch(`/ma/api/mom-analysis/quant-vs-subjective?${qs}`)
-      .then((r) => r.json())
-      .then((j: ApiData) => {
-        if (j.ok === false) { setError(j.error ?? "加载失败"); return }
-        setData(j)
-        setQuantAccs(j.groups?.quant.accounts ?? [])
-        setSubjAccs(j.groups?.subjective.accounts ?? [])
-        const secs = [...new Set((j.sectorTs ?? []).map((x) => x.sector))]
-        setTsSector((prev) => (prev && secs.includes(prev) ? prev : secs[0] ?? ""))
-        const prodCodes = [...new Set((j.productTs ?? []).map((x) => x.product))]
-        const ranked = (j.products ?? []).map((p) => p.key).filter((k) => prodCodes.includes(k))
-        const pick = ranked[0] ?? prodCodes[0] ?? ""
-        setTsProd((prev) => (prev && prodCodes.includes(prev) ? prev : pick))
-        if (asOf && j.date && j.date !== asOf) setAsOf(j.date)
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "请求失败"))
-      .finally(() => setLoading(false))
-  }, [quantIds, asOf])
+    const lightQs = new URLSearchParams(qs)
+    lightQs.set("light", "1")
+
+    void (async () => {
+      let painted = false
+      try {
+        const lightResp = await fetch(`/ma/api/mom-analysis/quant-vs-subjective?${lightQs}`)
+        const lightJson = await lightResp.json() as ApiData
+        if (seq !== loadGen.current) return
+        if (lightJson.ok !== false) {
+          applyPayload(lightJson, true)
+          painted = true
+          setLoading(false)
+        }
+        const fullResp = await fetch(`/ma/api/mom-analysis/quant-vs-subjective?${qs}`)
+        const fullJson = await fullResp.json() as ApiData
+        if (seq !== loadGen.current) return
+        if (fullJson.ok === false) {
+          if (!painted) setError(fullJson.error ?? "加载失败")
+          return
+        }
+        applyPayload(fullJson, false)
+      } catch (e) {
+        if (seq !== loadGen.current) return
+        if (!painted) setError(e instanceof Error ? e.message : "请求失败")
+      } finally {
+        if (seq === loadGen.current) setLoading(false)
+      }
+    })()
+  }, [quantIds, asOf, applyPayload])
 
   useEffect(() => { load() }, [load])
 
@@ -990,10 +1031,10 @@ export default function QuantVsSubjectiveCharts({ part }: { part?: QuantVsSubjec
       {!part && <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         <Kpi title="量化保证金" value={data ? fmtYi(data.groups?.quant.margin ?? 0) : "—"} hint={data ? `${data.groups?.quant.nAccounts ?? 0} 户 · 占比 ${fmtPct(data.quantShare, false)}` : ""} accent={QUANT_COLOR} help={<HelpQuantMargin />} />
         <Kpi title="主观保证金" value={data ? fmtYi(data.groups?.subjective.margin ?? 0) : "—"} hint={data ? `${data.groups?.subjective.nAccounts ?? 0} 户 · 占比 ${fmtPct(100 - (data.quantShare ?? 0), false)}` : ""} accent={SUBJ_COLOR} help={<HelpSubjMargin />} />
-        <Kpi title="共识加码" value={loading ? "…" : String(nConsensus)} hint="存量同向且边际同向加仓" help={<HelpConsensusKpi />} />
-        <Kpi title="暂缓加码" value={loading ? "…" : String(nPause)} hint="存量同向、边际反向" help={<HelpMarginKpi />} />
-        <Kpi title="减码准备" value={loading ? "…" : String(nTrim)} hint="存量同向、两侧都在减" help={<HelpMarginKpi />} />
-        <Kpi title="方向分歧" value={loading ? "…" : String(nDiv)} hint="暂不加该方向 beta" help={<HelpDivKpi />} />
+        <Kpi title="共识加码" value={loading && !data ? "…" : String(nConsensus)} hint="存量同向且边际同向加仓" help={<HelpConsensusKpi />} />
+        <Kpi title="暂缓加码" value={loading && !data ? "…" : String(nPause)} hint="存量同向、边际反向" help={<HelpMarginKpi />} />
+        <Kpi title="减码准备" value={loading && !data ? "…" : String(nTrim)} hint="存量同向、两侧都在减" help={<HelpMarginKpi />} />
+        <Kpi title="方向分歧" value={loading && !data ? "…" : String(nDiv)} hint="暂不加该方向 beta" help={<HelpDivKpi />} />
       </div>}
 
       {(show("signals") || show("allocation")) && <div className={part ? "contents" : "grid grid-cols-1 lg:grid-cols-3 gap-4"}>

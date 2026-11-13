@@ -1,0 +1,59 @@
+{
+  "name": "mom-trader-analyst",
+  "version": "1.0.0",
+  "description": "MOM account analyst that uses the signed-in user's MOM data MCP only.",
+  "author": {
+    "name": "MA"
+  },
+  "agents": [
+    "./agents/mom-trader-analyst.md"
+  ],
+  "expertType": "agent",
+  "agentName": "mom-trader-analyst",
+  "displayName": {
+    "en": "MOM盘手分析助手",
+    "zh": "MOM盘手分析助手"
+  },
+  "profession": {
+    "en": "MOM 账户分析",
+    "zh": "MOM 账户分析"
+  },
+  "displayDescription": {
+    "en": "MOM account analyst that uses the signed-in user's MOM data MCP only.",
+    "zh": "在用户本人的 MOM数据API 权限下，分析账户权益、持仓、成交与历史风险指标，不编造账号或数据。"
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "List MOM accounts I can see and their latest equity and margin usage.",
+    "zh": "列出我能看到的 MOM 账户，以及最近一天的权益和保证金使用率。"
+  },
+  "plugin": "mom-trader-analyst",
+  "tags": [
+    {
+      "en": "MOM accounts",
+      "zh": "MOM账户"
+    },
+    {
+      "en": "Positions",
+      "zh": "持仓成交"
+    },
+    {
+      "en": "Risk metrics",
+      "zh": "风险指标"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "en": "List MOM accounts I can see and their latest equity and margin usage.",
+      "zh": "列出我能看到的 MOM 账户，以及最近一天的权益和保证金使用率。"
+    },
+    {
+      "en": "Show the adjusted NAV for CITIC Futures account 85121150 over the last month.",
+      "zh": "查看国泰君安期货 85121150 最近一个月的复权净值。"
+    },
+    {
+      "en": "Compute this year's Sharpe, max drawdown and 95% historical VaR from booked daily PnL.",
+      "zh": "用入库数据计算这个账号今年以来的夏普、最大回撤和 95% 历史 VaR。"
+    }
+  ]
+}

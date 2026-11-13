@@ -5936,7 +5936,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => { setQueryMode("deep"); setUseBm25(true); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "deep" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🔬 全面扫描</button>
                       <button type="button" onClick={() => { setQueryMode("thinking"); setUseBm25(true); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "thinking" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🧠 深度思考</button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">超速：turbo+纯向量，3-5秒；精准：plus+BM25，约10秒；全面扫描：top-20 检索，适合列举全部；深度思考：qwen-max + top-40 检索，适合复杂分析。</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">超速：qwen-flash+纯向量，3-5秒；精准：plus+BM25，约10秒；全面扫描：top-20 检索，适合列举全部；深度思考：qwen-max + top-40 检索，适合复杂分析。</p>
                   </div>
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">索引覆盖检查</div>
@@ -6939,7 +6939,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => { setQueryMode("deep"); setUseBm25(true); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "deep" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🔬 全面扫描</button>
                       <button type="button" onClick={() => { setQueryMode("thinking"); setUseBm25(true); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "thinking" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🧠 深度思考</button>
                     </div>
-                    <p className="text-[11px] text-cyan-300/60">超速：turbo+纯向量，3-5秒；精准：plus+BM25，约10秒；全面扫描：top-20 检索，适合列举全部；深度思考：qwen-max + top-40 检索，适合复杂分析。</p>
+                    <p className="text-[11px] text-cyan-300/60">超速：qwen-flash+纯向量，3-5秒；精准：plus+BM25，约10秒；全面扫描：top-20 检索，适合列举全部；深度思考：qwen-max + top-40 检索，适合复杂分析。</p>
                     <div className="mt-1 text-xs font-medium text-cyan-300/80">索引覆盖检查</div>
                     <div className="flex gap-1.5">
                       <button

@@ -1,8 +1,10 @@
 import {
   FUND_DATA_API_BASE,
-  FUND_DATA_MCP_URL,
+  FUND_DATA_HTTPS_MCP_URL,
   FUND_DATA_PUBLIC_ORIGIN,
 } from "@/lib/ma/fund-data-public"
+import { buildMcpClientsMarkdown } from "@/lib/ma/mcp-client-docs"
+import { buildWorkBuddyGuideMarkdown } from "@/lib/ma/workbuddy-api-guide"
 
 const FENCE = "@@FENCE@@"
 
@@ -21,7 +23,7 @@ export function buildFundDataApiGuide(apiKey: string): string {
 | --- | --- |
 | 网站 | ${FUND_DATA_PUBLIC_ORIGIN} |
 | HTTP 基址 | \`${FUND_DATA_API_BASE}\` |
-| MCP 地址 | \`${FUND_DATA_MCP_URL}\` |
+| MCP 地址 | \`${FUND_DATA_HTTPS_MCP_URL}\` |
 | API Key | \`${key}\` |
 
 完整 URL = HTTP 基址 + 路径。例如 \`${FUND_DATA_API_BASE}/fund/info\`。
@@ -85,26 +87,9 @@ const res = await fetch("${FUND_DATA_API_BASE}/fund/search?q=SR6089", {
 const json = await res.json()  // { error_code, msg, data }
 ${FENCE}
 
-## 2. MCP 接入（Cursor / Claude）
+## 2. MCP 接入
 
-在 Cursor 或 Claude Desktop 的 MCP 配置里填生产地址，并用 API Key 作为请求头。
-
-1. 打开 Cursor Settings → MCP（或 Claude Desktop → Developer → Edit Config）。
-2. 新增 \`fund-data\`，类型选 URL，把下面 JSON 贴进去。
-3. 启用后可以直接用自然语言提问，例如对比两只基金、查净值、问某人在路演里看多什么。模型会按下面的工具名去调用。
-
-${FENCE}json
-{
-  "mcpServers": {
-    "fund-data": {
-      "url": "${FUND_DATA_MCP_URL}",
-      "headers": {
-        "x-api-key": "${key}"
-      }
-    }
-  }
-}
-${FENCE}
+WorkBuddy 优先用下方的 OAuth 登录。Cursor、豆包、Codex、Claude 用你自己的 API Key 作为请求头。不要把这把 Key 发给同事或写进团队空间。连上之后可以直接用自然语言提问，模型会按下面的工具名去调用。
 
 公开工具（任何持有有效 Key 的账户）：\`fund_search\`、\`fund_info\`、\`fund_price\`、\`fund_price_bulk\`、\`fund_multi_price\`、\`fund_advanced_list\`、\`fund_view\`、\`company_info\`、\`company_fund_list\`、\`amac_fund\`、\`amac_fund_search\`、\`amac_manager\`、\`amac_manager_funds\`。
 
@@ -115,6 +100,12 @@ ${FENCE}
 - AI 研究员（需 AI 研究员）：\`ai_researcher_compare\`、\`ai_researcher_similar\`、\`ai_researcher_opposite\`、\`ai_researcher_roadshow\`、\`ai_researcher_team_background\`、\`ai_researcher_manager_profile\`。
 - AI 知识库（需 AI 知识库）：问某人观点用 \`kb_ask\`，只要原文片段用 \`kb_search\`，读全文用 \`kb_read\`，看有哪些文件用 \`kb_list\`。见下方「问知识库」。
 - 外部业绩榜（需投资页，并且要有 AI 知识库）：\`external_rank_compare\`。用知识库里的点睛等业绩榜 xlsx，和跟踪池同一策略对比。见下方「外部业绩榜」。
+
+
+
+${buildWorkBuddyGuideMarkdown("fund")}
+
+${buildMcpClientsMarkdown("fund", key)}
 
 ## 用法示例
 
@@ -716,6 +707,8 @@ MCP：\`fund_price\`
 
 \`price_change\` 与 \`ret_*\` 一样是百分比：\`0.2976\` 表示上涨 0.2976%（净值从 1.344 到 1.348）。全序列第一天为 \`null\`，之后的持平日为 \`0\`。
 
+响应里的 \`summary\` 覆盖本次返回的序列：\`latest_nav\`、\`return_pct\`、\`max_nav\`、\`max_drawdown_pct\`。\`12.07\` 表示从区间高点回撤 12.07%。画曲线时直接用这些数，不必再扫一遍 \`data\`。
+
 | 参数 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | reg_code | 是 | string | 备案号或份额代码。也接受产品名 |
@@ -1105,6 +1098,115 @@ ${FENCE}json
   "pagesize": 20,
   "list": [
     { "source": "private", "fund_no": "SR6089", "fund_name": "幻方中证500指数增强", "working_state": "正在运作", "fund_type": "私募证券投资基金" }
+  ]
+}
+${FENCE}
+
+### GET /valuation/products
+
+MCP：\`valuation_products\`。MCP 调用的就是这个接口。
+
+已入库估值表的全部产品，不按在管或跟踪池过滤。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| q | 否 | string | 产品名或备案号，模糊匹配。不传则列出全部 |
+| page / pagesize | 否 | int | 默认 1 / 50，pagesize 最大 200 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/valuation/products?q=%E6%A3%95%E6%A6%88%E6%BB%A9%E6%B3%B0%E6%9D%A5"
+${FENCE}
+
+${FENCE}json
+{ "name": "valuation_products", "arguments": { "q": "棕榈滩泰来" } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "total": 1,
+  "page": 1,
+  "pagesize": 50,
+  "products": [
+    { "reg_code": "SXXXXX", "fund_name": "棕榈滩泰来A类", "record_count": 5, "date_from": "2026-02-09", "date_to": "2026-02-13" }
+  ]
+}
+${FENCE}
+
+### GET /valuation/dates
+
+MCP：\`valuation_dates\`
+
+一只产品已有估值表的日期，升序分页。\`reg_code\` 与 \`q\` 至少填一个。份额代码落到同一套估值表。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| reg_code | 二选一 | string | 备案号 |
+| q | 二选一 | string | 产品名称 |
+| page / pagesize | 否 | int | 默认 1 / 100，pagesize 最大 500 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/valuation/dates?q=%E6%A3%95%E6%A6%88%E6%BB%A9%E6%B3%B0%E6%9D%A5A%E7%B1%BB"
+${FENCE}
+
+${FENCE}json
+{ "name": "valuation_dates", "arguments": { "q": "棕榈滩泰来A类" } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "reg_code": "SXXXXX",
+  "fund_name": "棕榈滩泰来A类",
+  "total": 5,
+  "date_from": "2026-02-09",
+  "date_to": "2026-02-13",
+  "page": 1,
+  "pagesize": 100,
+  "dates": ["2026-02-09", "2026-02-10", "2026-02-11", "2026-02-12", "2026-02-13"]
+}
+${FENCE}
+
+### GET /valuation/sheet
+
+MCP：\`valuation_sheet\`
+
+某一天的估值表：单位净值、累计净值、资产、负债、净资产、托管户余额、实收资本，以及持仓科目。不传 \`date\` 为最新一天。持仓按页返回，\`holdings_total\` 大于本页时把 \`page\` 加 1。\`market_weight\` 是表内市值占比原数。
+
+| 参数 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| reg_code | 三选一 | string | 备案号 |
+| q | 三选一 | string | 产品名称 |
+| record_id | 三选一 | int | 估值表记录 id。传入后不再按产品和日期查找 |
+| date | 否 | YYYY-MM-DD | 不传为最新估值表 |
+| page / pagesize | 否 | int | 持仓分页，默认 1 / 200，pagesize 最大 500 |
+| detail_only | 否 | true / false | true 只返回明细科目，默认 false 返回整张表 |
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/valuation/sheet?q=%E6%A3%95%E6%A6%88%E6%BB%A9%E6%B3%B0%E6%9D%A5A%E7%B1%BB&date=2026-02-13"
+${FENCE}
+
+${FENCE}json
+{ "name": "valuation_sheet", "arguments": { "q": "棕榈滩泰来A类", "date": "2026-02-13" } }
+${FENCE}
+
+\`data\` 示例：
+
+${FENCE}json
+{
+  "record_id": 1,
+  "reg_code": "SXXXXX",
+  "fund_name": "棕榈滩泰来A类",
+  "valuation_date": "2026-02-13",
+  "unit_nav": 1.02,
+  "net_asset": 998000,
+  "holdings_total": 40,
+  "page": 1,
+  "pagesize": 200,
+  "holdings": [
+    { "subject_code": "1102", "subject_name": "交易性股票投资", "quantity": 1000, "market_value": 50000, "market_weight": 5.01 }
   ]
 }
 ${FENCE}

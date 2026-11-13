@@ -10,6 +10,7 @@ import {
   getAmacFund,
   getAmacManager,
   getFundView,
+  handleFundDataRequest,
   listAmacManagerFunds,
   searchAmacFunds,
   searchFunds,
@@ -48,7 +49,7 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
   },
   {
     name: "fund_price",
-    description: "查询单只基金净值时间序列。份额代码会落到母基金序列，并返回 series_reg_code。price_change 是百分比（0.30 表示 0.30%），与 ret_* 相同；全序列第一天为 null，之后持平为 0。单次最多 5000 行，升序截断时看 next_start_date。",
+    description: "查询单只基金净值时间序列。份额代码会落到母基金序列，并返回 series_reg_code。summary 已给出最新净值、区间收益率 return_pct 和最大回撤 max_drawdown_pct（12.07 表示回撤 12.07%），画曲线时直接引用，不要逐点重算，也不要写走势复盘。曲线只用 price_date 和 nav。price_change 是百分比（0.30 表示 0.30%）。单次最多 5000 行，升序截断时看 next_start_date。",
     inputSchema: {
       type: "object",
       properties: {
@@ -200,6 +201,47 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
       },
     },
   },
+  {
+    name: "valuation_products",
+    description: "列出已入库估值表的全部产品。对应 GET /valuation/products。不限当前账户的在管或跟踪范围。返回备案号、产品名、估值表份数和首尾日期。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "产品名或备案号，模糊匹配。不传则列出全部" },
+        page: { type: "integer", description: "从 1 开始，默认 1" },
+        pagesize: { type: "integer", description: "默认 50，最大 200" },
+      },
+    },
+  },
+  {
+    name: "valuation_dates",
+    description: "查询一只产品已有估值表的日期。对应 GET /valuation/dates。份额代码会落到同一套估值表。返回日期升序的一页，以及首尾日期和总份数。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reg_code: { type: "string", description: "备案号" },
+        q: { type: "string", description: "产品名称。备案号未知时使用" },
+        page: { type: "integer", description: "从 1 开始，默认 1" },
+        pagesize: { type: "integer", description: "默认 100，最大 500" },
+      },
+    },
+  },
+  {
+    name: "valuation_sheet",
+    description: "读取一只产品某一天的估值表。对应 GET /valuation/sheet。含单位净值、累计净值、资产、负债、净资产、托管户余额、实收资本和持仓科目。不传 date 则用最新一天。持仓按页返回。detail_only 为 true 时只保留明细行。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reg_code: { type: "string", description: "备案号" },
+        q: { type: "string", description: "产品名称。备案号未知时使用" },
+        date: { type: "string", description: "YYYY-MM-DD。不传为最新估值表" },
+        record_id: { type: "integer", description: "估值表记录 id。传入后不再按产品和日期查找" },
+        page: { type: "integer", description: "持仓页，从 1 开始，默认 1" },
+        pagesize: { type: "integer", description: "每页持仓行数，默认 200，最大 500" },
+        detail_only: { type: "boolean", description: "true 时只返回明细科目，默认 false 返回整张表" },
+      },
+    },
+  },
 ]
 
 export type McpJsonRpc = {
@@ -310,6 +352,29 @@ export async function callFundDataTool(
         page: str(args, "page"),
         pagesize: str(args, "pagesize"),
       })
+    case "valuation_products":
+      return handleFundDataRequest("valuation/products", {
+        q: str(args, "q"),
+        page: str(args, "page"),
+        pagesize: str(args, "pagesize"),
+      })
+    case "valuation_dates":
+      return handleFundDataRequest("valuation/dates", {
+        reg_code: str(args, "reg_code"),
+        q: str(args, "q"),
+        page: str(args, "page"),
+        pagesize: str(args, "pagesize"),
+      })
+    case "valuation_sheet":
+      return handleFundDataRequest("valuation/sheet", {
+        reg_code: str(args, "reg_code"),
+        q: str(args, "q"),
+        date: str(args, "date"),
+        record_id: str(args, "record_id"),
+        page: str(args, "page"),
+        pagesize: str(args, "pagesize"),
+        detail_only: str(args, "detail_only"),
+      })
     default:
       throw new Error(`unknown tool: ${name}`)
   }
@@ -365,7 +430,7 @@ export async function handleFundDataMcpRpc(
         jsonrpc: "2.0",
         id: id ?? null,
         result: {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(data) }],
         },
       }
     } catch (err) {

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
+import { expandQuantVsSubjectivePayload } from "@/lib/ma/quant-vs-subjective-payload"
 import { HelpBriefingMomSignals } from "@/components/ma/quant-vs-subjective-help"
 import { ACTION_ORDER, MomSignalTable } from "@/components/ma/mom-signal-table"
 import {
@@ -98,53 +99,76 @@ export default function BriefingMomSignals() {
     setLoading(true)
     setError(null)
     const qs = new URLSearchParams({ quantIds: QUANT_ACCOUNT_IDS.join(",") })
-    fetch(`/ma/api/mom-analysis/quant-vs-subjective?${qs}`)
-      .then((r) => r.json())
-      .then((j: ApiData) => {
+    const lightQs = new URLSearchParams(qs)
+    lightQs.set("light", "1")
+
+    const apply = (raw: ApiData, isLight: boolean) => {
+      const j = expandQuantVsSubjectivePayload(raw)
+      setDate(j.date ?? null)
+      if (!isLight) {
+        setSectorTs(j.sectorTs ?? [])
+        setProductTs(j.productTs ?? [])
+      }
+      setProductNames(Object.fromEntries((j.products ?? []).map((p) => [p.key, p.name])))
+      setVolDays(j.volDays ?? 20)
+      setGroups(j.groups ?? null)
+      setBookMargin(j.bookMargin ?? 0)
+      setQuantShare(j.quantShare ?? 0)
+      const built = buildMomSignals(
+        completeSectorRows(j.sectors ?? []),
+        (j.products ?? []).slice(0, 40),
+        "risk",
+        j.quantShare ?? 0,
+        j.groups?.quant.nAccounts ?? 0,
+        j.groups?.subjective.nAccounts ?? 0,
+        j.flows,
+        { includeNeutral: true, limit: 0 },
+      )
+      setSignals(built.length ? built : (j.signals ?? []))
+    }
+
+    void (async () => {
+      let painted = false
+      try {
+        const lightResp = await fetch(`/ma/api/mom-analysis/quant-vs-subjective?${lightQs}`)
+        const lightJson = await lightResp.json() as ApiData
         if (stop) return
-        if (j.ok === false) {
-          setError(j.error ?? "加载失败")
+        if (lightJson.ok !== false) {
+          apply(lightJson, true)
+          painted = true
+          setLoading(false)
+        }
+        const fullResp = await fetch(`/ma/api/mom-analysis/quant-vs-subjective?${qs}`)
+        const fullJson = await fullResp.json() as ApiData
+        if (stop) return
+        if (fullJson.ok === false) {
+          if (!painted) {
+            setError(fullJson.error ?? "加载失败")
+            setSignals([])
+            setSectorTs([])
+            setProductTs([])
+            setGroups(null)
+            setBookMargin(0)
+            setQuantShare(0)
+          }
+          return
+        }
+        apply(fullJson, false)
+      } catch (e) {
+        if (stop) return
+        if (!painted) {
+          setError(e instanceof Error ? e.message : "请求失败")
           setSignals([])
           setSectorTs([])
           setProductTs([])
           setGroups(null)
           setBookMargin(0)
           setQuantShare(0)
-          return
         }
-        setDate(j.date ?? null)
-        setSectorTs(j.sectorTs ?? [])
-        setProductTs(j.productTs ?? [])
-        setProductNames(Object.fromEntries((j.products ?? []).map((p) => [p.key, p.name])))
-        setVolDays(j.volDays ?? 20)
-        setGroups(j.groups ?? null)
-        setBookMargin(j.bookMargin ?? 0)
-        setQuantShare(j.quantShare ?? 0)
-        const built = buildMomSignals(
-          completeSectorRows(j.sectors ?? []),
-          (j.products ?? []).slice(0, 40),
-          "risk",
-          j.quantShare ?? 0,
-          j.groups?.quant.nAccounts ?? 0,
-          j.groups?.subjective.nAccounts ?? 0,
-          j.flows,
-          { includeNeutral: true, limit: 0 },
-        )
-        setSignals(built.length ? built : (j.signals ?? []))
-      })
-      .catch((e) => {
-        if (stop) return
-        setError(e instanceof Error ? e.message : "请求失败")
-        setSignals([])
-        setSectorTs([])
-        setProductTs([])
-        setGroups(null)
-        setBookMargin(0)
-        setQuantShare(0)
-      })
-      .finally(() => {
+      } finally {
         if (!stop) setLoading(false)
-      })
+      }
+    })()
     return () => { stop = true }
   }, [])
 

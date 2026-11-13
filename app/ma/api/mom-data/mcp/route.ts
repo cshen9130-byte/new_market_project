@@ -10,29 +10,24 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id, x-api-key, Authorization",
+  "Access-Control-Expose-Headers": "WWW-Authenticate",
 }
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS })
 }
 
-export async function GET(req: Request) {
-  const auth = await requireMomDataApiUser(req)
-  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status, headers: CORS })
-  return NextResponse.json(
-    {
-      name: "mom-data",
-      version: "1.0.0",
-      transport: "mcp",
-      usage: "POST JSON-RPC 2.0 with the MOM API key in header x-api-key. The fund-data key is rejected. The account must have MOM数据API enabled.",
-    },
-    { headers: CORS },
-  )
+/** Streamable HTTP clients GET this URL to open an SSE stream. This server has no server-initiated stream. */
+export async function GET() {
+  return new NextResponse(null, {
+    status: 405,
+    headers: { ...CORS, Allow: "POST, OPTIONS" },
+  })
 }
 
 export async function POST(req: Request) {
   const auth = await requireMomDataApiUser(req)
-  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status, headers: CORS })
+  if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status, headers: { ...CORS, ...auth.headers } })
 
   let msg: McpJsonRpc
   try {

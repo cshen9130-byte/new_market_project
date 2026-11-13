@@ -37,7 +37,7 @@ export async function GET(
 ) {
   try {
     const auth = await requireMomDataApiUser(req)
-    if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status, headers: CORS })
+    if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status, headers: { ...CORS, ...auth.headers } })
     const { path } = await params
     const key = (path ?? []).join("/")
     const record: Record<string, string | undefined> = {}

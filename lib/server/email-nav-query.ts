@@ -1772,10 +1772,68 @@ function isConfirmedMidSeriesUnitReset(
  * rebase a constant custodian offset, or use the 累计 as-is when it already
  * matches 火富牛 (SQX078).
  */
+function seriesNavDate(row: { price_date?: string | null; nav_date?: string | null }): string {
+  return String(row.price_date ?? row.nav_date ?? "").slice(0, 10)
+}
+
+/**
+ * A dividend can push 累计/单位 just over 2 while 累计 itself keeps moving with
+ * the previous 累计 (AVF39A 2026-10-26: unit 1.277 → 0.9774, 累计 1.9808 → 1.9582).
+ * That cell is not the stray integer or a frozen column. Keep it, and keep the
+ * following days whose 累计−单位 gap stays on the new level.
+ *
+ * A series that is already above 2× on the first row is not this case (R0423B,
+ * the list sparkline). A one-off cell that jumps away from the prior gap
+ * (SBFM35 cum=3) is not either.
+ */
+function dividendGapCumulativeIndexes<T extends {
+  nav: string | null
+  cumulative_nav: string | null
+  price_date?: string | null
+  nav_date?: string | null
+}>(rows: T[]): Set<number> {
+  const keep = new Set<number>()
+  const order = rows
+    .map((row, index) => ({ index, date: seriesNavDate(row) }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.index - b.index)
+
+  let anchor: { unit: number; cum: number } | null = null
+  for (const { index } of order) {
+    const unit = parseOptionalNav(rows[index]?.nav)
+    const cum = parseOptionalNav(rows[index]?.cumulative_nav)
+    if (
+      unit == null || cum == null
+      || cum < unit - 0.001
+      || !isReasonableNav(unit)
+      || !isReasonableNav(cum)
+    ) {
+      anchor = null
+      continue
+    }
+    if (!emailCumUnitRatioExceedsCap(unit, cum)) {
+      anchor = hasDividendOffset(unit, cum) ? { unit, cum } : null
+      continue
+    }
+    if (anchor == null) continue
+    const gapHeld = Math.abs((cum - unit) - (anchor.cum - anchor.unit)) <= 0.01
+    const continues = isLikelyDividendExDate(anchor.unit, unit, anchor.cum, cum)
+      || (gapHeld && hasDividendOffset(unit, cum))
+    if (!continues) {
+      anchor = null
+      continue
+    }
+    keep.add(index)
+    anchor = { unit, cum }
+  }
+  return keep
+}
+
 function clearCorruptEmailCumulative<T extends {
   nav: string | null
   cumulative_nav: string | null
   adjusted_nav?: string | null
+  price_date?: string | null
+  nav_date?: string | null
 }>(rows: T[]): T[] {
   if (rows.length === 0) return rows
 
@@ -1793,8 +1851,10 @@ function clearCorruptEmailCumulative<T extends {
   const highIndexes = parsed.flatMap((row, index) => (row.high ? [index] : []))
   const normalCumCount = parsed.filter((row) => row.bounded && !row.high).length
   if (highIndexes.length >= 1 && highIndexes.length <= 2 && normalCumCount >= 1) {
+    const dividendGap = dividendGapCumulativeIndexes(rows)
     for (const index of highIndexes) {
       if (isConfirmedMidSeriesUnitReset(rows, index)) continue
+      if (dividendGap.has(index)) continue
       clear.add(index)
     }
   }
@@ -3509,6 +3569,7 @@ function legacyConfirmsHighCumulative(rows: LegacyNavRow[]): boolean {
  * A copied 复权 (equal to that 累计) is cleared with it.
  */
 function dropUnconfirmedHighEmailCumulative(emailRows: EmailNavPoint[]): EmailNavPoint[] {
+  const dividendGap = dividendGapCumulativeIndexes(emailRows)
   return emailRows.map((row, index) => {
     const unit = parseOptionalNav(row.nav)
     const cum = parseOptionalNav(row.cumulative_nav)
@@ -3516,6 +3577,10 @@ function dropUnconfirmedHighEmailCumulative(emailRows: EmailNavPoint[]): EmailNa
     // A later 单位净值 of 1.0000, with 累计 unchanged, is a reset. Keep that 累计
     // so 复权 follows the 累计 change. The opening 1.0000 is not this case.
     if (isConfirmedMidSeriesUnitReset(emailRows, index)) return row
+    // Dividend widened the gap until 累计/单位 crossed 2. The 累计 still
+    // continues the previous day (AVF39A 2026-10-26). Do not rebuild it as
+    // 单位 + the old gap.
+    if (dividendGap.has(index)) return row
     const adj = parseOptionalNav(row.adjusted_nav)
     const adjustedNav = adj != null && Math.abs(adj - cum) < 0.001 ? null : row.adjusted_nav
     return { ...row, cumulative_nav: null, adjusted_nav: adjustedNav }

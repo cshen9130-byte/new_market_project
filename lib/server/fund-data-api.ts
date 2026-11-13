@@ -879,6 +879,66 @@ async function chronologicalPricePoints(
   })
 }
 
+function priceSeriesSummary(points: FundPricePoint[]) {
+  const rows = points.filter((point) => point.nav != null && point.nav > 0 && point.price_date)
+  if (rows.length === 0) {
+    return {
+      points: 0,
+      start_date: null,
+      end_date: null,
+      start_nav: null,
+      latest_nav: null,
+      max_nav: null,
+      max_nav_date: null,
+      max_drawdown_pct: null,
+      max_drawdown_peak_date: null,
+      max_drawdown_trough_date: null,
+      return_pct: null,
+    }
+  }
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  let peak = first.nav as number
+  let peakDate = first.price_date
+  let maxNav = peak
+  let maxDate = peakDate
+  let maxDd = 0
+  let ddPeakDate = peakDate
+  let ddTroughDate = peakDate
+  for (const row of rows) {
+    const nav = row.nav as number
+    if (nav > maxNav) {
+      maxNav = nav
+      maxDate = row.price_date
+    }
+    if (nav >= peak) {
+      peak = nav
+      peakDate = row.price_date
+    }
+    const dd = peak > 0 ? (peak - nav) / peak : 0
+    if (dd > maxDd) {
+      maxDd = dd
+      ddPeakDate = peakDate
+      ddTroughDate = row.price_date
+    }
+  }
+  const startNav = first.nav as number
+  const latest = last.nav as number
+  return {
+    points: rows.length,
+    start_date: first.price_date,
+    end_date: last.price_date,
+    start_nav: startNav,
+    latest_nav: latest,
+    max_nav: maxNav,
+    max_nav_date: maxDate,
+    max_drawdown_pct: Math.round(maxDd * 10000) / 100,
+    max_drawdown_peak_date: ddPeakDate,
+    max_drawdown_trough_date: ddTroughDate,
+    return_pct: startNav > 0 ? Math.round(((latest / startNav) - 1) * 10000) / 100 : null,
+  }
+}
+
 function seriesMeta(identity: PriceIdentity, truncated: boolean, nextStart: string | null): PriceSeriesMeta {
   return {
     series_reg_code: identity.priceRegCode,
@@ -916,7 +976,7 @@ export async function getFundPrice(options: {
     nextStart = last ? nextPriceDate(last) : null
     if (end && nextStart && nextStart > end) nextStart = null
   }
-  return { ...fundDataOk(page), ...seriesMeta(identity, truncated, nextStart) }
+  return { ...fundDataOk(page), ...seriesMeta(identity, truncated, nextStart), summary: priceSeriesSummary(points) }
 }
 
 export type PriceBulkSeries = PriceSeriesMeta & {
@@ -1525,6 +1585,9 @@ export const FUND_DATA_CATALOG = {
     { path: "/amac/fund/search", tool: "amac_fund_search", desc: "按名称、备案号或管理人搜索协会备案产品" },
     { path: "/amac/manager", tool: "amac_manager", desc: "协会管理人登记信息、高管与出资人" },
     { path: "/amac/manager/funds", tool: "amac_manager_funds", desc: "某管理人在协会披露的产品" },
+    { path: "/valuation/products", tool: "valuation_products", desc: "已入库估值表的全部产品" },
+    { path: "/valuation/dates", tool: "valuation_dates", desc: "一只产品的估值表日期" },
+    { path: "/valuation/sheet", tool: "valuation_sheet", desc: "某一天的估值表净值与持仓" },
   ],
 }
 
@@ -1621,6 +1684,29 @@ export async function handleFundDataRequest(
       return getAmacManager(params)
     case "amac/manager/funds":
       return listAmacManagerFunds(params)
+    case "valuation/products":
+      return (await import("@/lib/server/fund-data-valuation")).listMcpValuationProducts({
+        q: params.q,
+        page: params.page,
+        pagesize: params.pagesize,
+      })
+    case "valuation/dates":
+      return (await import("@/lib/server/fund-data-valuation")).listMcpValuationDates({
+        reg_code: params.reg_code,
+        q: params.q,
+        page: params.page,
+        pagesize: params.pagesize,
+      })
+    case "valuation/sheet":
+      return (await import("@/lib/server/fund-data-valuation")).getMcpValuationSheet({
+        reg_code: params.reg_code,
+        q: params.q,
+        date: params.date,
+        record_id: params.record_id,
+        page: params.page,
+        pagesize: params.pagesize,
+        detail_only: params.detail_only,
+      })
     default:
       return fundDataErr(1, `unknown endpoint: /${key}`)
   }

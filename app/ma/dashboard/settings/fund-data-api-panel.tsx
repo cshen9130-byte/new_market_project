@@ -5,10 +5,13 @@ import { Download } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import { authService } from "@/lib/auth"
 import { downloadFundDataApiGuide } from "@/lib/ma/fund-data-api-guide"
+import { McpClientGuides } from "@/components/ma/mcp-client-guides"
+import { WorkBuddyMcpGuide } from "@/components/ma/workbuddy-mcp-guide"
+import { ApiDocToc, type ApiDocTocItem } from "@/components/ma/api-doc-toc"
 import { copyTextToClipboard } from "@/lib/copy-text"
 import {
   FUND_DATA_API_BASE,
-  FUND_DATA_MCP_URL,
+  FUND_DATA_HTTPS_MCP_URL,
   FUND_DATA_PUBLIC_ORIGIN,
 } from "@/lib/ma/fund-data-public"
 
@@ -22,7 +25,7 @@ function CodeBlock({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="relative group">
-      <pre className="text-xs bg-muted/40 border rounded-lg p-3 overflow-x-auto whitespace-pre font-mono text-zinc-700 dark:text-zinc-300">
+      <pre className="scrollbar-subtle text-xs bg-muted/30 border border-zinc-200/80 dark:border-zinc-700/80 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre font-mono text-zinc-600 dark:text-zinc-300">
         {text}
       </pre>
       <button
@@ -81,6 +84,63 @@ async function callApi(path: string, params: Record<string, string>, apiKey: str
   return res.json() as Promise<Envelope>
 }
 
+const FUND_API_TOC: ApiDocTocItem[] = [
+  { id: "fund-http", label: "1. HTTP 接入" },
+  {
+    id: "fund-mcp",
+    label: "2. MCP 接入",
+    children: [
+      { id: "workbuddy", label: "WorkBuddy" },
+      { id: "mcp-cursor", label: "Cursor" },
+      { id: "mcp-doubao", label: "豆包" },
+      { id: "mcp-codex", label: "Codex" },
+      { id: "mcp-claude", label: "Claude" },
+    ],
+  },
+  {
+    id: "fund-examples",
+    label: "用法示例",
+    children: [
+      { id: "ex-rank-pool", label: "外部业绩榜对比跟踪池" },
+      { id: "ex-dianjing", label: "点睛排行" },
+      { id: "ex-kb", label: "问知识库" },
+      { id: "ex-compare", label: "对比几只基金" },
+      { id: "ex-http-compare", label: "自己取数再对比" },
+      { id: "ex-notes", label: "跟踪池短备注" },
+      { id: "ex-managed", label: "在管产品" },
+      { id: "ex-similar", label: "相似基金、相反基金" },
+      { id: "ex-roadshow", label: "路演漏洞扫描" },
+      { id: "ex-team", label: "团队背景、管理人画像" },
+      { id: "ex-form", label: "AI 填表助手" },
+    ],
+  },
+  { id: "fund-format", label: "3. 统一返回格式" },
+  {
+    id: "fund-endpoints",
+    label: "4. 接口说明",
+    children: [
+      { id: "ep-fund-search", label: "/fund/search" },
+      { id: "ep-fund-info", label: "/fund/info" },
+      { id: "ep-fund-price", label: "/price" },
+      { id: "ep-fund-price-bulk", label: "/price/bulk" },
+      { id: "ep-fund-multi-price", label: "/fund/price" },
+      { id: "ep-fund-advanced-list", label: "/fund/advancedlist" },
+      { id: "ep-fund-view", label: "/fund/view" },
+      { id: "ep-company-info", label: "/company/info" },
+      { id: "ep-company-fund-list", label: "/company/fund/list" },
+      { id: "ep-amac-fund", label: "/amac/fund" },
+      { id: "ep-amac-fund-search", label: "/amac/fund/search" },
+      { id: "ep-amac-manager", label: "/amac/manager" },
+      { id: "ep-amac-manager-funds", label: "/amac/manager/funds" },
+      { id: "ep-valuation-products", label: "/valuation/products" },
+      { id: "ep-valuation-dates", label: "/valuation/dates" },
+      { id: "ep-valuation-sheet", label: "/valuation/sheet" },
+    ],
+  },
+  { id: "fund-debug", label: "5. 在线调试" },
+]
+
+
 export function FundDataApiPanel() {
   const [apiKey, setApiKey] = useState("")
   const [showApiKey, setShowApiKey] = useState(false)
@@ -128,7 +188,9 @@ export function FundDataApiPanel() {
   }
 
   return (
-    <div className="max-w-4xl space-y-10">
+    <div className="flex items-start gap-6">
+      <ApiDocToc items={FUND_API_TOC} />
+      <div className="min-w-0 flex-1 max-w-4xl space-y-10">
       <header>
         <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
           <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200">基金数据 API</h2>
@@ -152,7 +214,7 @@ export function FundDataApiPanel() {
         <div className="mt-4 border rounded-lg px-4 py-3 text-sm space-y-1">
           <p><span className="text-zinc-400 w-24 inline-block">网站</span><a className="text-red-500 hover:underline" href={FUND_DATA_PUBLIC_ORIGIN} target="_blank" rel="noreferrer">{FUND_DATA_PUBLIC_ORIGIN}</a></p>
           <p><span className="text-zinc-400 w-24 inline-block">HTTP 基址</span><code className="font-mono text-xs">{FUND_DATA_API_BASE}</code></p>
-          <p><span className="text-zinc-400 w-24 inline-block">MCP 地址</span><code className="font-mono text-xs">{FUND_DATA_MCP_URL}</code></p>
+          <p><span className="text-zinc-400 w-24 inline-block">MCP 地址</span><code className="font-mono text-xs">{FUND_DATA_HTTPS_MCP_URL}</code></p>
           <p className="flex items-start gap-2">
             <span className="text-zinc-400 w-24 inline-block shrink-0">你的 API Key</span>
             {apiKey
@@ -176,7 +238,7 @@ export function FundDataApiPanel() {
       </header>
 
       <section>
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">1. HTTP 接入</h3>
+        <h3 id="fund-http" className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3 scroll-mt-6">1. HTTP 接入</h3>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3 leading-relaxed">
           查询为 GET。跟踪池整本净值用 POST /price/bulk，备案号放 JSON。每个请求必须带 API Key，任选一种方式：请求头 <code className="font-mono text-xs">x-api-key</code>、
           <code className="font-mono text-xs">Authorization: Bearer</code>，或 query <code className="font-mono text-xs">api_key</code>。
@@ -215,27 +277,10 @@ const json = await res.json()  // { error_code, msg, data }`}
       </section>
 
       <section>
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">2. MCP 接入（Cursor / Claude）</h3>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3 leading-relaxed">
-          在 Cursor 或 Claude Desktop 的 MCP 配置里填生产地址，并用你的 API Key 作为请求头。
+        <h3 id="fund-mcp" className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3 scroll-mt-6">2. MCP 接入</h3>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed">
+          WorkBuddy 优先用下方的 OAuth 登录。Cursor、豆包、Codex、Claude 用你自己的 API Key 作为请求头。不要把这把 Key 发给同事或写进团队空间。连上之后可以直接用自然语言提问，模型会按下面的工具名去调用。
         </p>
-        <ol className="text-sm text-zinc-500 dark:text-zinc-400 space-y-2 list-decimal pl-5 mb-3 leading-relaxed">
-          <li>打开 Cursor Settings → MCP（或 Claude Desktop → Developer → Edit Config）。</li>
-          <li>新增 <code className="font-mono text-xs">fund-data</code>，类型选 URL，把下面 JSON 贴进去（替换 API Key）。</li>
-          <li>启用后可以直接用自然语言提问，例如对比两只基金、查净值、问某人在路演里看多什么。模型会按下面的工具名去调用。</li>
-        </ol>
-        <CodeBlock
-          text={`{
-  "mcpServers": {
-    "fund-data": {
-      "url": "${FUND_DATA_MCP_URL}",
-      "headers": {
-        "x-api-key": "${keyForDocs}"
-      }
-    }
-  }
-}`}
-        />
         <p className="text-xs text-zinc-400 mt-3">
           公开工具（任何持有有效 Key 的账户）：fund_search、fund_info、fund_price、fund_price_bulk、fund_multi_price、fund_advanced_list、fund_view、company_info、company_fund_list、amac_fund、amac_fund_search、amac_manager、amac_manager_funds。
         </p>
@@ -249,16 +294,18 @@ const json = await res.json()  // { error_code, msg, data }`}
           <li>AI 知识库（需 AI 知识库）：问某人观点用 kb_ask，只要原文片段用 kb_search，读全文用 kb_read，看有哪些文件用 kb_list。见下方「问知识库」。</li>
           <li>外部业绩榜（需投资页，并且要有 AI 知识库）：external_rank_compare。用知识库里的点睛等业绩榜 xlsx，和跟踪池同一策略对比。见下方「外部业绩榜」。</li>
         </ul>
+        <WorkBuddyMcpGuide kind="fund" />
+        <McpClientGuides kind="fund" apiKey={keyForDocs} />
       </section>
 
       <section className="space-y-8">
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">用法示例</h3>
+        <h3 id="fund-examples" className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 scroll-mt-6">用法示例</h3>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 -mt-6 leading-relaxed">
           连上 MCP 之后，用自然语言即可。下面给出模型实际应调用的工具和参数，方便对照结果。研究员和知识库没有对应的 GET 接口，只能走 MCP。
         </p>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ex-rank-pool" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             外部业绩榜对比跟踪池
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
@@ -287,7 +334,7 @@ const json = await res.json()  // { error_code, msg, data }`}
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ex-dianjing" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             点睛排行：某一列谁最高
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
@@ -327,7 +374,7 @@ const json = await res.json()  // { error_code, msg, data }`}
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ex-kb" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             问知识库：某人看多或看空哪些品种
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
@@ -412,7 +459,7 @@ const json = await res.json()  // { error_code, msg, data }`}
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ex-compare" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             对比几只基金
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
@@ -475,7 +522,7 @@ const json = await res.json()  // { error_code, msg, data }`}
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ex-http-compare" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             自己取数再对比：HTTP 净值 + 知识库笔记
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
@@ -532,7 +579,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ex-notes" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             跟踪池短备注，不是投资笔记长文
           </h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
@@ -575,7 +622,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">在管产品</h4>
+          <h4 id="ex-managed" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">在管产品</h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
             需要投资池（在管产品）权限。没有该权限时，MCP 的 tools/list 里不会出现这个工具。
           </p>
@@ -597,7 +644,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">相似基金、相反基金</h4>
+          <h4 id="ex-similar" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">相似基金、相反基金</h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
             都需要「AI 研究员」权限。工具会用净值相关性在全库里找产品，再用 kb_path 限定定性材料。只要投资笔记就填「投资笔记」。subject 和 reg_code 至少给一个。
           </p>
@@ -636,7 +683,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">路演漏洞扫描</h4>
+          <h4 id="ex-roadshow" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">路演漏洞扫描</h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
             材料必须已经在知识库里。先 kb_list 找到路演或月报的相对路径，再交给扫描。reg_code 可选，用来把材料对上数据库里的净值。
           </p>
@@ -657,7 +704,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">团队背景、管理人画像</h4>
+          <h4 id="ex-team" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">团队背景、管理人画像</h4>
           <p className="text-xs text-zinc-400 mb-2">可以说：「找出团队里有高盛背景的管理人，证据优先用投资笔记。」</p>
           <CodeBlock
             text={`{
@@ -678,7 +725,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">AI 填表助手</h4>
+          <h4 id="ex-form" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">AI 填表助手</h4>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2 leading-relaxed">
             网页上的「填表助手」在 AI 知识库页面：列是产品或管理人，行是维度，逐格提问后可以导出 CSV / Excel。MCP 没有单独的填表工具。在 Cursor 里做同一张表，对每个单元格调一次 <code className="font-mono text-xs">kb_ask</code>。打板策略横向比较表要搜全库，不要传 folder_path。量道在外部尽调路演稿，六妙星在在线笔记和内部尽调，衍复在投资笔记。
           </p>
@@ -713,7 +760,7 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
       </section>
 
       <section>
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3">3. 统一返回格式</h3>
+        <h3 id="fund-format" className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 mb-3 scroll-mt-6">3. 统一返回格式</h3>
         <CodeBlock
           text={`{
   "error_code": 0,
@@ -731,13 +778,13 @@ curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/fund/view?reg_code=另
       </section>
 
       <section className="space-y-8">
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">4. 接口说明</h3>
+        <h3 id="fund-endpoints" className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 scroll-mt-6">4. 接口说明</h3>
         <p className="text-sm text-zinc-500 -mt-6 leading-relaxed">
           完整 URL = HTTP 基址 + 路径，例如 {FUND_DATA_API_BASE}/fund/info。下面每个接口都有可复制的 curl 和对应 MCP 调用。返回 JSON 只说明字段形状，产品名、净值和日期是示意，以实际返回为准。
         </p>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-search" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /fund/search
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_search</span>
           </h4>
@@ -765,7 +812,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-info" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /fund/info
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_info</span>
           </h4>
@@ -802,11 +849,11 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-price" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /price
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_price</span>
           </h4>
-          <p className="text-sm text-zinc-500 mb-2">单只基金净值序列，最多 5000 行。份额代码会解析到母基金，series_reg_code 是实际取数的备案号。price_change 是百分比：0.2976 表示 +0.2976%。全序列第一天为 null，之后持平为 0。基金存在但没有净值时 error_code 为 0、data 为 []。</p>
+          <p className="text-sm text-zinc-500 mb-2">单只基金净值序列，最多 5000 行。份额代码会解析到母基金，series_reg_code 是实际取数的备案号。响应另有 summary：最新净值、return_pct、max_drawdown_pct（12.07 表示从高点回撤 12.07%）。price_change 是百分比：0.2976 表示 +0.2976%。全序列第一天为 null，之后持平为 0。基金存在但没有净值时 error_code 为 0、data 为 []。</p>
           <p className="text-xs text-zinc-400 mb-1">请求：2025 年全年、按日期从早到晚</p>
           <CodeBlock
             text={`curl -H "x-api-key: ${keyForDocs}" "${FUND_DATA_API_BASE}/price?reg_code=SR6089&start_date=2025-01-01&end_date=2025-12-31&order=1"
@@ -830,7 +877,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-price-bulk" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             POST /price/bulk
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_price_bulk</span>
           </h4>
@@ -874,7 +921,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-multi-price" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /fund/price
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_multi_price</span>
           </h4>
@@ -907,7 +954,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-advanced-list" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /fund/advancedlist
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_advanced_list</span>
           </h4>
@@ -950,7 +997,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-fund-view" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /fund/view
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: fund_view</span>
           </h4>
@@ -983,7 +1030,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-company-info" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /company/info
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: company_info</span>
           </h4>
@@ -1017,7 +1064,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-company-fund-list" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /company/fund/list
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: company_fund_list</span>
           </h4>
@@ -1049,7 +1096,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-amac-fund" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /amac/fund
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: amac_fund</span>
           </h4>
@@ -1082,7 +1129,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-amac-fund-search" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /amac/fund/search
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: amac_fund_search</span>
           </h4>
@@ -1116,7 +1163,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-amac-manager" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /amac/manager
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: amac_manager</span>
           </h4>
@@ -1153,7 +1200,7 @@ MCP
         </div>
 
         <div>
-          <h4 className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1">
+          <h4 id="ep-amac-manager-funds" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
             GET /amac/manager/funds
             <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: amac_manager_funds</span>
           </h4>
@@ -1187,10 +1234,138 @@ MCP
 }`}
           />
         </div>
+
+        <div>
+          <h4 id="ep-valuation-products" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
+            GET /valuation/products
+            <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: valuation_products</span>
+          </h4>
+          <p className="text-sm text-zinc-500 mb-2">已入库估值表的全部产品。不按在管或跟踪池过滤。MCP 调用的是这个接口。</p>
+          <ParamTable
+            rows={[
+              ["q", "否", "string", "产品名或备案号，模糊匹配。不传则列出全部"],
+              ["page", "否", "int", "从 1 开始，默认 1"],
+              ["pagesize", "否", "int", "默认 50，最大 200"],
+            ]}
+          />
+          <p className="text-xs text-zinc-400 mb-1">请求</p>
+          <CodeBlock
+            text={`curl -G "${FUND_DATA_API_BASE}/valuation/products" \\
+  -H "x-api-key: ${keyForDocs}" \\
+  --data-urlencode "q=棕榈滩泰来"
+
+MCP
+{ "name": "valuation_products", "arguments": { "q": "棕榈滩泰来" } }`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-1">data</p>
+          <CodeBlock
+            text={`{
+  "total": 1,
+  "page": 1,
+  "pagesize": 50,
+  "products": [
+    { "reg_code": "SXXXXX", "fund_name": "棕榈滩泰来A类", "record_count": 5, "date_from": "2026-02-09", "date_to": "2026-02-13" }
+  ]
+}`}
+          />
+        </div>
+
+        <div>
+          <h4 id="ep-valuation-dates" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
+            GET /valuation/dates
+            <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: valuation_dates</span>
+          </h4>
+          <p className="text-sm text-zinc-500 mb-2">一只产品已有估值表的日期，升序分页。reg_code 与 q 至少填一个。份额代码落到同一套估值表。</p>
+          <ParamTable
+            rows={[
+              ["reg_code", "二选一", "string", "备案号"],
+              ["q", "二选一", "string", "产品名称"],
+              ["page", "否", "int", "从 1 开始，默认 1"],
+              ["pagesize", "否", "int", "默认 100，最大 500"],
+            ]}
+          />
+          <p className="text-xs text-zinc-400 mb-1">请求</p>
+          <CodeBlock
+            text={`curl -G "${FUND_DATA_API_BASE}/valuation/dates" \\
+  -H "x-api-key: ${keyForDocs}" \\
+  --data-urlencode "q=棕榈滩泰来A类"
+
+MCP
+{ "name": "valuation_dates", "arguments": { "q": "棕榈滩泰来A类" } }`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-1">data</p>
+          <CodeBlock
+            text={`{
+  "reg_code": "SXXXXX",
+  "fund_name": "棕榈滩泰来A类",
+  "total": 5,
+  "date_from": "2026-02-09",
+  "date_to": "2026-02-13",
+  "page": 1,
+  "pagesize": 100,
+  "dates": ["2026-02-09", "2026-02-10", "2026-02-11", "2026-02-12", "2026-02-13"]
+}`}
+          />
+        </div>
+
+        <div>
+          <h4 id="ep-valuation-sheet" className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-1 scroll-mt-6">
+            GET /valuation/sheet
+            <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: valuation_sheet</span>
+          </h4>
+          <p className="text-sm text-zinc-500 mb-2">某一天的估值表：单位净值、累计净值、资产、负债、净资产、托管户余额、实收资本，以及持仓科目。不传 date 为最新一天。持仓按页返回，holdings_total 大于本页时把 page 加 1。market_weight 是表内市值占比原数。</p>
+          <ParamTable
+            rows={[
+              ["reg_code", "与 q、record_id 三选一", "string", "备案号"],
+              ["q", "与 reg_code、record_id 三选一", "string", "产品名称"],
+              ["record_id", "与 reg_code、q 三选一", "int", "估值表记录 id。传入后不再按产品和日期查找"],
+              ["date", "否", "YYYY-MM-DD", "不传为最新估值表"],
+              ["page", "否", "int", "持仓页，从 1 开始，默认 1"],
+              ["pagesize", "否", "int", "每页持仓行数，默认 200，最大 500"],
+              ["detail_only", "否", "true | false", "true 只返回明细科目，默认 false 返回整张表"],
+            ]}
+          />
+          <p className="text-xs text-zinc-400 mb-1">请求</p>
+          <CodeBlock
+            text={`curl -G "${FUND_DATA_API_BASE}/valuation/sheet" \\
+  -H "x-api-key: ${keyForDocs}" \\
+  --data-urlencode "q=棕榈滩泰来A类" \\
+  --data-urlencode "date=2026-02-13"
+
+MCP
+{ "name": "valuation_sheet", "arguments": { "q": "棕榈滩泰来A类", "date": "2026-02-13" } }`}
+          />
+          <p className="text-xs text-zinc-400 mt-3 mb-1">data</p>
+          <CodeBlock
+            text={`{
+  "record_id": 1,
+  "reg_code": "SXXXXX",
+  "fund_name": "棕榈滩泰来A类",
+  "valuation_date": "2026-02-13",
+  "unit_nav": 1.02,
+  "cumulative_nav": 1.08,
+  "total_asset": 1000000,
+  "total_liability": 2000,
+  "net_asset": 998000,
+  "holdings_total": 40,
+  "page": 1,
+  "pagesize": 200,
+  "holdings": [
+    {
+      "subject_code": "1102",
+      "subject_name": "交易性股票投资",
+      "quantity": 1000,
+      "market_value": 50000,
+      "market_weight": 5.01
+    }
+  ]
+}`}
+          />
+        </div>
       </section>
 
       <section className="space-y-3 pb-8">
-        <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">5. 在线调试</h3>
+        <h3 id="fund-debug" className="text-sm font-semibold text-zinc-700 dark:text-zinc-200 scroll-mt-6">5. 在线调试</h3>
         <p className="text-sm text-zinc-500">在本页直接试查，返回格式与生产接口相同。</p>
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-sm">
@@ -1278,6 +1453,7 @@ MCP
           </pre>
         )}
       </section>
+      </div>
     </div>
   )
 }

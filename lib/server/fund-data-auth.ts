@@ -1,5 +1,13 @@
 import { fundDataErr, type FundDataErr } from "@/lib/server/fund-data-api"
-import { getUserByApiKey, type StoredUser } from "@/lib/server/users"
+import {
+  credentialFailureDescription,
+  originFromRequest,
+  resolveMcpCredential,
+  unauthorizedHeaders,
+  type CredentialFailure,
+} from "@/lib/server/mcp-oauth"
+import { getMcpOAuthStore } from "@/lib/server/mcp-oauth-store"
+import { getUserByApiKey, getUserById, type StoredUser } from "@/lib/server/users"
 
 export function readFundDataApiKey(req: Request): string {
   const header = String(req.headers.get("x-api-key") || "").trim()
@@ -13,17 +21,36 @@ export function readFundDataApiKey(req: Request): string {
   }
 }
 
+function failureHeaders(req: Request, reason: CredentialFailure) {
+  const error = reason === "missing" ? undefined : "invalid_token" as const
+  return unauthorizedHeaders(originFromRequest(req), "fund-data", error, credentialFailureDescription(reason))
+}
+
 export async function requireFundDataApiUser(req: Request): Promise<
   | { ok: true; user: Omit<StoredUser, "passwordHash"> }
-  | { ok: false; status: number; body: FundDataErr }
+  | { ok: false; status: number; body: FundDataErr; headers: Record<string, string> }
 > {
   const key = readFundDataApiKey(req)
-  if (!key) {
-    return { ok: false, status: 401, body: fundDataErr(401, "api_key is required") }
+  const resolved = await resolveMcpCredential({
+    rawKey: key,
+    family: "fund-data",
+    store: getMcpOAuthStore(),
+    getUserById,
+    getUserByApiKey,
+  })
+  if (!resolved.ok) {
+    const message =
+      resolved.reason === "missing"
+        ? "api_key is required"
+        : resolved.reason === "wrong_resource"
+          ? "access token is not valid for the fund-data API"
+          : "invalid api_key"
+    return {
+      ok: false,
+      status: 401,
+      body: fundDataErr(401, message),
+      headers: failureHeaders(req, resolved.reason),
+    }
   }
-  const user = await getUserByApiKey(key)
-  if (!user) {
-    return { ok: false, status: 401, body: fundDataErr(401, "invalid api_key") }
-  }
-  return { ok: true, user }
+  return { ok: true, user: resolved.user }
 }

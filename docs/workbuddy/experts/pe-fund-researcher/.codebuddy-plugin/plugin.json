@@ -1,0 +1,59 @@
+{
+  "name": "pe-fund-researcher",
+  "version": "1.0.0",
+  "description": "Private-fund research assistant that queries MA fund-data MCP under the signed-in user's own permissions.",
+  "author": {
+    "name": "MA"
+  },
+  "agents": [
+    "./agents/pe-fund-researcher.md"
+  ],
+  "expertType": "agent",
+  "agentName": "pe-fund-researcher",
+  "displayName": {
+    "en": "私募基金研究员",
+    "zh": "私募基金研究员"
+  },
+  "profession": {
+    "en": "私募基金研究员",
+    "zh": "私募基金研究员"
+  },
+  "displayDescription": {
+    "en": "Private-fund research assistant that queries MA fund-data MCP under the signed-in user's own permissions.",
+    "zh": "基于本人权限查询基金净值与资料，做对比和知识库观点核验，不编造、不借用他人账号。"
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "Look up SR6089 and summarize this year's return and drawdown using official NAV.",
+    "zh": "查一下 SR6089，用净值库总结今年收益和回撤。"
+  },
+  "plugin": "pe-fund-researcher",
+  "tags": [
+    {
+      "en": "Fund research",
+      "zh": "基金研究"
+    },
+    {
+      "en": "NAV analysis",
+      "zh": "净值分析"
+    },
+    {
+      "en": "Citation check",
+      "zh": "观点核验"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "en": "Look up SR6089 and summarize this year's return and drawdown using official NAV.",
+      "zh": "查一下 SR6089，用净值库总结今年收益和回撤。"
+    },
+    {
+      "en": "Compare these two funds; only cite investment notes that name them.",
+      "zh": "对比这两只基金，策略评论只引用点名它们的投资笔记。"
+    },
+    {
+      "en": "From the knowledge base, what did this person like or dislike in roadshows? Quote path and page.",
+      "zh": "根据知识库，这个人在路演里看多或看空什么？请带原文、路径和页码。"
+    }
+  ]
+}

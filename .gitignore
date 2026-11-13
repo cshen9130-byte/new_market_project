@@ -153,3 +153,4 @@ yinhe_strategy/report_output/
 assets/fonts/*.ttf
 assets/fonts/*.otf
 
+.ma-oauth-secret

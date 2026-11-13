@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { compactQuantVsSubjectivePayload, projectQuantVsSubjectiveLight } from "@/lib/ma/quant-vs-subjective-payload"
 import { momNhciFreshnessToken } from "@/lib/server/mom-nhci-freshness"
 import { getPrefix } from "@/lib/server/prod-utils"
 import { isQuantAccountIn, parseQuantIdList, accountNumericId } from "@/lib/ma/quant-accounts"
@@ -802,4 +803,6 @@ async function _GET(req: Request) {
 
 export const GET = withMomCache("quant-vs-subjective-v12", _GET, {
   freshness: momNhciFreshnessToken,
+  transform: compactQuantVsSubjectivePayload,
+  projectLight: projectQuantVsSubjectiveLight,
 })

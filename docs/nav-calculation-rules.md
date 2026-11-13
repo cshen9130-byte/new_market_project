@@ -3489,3 +3489,39 @@ npx tsx scripts/ma/_test_new_rules.mjs
 
 `scripts/test-nav-rechain.mjs` still stops early on a pre-existing SSG947 `selectEmailNavSeriesRows` assertion (06-23 row filtered); that failure is unrelated to this cohort.
 
+---
+
+## What Was Fixed (棕榈滩泰来A类 — AVF39A, 2026-10-26 分红后 累计/单位 刚过 2)
+
+### The Problem
+
+The 资产净值公告 for **棕榈滩泰来A类 (AVF39A)** around **2026-10-26** is a real dividend. 单位净值 fell from **1.2770** on 2026-10-23 to **0.9774**, and 累计单位净值 stayed on the same series, **1.9808 → 1.9582**. The parent **SAVF39** kept that 累计 and moved 复权 by about **−1%**.
+
+The A-class rule treated the new ratio `1.9582 / 0.9774 = 2.003` as a bad 累计 and cleared it. The same clear hit the following days while the widened gap stayed just above 2× (through about 2026-10-30). With the email 累计 gone, the merge pasted the old gap onto the new unit (`0.9774 + 0.7038 = 1.6812`) and grew 复权 at the unit return (`2.3350 × 0.9774 / 1.2770 = 1.7872`). That is the **−23.5%** step on 2026-10-26.
+
+The jump matches the email 单位 column, so the list labeled it **源数据异常**. The mailbox print is the right 累计. The step was produced by the 2× clear, then by the constant-gap 复权 rule treating that rebuilt 累计 as a normal day.
+
+### The Correct Fix Applied
+
+`dividendGapCumulativeIndexes` keeps a 累计 above 2× only when an earlier row is still at a normal ratio with a dividend gap, and from there each later 累计 either is an ex-dividend day (`isLikelyDividendExDate`) or holds that gap within **0.01**.
+
+| Area | Function | What changed |
+|---|---|---|
+| One or two high cells | `clearCorruptEmailCumulative` | A dividend continuation is not a stray cell (SBFM35 cum=3 is still cleared) |
+| Unconfirmed high 累计 | `dropUnconfirmedHighEmailCumulative` | Same continuation is kept when 火富牛 has not already confirmed a gap |
+
+### What This Fix Does NOT Change
+
+- A series that is above 2× from the first row (R0423B offset, the list sparkline, TV890A)
+- A frozen 累计 column (文艺复兴26号) and a one-off cell that leaves the prior gap (SBFM35)
+- SQX078, where 火富牛 already confirms the scale and 复权 still grows at the unit return on ordinary days
+- The 30% jump threshold. After this fix AVF39A has no 23% step, so the **源数据异常** label is not a vendor print to keep
+
+### Verified
+
+```bash
+npx tsx --test lib/server/email-nav-dividend-ratio.test.ts
+```
+
+On 2026-10-26 the A-class 累计 stays **1.9582** and 复权 stays within 5% of the previous 复权. Rebuild this fund’s detail cache after the merge is deployed, and delete the saved `ops_nav_series_flags` row for **AVF39A**, so the list does not keep painting the old **−23%** jump. The parent **SAVF39** series is unchanged.
+

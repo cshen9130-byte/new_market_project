@@ -2,105 +2,63 @@
  * Simple date-keyed file cache for MOM analysis API routes.
  * Cache files live in  data/mom-cache/<YYYY-MM-DD>_<key>.json
  * and are automatically ignored on a different calendar day.
+ *
+ * On a miss, withMomCache serves a matching stale snapshot (today with an
+ * older freshness token, or a previous day's file) and refreshes in the
+ * background so the UI is never blocked on a full recompute.
  */
 
-import { createHash } from "crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs"
-import { join } from "path"
 import { NextResponse } from "next/server"
 import { ensureAccountRiskSchema } from "@/lib/db"
 import { momNhciFreshnessToken } from "@/lib/server/mom-nhci-freshness"
 import { momSubAccountAlsRun, parseMomSubAccountParam } from "@/lib/server/mom-sub-account"
 import { parseSourceFromRequest, riskSourceAls } from "@/lib/server/risk-data-source"
+import {
+  findStaleCache,
+  freshnessCacheSuffix,
+  paramKey,
+  readCache,
+  todayStr,
+  writeCache,
+} from "@/lib/server/mom-cache-key"
 
-const CACHE_DIR = join(process.cwd(), "data", "mom-cache")
+export {
+  beijingDateStr,
+  todayStr,
+  readCache,
+  writeCache,
+  normalizeMomCacheParams,
+  paramKey,
+  clearAccountSourceCache,
+  freshnessCacheSuffix,
+  clearTodayMomCache,
+  quantIdsParamAliases,
+  findStaleCache,
+} from "@/lib/server/mom-cache-key"
+export type { StaleCacheHit } from "@/lib/server/mom-cache-key"
 
-function ensureDir() {
-  if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true })
-}
+const inflightRefresh = new Map<string, Promise<void>>()
 
-function todayStr(): string {
-  // Use Beijing time (UTC+8) so the cache rolls at midnight CST
-  const d = new Date(Date.now() + 8 * 3600_000)
-  return d.toISOString().slice(0, 10)
-}
-
-/** Return cached value if today's file exists, otherwise null. */
-export function readCache<T = unknown>(key: string): T | null {
-  try {
-    ensureDir()
-    const path = join(CACHE_DIR, `${todayStr()}_${key}.json`)
-    if (existsSync(path)) {
-      return JSON.parse(readFileSync(path, "utf-8")) as T
+function scheduleBackgroundRefresh(
+  key: string,
+  handler: (req: Request) => Promise<NextResponse>,
+  req: Request,
+  transform?: (body: unknown) => unknown,
+): void {
+  if (inflightRefresh.has(key)) return
+  const work = (async () => {
+    try {
+      const resp = await handler(req)
+      if (resp.status !== 200) return
+      const body = await resp.json()
+      writeCache(key, transform ? transform(body) : body)
+    } catch (err) {
+      console.error("[mom-cache] background refresh failed", key, err)
+    } finally {
+      inflightRefresh.delete(key)
     }
-  } catch {
-    // ignore read/parse errors — treat as cache miss
-  }
-  return null
-}
-
-/** Persist value to today's cache file.  Silently swallows write errors. */
-export function writeCache(key: string, data: unknown): void {
-  try {
-    ensureDir()
-    const path = join(CACHE_DIR, `${todayStr()}_${key}.json`)
-    writeFileSync(path, JSON.stringify(data), "utf-8")
-  } catch {
-    // non-fatal
-  }
-}
-
-/**
- * Normalise a URLSearchParams into a stable cache-key suffix.
- */
-export function paramKey(params: URLSearchParams): string {
-  const entries = [...params.entries()].filter(([k]) => k !== "nocache" && k !== "source")
-  if (entries.length === 0) return ""
-  return "_" + entries.sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `${k}=${v}`).join("&")
-}
-
-/** Drop today's cached account-risk (source=account) responses so charts pick up a fresh ETL. */
-export function clearAccountSourceCache(): void {
-  try {
-    ensureDir()
-    const prefix = `${todayStr()}_`
-    for (const f of readdirSync(CACHE_DIR)) {
-      if (!f.startsWith(prefix)) continue
-      if (f.includes("account__") || f.includes("source=account")) {
-        try { unlinkSync(join(CACHE_DIR, f)) } catch { /* ignore */ }
-      }
-    }
-  } catch {
-    // non-fatal
-  }
-}
-
-/** Short stable suffix so a mid-day settlement date change misses today's file cache. */
-export function freshnessCacheSuffix(token: string): string {
-  const trimmed = token.trim()
-  if (!trimmed) return ""
-  const digest = createHash("sha1").update(trimmed).digest("hex").slice(0, 12)
-  return `__fresh=${digest}`
-}
-
-function isAccountRiskCacheFile(name: string): boolean {
-  return name.includes("account__") || name.includes("source=account")
-}
-
-/** Drop all of today's MOM file-cache entries (e.g. after NHCI / position ETL advances). */
-export function clearTodayMomCache(routeKeySubstring?: string): void {
-  try {
-    ensureDir()
-    const prefix = `${todayStr()}_`
-    for (const f of readdirSync(CACHE_DIR)) {
-      if (!f.startsWith(prefix)) continue
-      if (isAccountRiskCacheFile(f)) continue
-      if (routeKeySubstring && !f.includes(routeKeySubstring)) continue
-      try { unlinkSync(join(CACHE_DIR, f)) } catch { /* ignore */ }
-    }
-  } catch {
-    // non-fatal
-  }
+  })()
+  inflightRefresh.set(key, work)
 }
 
 /**
@@ -109,6 +67,8 @@ export function clearTodayMomCache(routeKeySubstring?: string): void {
  *   export const GET = withMomCache("position-change", handler)
  *
  * If req has ?nocache=1, skips the cache read (but still writes).
+ * If req has ?light=1, the full cached body is still used, but heavy
+ * timeseries fields are stripped from the response (same cache key).
  */
 export type MomCacheOptions = {
   /**
@@ -117,6 +77,15 @@ export type MomCacheOptions = {
    * serving a stale 持仓截面 from an earlier warm.
    */
   freshness?: (req: Request) => Promise<string | null | undefined>
+  /** Applied to cache hits, stale hits, and writes. Must be idempotent. */
+  transform?: (body: unknown) => unknown
+  /**
+   * When today's exact key is missing, serve a matching older snapshot and
+   * refresh in the background. Defaults to true.
+   */
+  staleWhileRevalidate?: boolean
+  /** Project a first-paint subset when the request has ?light=1. */
+  projectLight?: (body: unknown) => unknown
 }
 
 export function withMomCache(
@@ -129,6 +98,7 @@ export function withMomCache(
     // provides the performance benefit (avoids DB queries on every hit).
     "Cache-Control": "no-cache",
   }
+  const allowStale = options?.staleWhileRevalidate !== false
 
   return async (req: Request) => {
     const source = parseSourceFromRequest(req)
@@ -143,6 +113,7 @@ export function withMomCache(
       }
 
       const noCache = url.searchParams.get("nocache") === "1"
+      const light = url.searchParams.get("light") === "1"
       // MOM charts default to the settlement/NHCI as-of token. Without it, a file
       // written before today's upload keeps serving Friday's 持仓 through midnight.
       const freshnessFn = options?.freshness ?? (source === "mom" ? momNhciFreshnessToken : undefined)
@@ -158,13 +129,51 @@ export function withMomCache(
       // Never fall back to the unsuffixed file when the as-of check was required.
       // That file is the snapshot from before the latest upload.
       const cacheable = !freshnessFailed && (!freshnessFn || fresh.length > 0)
-      const key = `${source}__${routeKey}${paramKey(url.searchParams)}${freshnessCacheSuffix(fresh)}`
+      const paramSuffix = paramKey(url.searchParams)
+      const freshSuffix = freshnessCacheSuffix(fresh)
+      const key = `${source}__${routeKey}${paramSuffix}${freshSuffix}`
+
+      const wrapLight = (body: unknown, status: "hit" | "stale" | "miss") => {
+        // Transform (compact) first, then strip timeseries so the `light` flag
+        // is not deleted by the compact step.
+        const transformed = options?.transform ? options.transform(body) : body
+        const projected = light && options?.projectLight ? options.projectLight(transformed) : transformed
+        const extra = status === "stale" ? { cacheStatus: "stale" } : undefined
+        let payload: unknown = projected
+        if (extra && payload && typeof payload === "object" && !Array.isArray(payload)) {
+          payload = { ...(payload as Record<string, unknown>), ...extra }
+        }
+        return NextResponse.json(payload, {
+          headers: { ...cacheHeaders, "X-Mom-Cache": status },
+        })
+      }
 
       if (!noCache && cacheable) {
         const cached = readCache(key)
         if (cached !== null) {
-          // no-cache: browser always revalidates; ETag/304 handled by Next.js
-          return NextResponse.json(cached, { headers: cacheHeaders })
+          return wrapLight(cached, "hit")
+        }
+        if (allowStale) {
+          const stale = findStaleCache(source, routeKey, paramSuffix, freshSuffix)
+          if (stale) {
+            // Today's file under an aliased param suffix (no ids vs default ids)
+            // is a real hit — do not kick off a recompute.
+            if (stale.date === todayStr() && stale.exactFresh) {
+              return wrapLight(stale.data, "hit")
+            }
+            scheduleBackgroundRefresh(key, handler, req, options?.transform)
+            return wrapLight(stale.data, "stale")
+          }
+        }
+      }
+
+      // If the freshness probe failed, still try a stale snapshot so the tab
+      // is not stuck on 加载中 while the recompute waits on a busy DB.
+      if (!noCache && allowStale && !cacheable) {
+        const stale = findStaleCache(source, routeKey, paramSuffix, freshSuffix)
+        if (stale) {
+          scheduleBackgroundRefresh(key, handler, req, options?.transform)
+          return wrapLight(stale.data, "stale")
         }
       }
 
@@ -174,8 +183,9 @@ export function withMomCache(
       if (resp.status === 200 && cacheable) {
         try {
           const body = await resp.json()
-          writeCache(key, body)
-          return NextResponse.json(body, { headers: cacheHeaders })
+          const stored = options?.transform ? options.transform(body) : body
+          writeCache(key, stored)
+          return wrapLight(stored, "miss")
         } catch {
           // couldn't parse — return original
         }

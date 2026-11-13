@@ -226,6 +226,53 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
     }, ["dataset"]),
   },
   {
+    name: "mom_risk_var",
+    description: "日间风控 VaR 沙盒。对应 GET /risk/var。返回组合 1 日参数法 VaR、各品种市值与手数、品种和板块的边际波动贡献占比。默认置信度 95、波动 20 日、相关 252 日、正态分布，与页面默认一致。这不是 mom_account_metrics 的历史模拟 VaR。",
+    inputSchema: obj({
+      confidence: { type: "string", description: "90、95（默认）或 99" },
+      vol_days: { type: "integer", description: "波动窗口，默认 20，5 到 120" },
+      corr_days: { type: "integer", description: "相关窗口，默认 252，5 到 756" },
+      dist: { type: "string", description: "normal（默认）、t、laplace、logistic" },
+    }),
+  },
+  {
+    name: "mom_risk_margin",
+    description: "日间风控的风险水平（保证金）。对应 GET /risk/margin。默认只给最新一天。history=1 返回组合历史曲线，来自已入库的每日核算；可传 start_date、end_date、limit。再传 account 则换成该资金账号的曲线。risk_ratio 是百分点。",
+    inputSchema: obj({
+      history: { type: "string", description: "1 返回历史曲线。不传则 history 为 null" },
+      account: { type: "string", description: "只在查历史时使用。资金账号，换成该账号的风险度曲线" },
+      start_date: DATE,
+      end_date: DATE,
+      limit: { type: "integer", description: "默认 250，最大 2000。只保留窗口末尾" },
+    }),
+  },
+  {
+    name: "mom_risk_var_forecast",
+    description: "日间风控的次日 VaR 预测。对应 GET /risk/var-forecast。返回下一交易日 1 日 VaR、最近一日的预测与实际盈亏，以及回测突破率。history=1 返回页面上的回测序列，大约最近 180 个交易日，不是全历史结果表。参数与 mom_risk_var 相同，另可传 dist=kde。",
+    inputSchema: obj({
+      confidence: { type: "string", description: "90、95（默认）或 99" },
+      vol_days: { type: "integer", description: "波动窗口，默认 20" },
+      corr_days: { type: "integer", description: "相关窗口，默认 252" },
+      dist: { type: "string", description: "normal（默认）、t、laplace、logistic、kde" },
+      history: { type: "string", description: "1 返回回测序列。也可只传 start_date、end_date" },
+      start_date: DATE,
+      end_date: DATE,
+      limit: { type: "integer", description: "默认 180，最大 2000" },
+    }),
+  },
+  {
+    name: "mom_risk_marginal",
+    description: "板块边际波动贡献的历史占比。对应 GET /risk/marginal。与 VaR 沙盒饼图同一口径，按交易日展开。用每日持仓现算。group 取 sector（默认）、category 或 sub。默认最近 120 个交易日。",
+    inputSchema: obj({
+      group: { type: "string", description: "sector（默认）、category、sub" },
+      vol_days: { type: "integer", description: "波动窗口，默认 20" },
+      corr_days: { type: "integer", description: "相关窗口，默认 252" },
+      start_date: DATE,
+      end_date: DATE,
+      limit: { type: "integer", description: "默认 120，最大 2000" },
+    }),
+  },
+  {
     name: "mom_account_metrics",
     description: "用已入库的每日核算计算区间指标：总净盈亏、胜率、盈亏比、年化波动、夏普（无风险利率 0）、客户权益最大回撤、保证金使用率（最新/均值/P10/P90/最大），以及 1 日历史 VaR 与 CVaR（95% 和 99%）。日收益率 = 当日净盈亏 / 上一日客户权益。样本少于 20 个日收益率时 VaR 为空。这是历史模拟，不是持仓参数法 VaR。",
     inputSchema: obj({
@@ -265,6 +312,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
       return handleMomDataRequest("account/orders", record)
     case "mom_account_metrics":
       return handleMomDataRequest("account/metrics", record)
+    case "mom_risk_var":
+      return handleMomDataRequest("risk/var", record)
+    case "mom_risk_margin":
+      return handleMomDataRequest("risk/margin", record)
+    case "mom_risk_var_forecast":
+      return handleMomDataRequest("risk/var-forecast", record)
+    case "mom_risk_marginal":
+      return handleMomDataRequest("risk/marginal", record)
     case "cfmmc_accounts":
       return handleAccountRiskDataRequest("accounts", record)
     case "cfmmc_account_nav":
@@ -337,7 +392,7 @@ export async function handleMomDataMcpRpc(msg: McpJsonRpc): Promise<Record<strin
         jsonrpc: "2.0",
         id: id ?? null,
         result: {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(data) }],
           isError: data.error_code !== 0,
         },
       }

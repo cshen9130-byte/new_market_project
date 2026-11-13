@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation"
 import { ChevronDown } from "lucide-react"
 import { FundDataApiPanel } from "./fund-data-api-panel"
 import { MomDataApiPanel } from "./mom-data-api-panel"
+import { WorkBuddyConnectorPanel } from "./workbuddy-connector-panel"
 import { authService, type User } from "@/lib/auth"
 import { copyTextToClipboard } from "@/lib/copy-text"
 import { canAccessMomDataApi } from "@/lib/permissions"
@@ -132,7 +133,7 @@ const DEFAULT_CALC: CalcSettings = {
 const LEFT_NAV = [
   { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册"] },
   { group: "团队管理", items: ["评分设置", "指令设置", "直投设置", "报告设置"] },
-  { group: "数据接口", items: ["基金数据API", "MOM数据API"] },
+  { group: "数据接口", items: ["基金数据API", "MOM数据API", "WorkBuddy连接器"] },
 ]
 
 const SECTION_FROM_PARAM: Record<string, string> = {
@@ -142,6 +143,7 @@ const SECTION_FROM_PARAM: Record<string, string> = {
   "direct-invest-settings": "直投设置",
   "fund-data-api": "基金数据API",
   "mom-data-api": "MOM数据API",
+  "workbuddy-connector": "WorkBuddy连接器",
 }
 
 const PERSONAL_TAG_CATEGORIES = [
@@ -2589,6 +2591,10 @@ export default function SettingsPage() {
         ) : activeLeft === "MOM数据API" ? (
           <div className="p-8">
             <FundDataApiPanel />
+          </div>
+        ) : activeLeft === "WorkBuddy连接器" ? (
+          <div className="p-8">
+            <WorkBuddyConnectorPanel />
           </div>
         ) : activeLeft !== "个人配置" ? (
           <div className="p-8">

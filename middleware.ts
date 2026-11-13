@@ -23,7 +23,8 @@ function corsHeaders(origin: string): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Accept, x-market-user-id, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Accept, x-market-user-id, Authorization, x-api-key, Mcp-Session-Id",
+      "Access-Control-Expose-Headers": "WWW-Authenticate",
     "Access-Control-Max-Age": "600",
     Vary: "Origin",
   }

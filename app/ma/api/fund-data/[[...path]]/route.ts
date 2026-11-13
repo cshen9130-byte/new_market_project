@@ -43,7 +43,7 @@ export async function GET(
   try {
     const auth = await requireFundDataApiUser(req)
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status, headers: CORS })
+      return NextResponse.json(auth.body, { status: auth.status, headers: { ...CORS, ...auth.headers } })
     }
     const { path } = await params
     const key = (path ?? []).join("/")
@@ -64,7 +64,7 @@ export async function POST(
   try {
     const auth = await requireFundDataApiUser(req)
     if (!auth.ok) {
-      return NextResponse.json(auth.body, { status: auth.status, headers: CORS })
+      return NextResponse.json(auth.body, { status: auth.status, headers: { ...CORS, ...auth.headers } })
     }
     const { path } = await params
     const key = (path ?? []).join("/")

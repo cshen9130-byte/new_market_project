@@ -233,6 +233,29 @@
   .dark .scrollbar-subtle:hover::-webkit-scrollbar-thumb {
     background-color: color-mix(in oklch, var(--muted-foreground) 38%, transparent);
   }
+
+  .scrollbar-toc {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 14%, transparent) transparent;
+  }
+
+  .scrollbar-toc::-webkit-scrollbar {
+    width: 3px;
+  }
+
+  .scrollbar-toc::-webkit-scrollbar-track {
+    background: transparent;
+    margin-block: 48px;
+  }
+
+  .scrollbar-toc::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--muted-foreground) 14%, transparent);
+    border-radius: 9999px;
+  }
+
+  .scrollbar-toc:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--muted-foreground) 28%, transparent);
+  }
 }
 
 /* mom-embed-briefing-chrome */

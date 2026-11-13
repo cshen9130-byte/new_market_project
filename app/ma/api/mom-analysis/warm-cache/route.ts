@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { QUANT_ACCOUNT_IDS } from "@/lib/ma/quant-accounts"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -71,6 +72,8 @@ function buildRoutesToWarm() {
     "/ma/api/mom-analysis/sector-leverage-heatmap?window=120",
     "/ma/api/mom-analysis/category-exposure",
     "/ma/api/mom-analysis/au-trading/meta",
+    // Must include default quantIds so the UI request shares the cache key.
+    `/ma/api/mom-analysis/quant-vs-subjective?quantIds=${QUANT_ACCOUNT_IDS.join(",")}`,
   ]
 }
 

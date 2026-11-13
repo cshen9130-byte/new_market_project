@@ -340,9 +340,12 @@ export type KbModelMode = "auto" | "plus" | "turbo" | "max"
 
 const MODEL_IDS: Record<Exclude<KbModelMode, "auto">, string> = {
   plus: "qwen-plus",
-  turbo: "qwen-turbo",
+  // qwen-turbo returns HTTP 429 limit_requests on this account. qwen-flash is the fast model that still accepts calls.
+  turbo: "qwen-flash",
   max: "qwen-max",
 }
+
+const CHAT_MODEL_FALLBACKS = ["qwen-flash", "qwen-plus", "qwen-max"]
 
 const KB_QUERY_BM25_MAX_CHUNKS = Number(process.env.KB_QUERY_BM25_MAX_CHUNKS || 12000)
 const KB_AUTO_TURBO_CHUNK_THRESHOLD = Number(process.env.KB_AUTO_TURBO_CHUNKS || 12000)
@@ -361,10 +364,63 @@ function createChatModel(modelId: string, temperature = 0.2) {
     model: modelId,
     temperature,
     streaming: true,
+    maxRetries: 0,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
     },
   })
+}
+
+function isRateLimitError(err: unknown): boolean {
+  const msg = String((err as { message?: unknown })?.message || err || "")
+  const status = (err as { status?: number; response?: { status?: number } })?.status
+    ?? (err as { response?: { status?: number } })?.response?.status
+    ?? 0
+  const lower = msg.toLowerCase()
+  return status === 429
+    || msg.includes("429")
+    || lower.includes("rate limit")
+    || lower.includes("request limit")
+    || lower.includes("quota")
+    || msg.includes("频率超限")
+}
+
+function chatModelAttemptOrder(modelId: string): string[] {
+  return [modelId, ...CHAT_MODEL_FALLBACKS.filter((id) => id !== modelId)]
+}
+
+type ChatMessage = { role: "system" | "user" | "assistant"; content: string }
+
+async function invokeChatModel(modelId: string, messages: ChatMessage[], temperature = 0.2) {
+  let last: unknown
+  for (const id of chatModelAttemptOrder(modelId)) {
+    try {
+      const response = await createChatModel(id, temperature).invoke(messages)
+      if (id !== modelId) console.warn(`[knowledge-chat] ${modelId} rate limited, answered with ${id}`)
+      return { modelId: id, response }
+    } catch (err) {
+      last = err
+      if (!isRateLimitError(err)) throw classifyApiError(err)
+      console.warn(`[knowledge-chat] ${id} rate limited`)
+    }
+  }
+  throw classifyApiError(last)
+}
+
+async function openChatStream(modelId: string, messages: ChatMessage[], temperature = 0.2) {
+  let last: unknown
+  for (const id of chatModelAttemptOrder(modelId)) {
+    try {
+      const stream = await createChatModel(id, temperature).stream(messages)
+      if (id !== modelId) console.warn(`[knowledge-chat] ${modelId} rate limited, streaming with ${id}`)
+      return { modelId: id, stream }
+    } catch (err) {
+      last = err
+      if (!isRateLimitError(err)) throw classifyApiError(err)
+      console.warn(`[knowledge-chat] ${id} rate limited`)
+    }
+  }
+  throw classifyApiError(last)
 }
 
 function getKnowledgeBaseIndexCache() {
@@ -1131,11 +1187,10 @@ export function startEmbedJob(folderPath?: string | null, force = false) {
 /** Detect DashScope/OpenAI-style errors and rethrow with a Chinese-friendly message. */
 function classifyApiError(err: unknown): Error {
   const msg = String((err as any)?.message || err || "")
-  const status = (err as any)?.status ?? (err as any)?.response?.status ?? 0
-  if (status === 429 || msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("quota")) {
+  if (isRateLimitError(err)) {
     return new Error(
-      "AI 接口调用频率超限（429）。原因可能是：①知识库文件较多、分块数量大，单次构建索引耗尽速率配额；②账号当前套餐额度已用完。" +
-      "\n建议：①切换到具体子文件夹提问（而非全部资料）；②稍等片刻后重试；③检查 DashScope 控制台账单与用量配额。"
+      "AI 接口调用次数已超限（429）。百炼拒绝了当前模型的请求。" +
+      "\n问答请改用「精准」。若正在向量化，请稍后再试，或在百炼控制台提高对应模型的限流额度。"
     )
   }
   return err instanceof Error ? err : new Error(msg || "AI 接口调用失败")
@@ -1749,8 +1804,9 @@ export async function askKnowledgeBaseQuestion(input: {
   const requested = input.modelMode ?? "auto"
   const mode = input.grounded && requested === "auto" ? "plus" : requested
   const modelId = selectModelForQuestion(mode, ctx.indexedChunks)
-  const model = createChatModel(modelId, input.grounded ? 0 : 0.2)
-  const response = await model.invoke(ctx.messages)
+  const invoked = await invokeChatModel(modelId, ctx.messages, input.grounded ? 0 : 0.2)
+  const response = invoked.response
+  const usedModelId = invoked.modelId
   let answer = stringifyModelContent(response.content)
   let sources = ctx.sources
   let citations: ReturnType<typeof parseGroundedAnswer>["citations"] | undefined
@@ -1804,7 +1860,7 @@ export async function askKnowledgeBaseQuestion(input: {
     indexedDocuments: ctx.indexedDocuments,
     indexedChunks: ctx.indexedChunks,
     tokenUsage: extractTokenUsage(response),
-    model: modelId,
+    model: usedModelId,
     ...(cell ? { value: answer, cell_sources: cellSources ?? [] } : {}),
     ...(input.grounded ? { citations, citations_grounded: citationsGrounded } : {}),
     ...(input.includePassages ? { passages: ctx.passages } : {}),
@@ -1880,11 +1936,11 @@ export async function* streamKnowledgeBaseAnswer(input: {
     return
   }
   yield { type: "phase", phase: "generating" }
-  const modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
-  const model = createChatModel(modelId)
+  let modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
+  const opened = await openChatStream(modelId, ctx.messages)
+  modelId = opened.modelId
+  const stream = opened.stream
   let capturedUsage: TokenUsage | undefined
-
-  const stream = await model.stream(ctx.messages)
   for await (const chunk of stream) {
     const usage = extractTokenUsage(chunk as { usage_metadata?: unknown; response_metadata?: unknown })
     if ((usage.totalTokens ?? 0) > 0) {

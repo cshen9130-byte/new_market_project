@@ -6,13 +6,22 @@ import test from "node:test"
 import {
   QUANT_ACCOUNT_IDS,
   QUANT_STRATEGY_ACCOUNTS,
+  isDefaultQuantIds,
   isQuantAccount,
+  parseQuantIdList,
   quantStrategyAccount,
   quantStrategyLabel,
   quantStrategyTitle,
 } from "./quant-accounts"
 import { quantStrategyBooks } from "./quant-strategy-source"
 import { quantStrategyWarmQueries } from "./quant-strategy-ranges"
+
+test("isDefaultQuantIds ignores order and rejects a custom subset", () => {
+  assert.equal(isDefaultQuantIds(QUANT_ACCOUNT_IDS), true)
+  assert.equal(isDefaultQuantIds([...QUANT_ACCOUNT_IDS].reverse()), true)
+  assert.equal(isDefaultQuantIds(parseQuantIdList("319,324")), false)
+  assert.equal(isDefaultQuantIds([]), false)
+})
 
 test("rx387 is a MOM quant sleeve and the broker books stay off that list", () => {
   assert.equal(isQuantAccount("rx387"), true)

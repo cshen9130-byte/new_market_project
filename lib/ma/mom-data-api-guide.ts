@@ -1,4 +1,6 @@
-import { ACCOUNT_RISK_DATA_API_BASE, MOM_DATA_API_BASE, MOM_DATA_MCP_URL, MOM_DATA_PUBLIC_ORIGIN } from "@/lib/ma/mom-data-public"
+import { ACCOUNT_RISK_DATA_API_BASE, MOM_DATA_API_BASE, MOM_DATA_HTTPS_MCP_URL, MOM_DATA_PUBLIC_ORIGIN } from "@/lib/ma/mom-data-public"
+import { buildMcpClientsMarkdown } from "@/lib/ma/mcp-client-docs"
+import { buildWorkBuddyGuideMarkdown } from "@/lib/ma/workbuddy-api-guide"
 
 const FENCE = "```"
 
@@ -15,7 +17,7 @@ export function buildMomDataApiGuide(apiKey?: string): string {
 | --- | --- |
 | 网站 | ${MOM_DATA_PUBLIC_ORIGIN} |
 | HTTP 基址 | \`${MOM_DATA_API_BASE}\` |
-| MCP 地址 | \`${MOM_DATA_MCP_URL}\` |
+| MCP 地址 | \`${MOM_DATA_HTTPS_MCP_URL}\` |
 | API Key | \`${key}\` |
 
 每个请求任选一种方式带 Key：请求头 \`x-api-key\`、\`Authorization: Bearer\`，或 query \`api_key\`。成功时 \`error_code\` 为 0，正文在 \`data\`。
@@ -159,7 +161,7 @@ ${FENCE}
 
 日收益率 = 当日净盈亏 / 上一日客户权益。上一日权益不大于 0 的日子不进入收益率样本。历史 VaR 至少要 20 个日收益率，否则 \`var.note\` 会说明，VaR 字段为 null。
 
-这是历史模拟法的 1 日 VaR，用的是已经入库的每日净盈亏，不是风控页上按持仓和合约波动重算的参数法 VaR。
+这是历史模拟法的 1 日 VaR，用的是已经入库的每日净盈亏。风控页按持仓和合约波动重算的参数法 VaR 在下面的 \`/risk/var\`。
 
 ${FENCE}bash
 curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/account/metrics?account=12345678&start_date=2026-01-01"
@@ -191,6 +193,55 @@ ${FENCE}
 
 读法：\`var_95_loss = 0.018\` 表示按历史日收益率，5% 分位的单日亏损大约是上一日权益的 1.8%。\`var_95_pnl = -45000\` 是金额口径的同一分位。
 
+## 日间风控报告
+
+和页面「MOM 每日风控 → 日间风控」同一口径。MCP 的 \`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\` 调用的就是这些 GET。库里没有单独的 VaR 结果表。保证金历史来自每日核算；VaR 回测和边际贡献历史用每日持仓现算。
+
+### GET /risk/var
+
+VaR 沙盒的当前持仓。默认置信度 95、波动 20 日、相关 252 日、正态分布。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| confidence | 否 | 90、95 或 99。默认 95 |
+| vol_days | 否 | 波动窗口，默认 20，范围 5 到 120 |
+| corr_days | 否 | 相关窗口，默认 252，范围 5 到 756 |
+| dist | 否 | normal、t、laplace、logistic。默认 normal |
+
+\`total_var\` 是组合 1 日 VaR，单位元，正数表示亏损金额。\`products\` 里的 \`market_value\` 和 \`lots\` 是沙盒左侧的金额和手数。\`marginal_pct\` 是品种饼图，\`sectors\` 是板块饼图。\`component_var\` 是分到该品种的 VaR 金额。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/var"
+${FENCE}
+
+${FENCE}json
+{ "name": "mom_risk_var", "arguments": {} }
+${FENCE}
+
+### GET /risk/margin
+
+风险水平（保证金）。\`risk_ratio\` 是保证金 / 基金净值 × 100，单位是百分点。\`accounts\` 是各资金账号当天的保证金和风险度。传 \`history=1\`，或 \`start_date\`、\`end_date\`，返回 \`history\`。默认最近 250 个交易日。再传 \`account\` 则换成该资金账号的曲线。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/margin?history=1&start_date=2026-01-01"
+${FENCE}
+
+### GET /risk/var-forecast
+
+次日预测。\`next_day_var\` 用最近一个交易日的持仓估计下一交易日的 1 日 VaR。\`breach_rate\` 是回测突破率，单位是百分点。参数与 \`/risk/var\` 相同，\`dist\` 还可以是 kde。传 \`history=1\` 返回页面上的回测序列，大约最近 180 个交易日。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/var-forecast?history=1"
+${FENCE}
+
+### GET /risk/marginal
+
+板块边际波动贡献的历史占比。\`group\` 取 \`sector\`（默认）、\`category\`、\`sub\`。默认最近 120 个交易日。\`rows[].shares[].pct\` 是百分点。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/marginal?start_date=2026-10-01"
+${FENCE}
+
 ## 5. HTTP 示例
 
 ${FENCE}python
@@ -206,28 +257,21 @@ metrics = requests.get(f"{BASE}/account/metrics", params={"account": account}, h
 print(account, daily["data"]["rows"][0]["margin_usage_pct"], metrics["data"]["var"]["var_95_loss"])
 ${FENCE}
 
-## 6. MCP（Cursor / Claude）
+## 6. MCP 接入
 
-账户没有「MOM数据API」权限时，这个地址直接 403，\`tools/list\` 也不会出现。
+账户没有「MOM数据API」权限时，这个地址直接 403，\`tools/list\` 也不会出现。WorkBuddy 优先用下方的 OAuth 登录。
 
-${FENCE}json
-{
-  "mcpServers": {
-    "mom-data": {
-      "url": "${MOM_DATA_MCP_URL}",
-      "headers": { "x-api-key": "${key}" }
-    }
-  }
-}
-${FENCE}
-
-工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
+工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。日间风控工具调用 \`/risk/var\`、\`/risk/margin\`、\`/risk/var-forecast\`、\`/risk/marginal\`。历史要传 \`history=1\` 或日期。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
 
 先 \`mom_accounts\` 拿到 MOM 母基金账号，再查 daily 或 metrics。单账户用 \`cfmmc_accounts\` 和 \`cfmmc_account_nav\`。账号以接口返回为准。
 
 查「国泰君安期货 85121150」的净值时，调用 \`cfmmc_account_nav\`，\`account\` 填 \`85121150\`，\`company\` 填 \`国泰君安期货\`。母基金每日核算用 \`mom_account_daily\`。
 
 还原单账户开平仓节奏时，调用 \`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`，并传入 \`start_date\` 和 \`end_date\`。持仓不传日期时响应只含最近一个交易日，\`history\` 里有库内首尾日期。
+
+${buildWorkBuddyGuideMarkdown("mom")}
+
+${buildMcpClientsMarkdown("mom", key)}
 
 ## 7. 单账户监控中心导入
 

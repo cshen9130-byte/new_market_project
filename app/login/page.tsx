@@ -16,6 +16,16 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Eye, EyeOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+
+function safeOAuthContinuePath(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const value = raw.trim()
+  if (!value.startsWith("/oauth/authorize")) return null
+  if (value.startsWith("//") || value.includes("://") || value.includes("\\") || value.includes("..")) return null
+  if (value.includes("\n") || value.includes("\r")) return null
+  return value
+}
+
 export default function LoginPage() {
   const router = useRouter()
   const { toast } = useToast()
@@ -43,6 +53,12 @@ export default function LoginPage() {
         title: "登录成功",
         description: `欢迎回来，${user.name}!`,
       })
+      const oauthNext = safeOAuthContinuePath(new URLSearchParams(window.location.search).get("next"))
+      if (oauthNext) {
+        router.push(oauthNext)
+        setIsLoading(false)
+        return
+      }
       const canMa = user.role === "admin" || !!user.permissions?.ma
       const canClassic = user.role === "admin" || !!user.permissions?.classic
       if (styleChoice === "cyber") {

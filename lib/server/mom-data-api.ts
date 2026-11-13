@@ -938,6 +938,10 @@ function catalog() {
       { method: "GET", path: "/account/products", description: "品种汇总" },
       { method: "GET", path: "/account/cashflows", description: "核算日报出入金明细" },
       { method: "GET", path: "/account/metrics", description: "区间胜率、夏普、最大回撤、保证金使用率分布、历史 VaR / CVaR" },
+      { method: "GET", path: "/risk/var", description: "日间风控 VaR 沙盒：组合 1 日参数法 VaR、品种市值与手数、边际贡献" },
+      { method: "GET", path: "/risk/margin", description: "日间风控风险水平。history=1 返回组合保证金风险度历史" },
+      { method: "GET", path: "/risk/var-forecast", description: "日间风控次日 VaR。history=1 返回最近约 180 个交易日的回测" },
+      { method: "GET", path: "/risk/marginal", description: "板块边际波动贡献的历史占比，与 VaR 沙盒饼图同一口径" },
       { method: "GET", path: "/cfmmc/accounts", description: "单账户监控中心已导入账号。q 或 company 可填期货公司、产品名或资金账号，例如 国泰君安期货" },
       { method: "GET", path: "/cfmmc/account/nav", description: "单账户复权净值，与单账户总览净值曲线相同。例如 account=85121150&company=国泰君安期货" },
     ],
@@ -979,6 +983,14 @@ export async function handleMomDataRequest(
         return await accountCashflows(record)
       case "account/metrics":
         return await accountMetrics(record)
+      case "risk/var":
+        return (await import("@/lib/server/mom-risk-report-api")).getMomRiskVar(record)
+      case "risk/margin":
+        return (await import("@/lib/server/mom-risk-report-api")).getMomRiskMargin(record)
+      case "risk/var-forecast":
+        return (await import("@/lib/server/mom-risk-report-api")).getMomRiskVarForecast(record)
+      case "risk/marginal":
+        return (await import("@/lib/server/mom-risk-report-api")).getMomRiskMarginal(record)
       default:
         return momDataErr(1, `unknown path: /${key}`)
     }

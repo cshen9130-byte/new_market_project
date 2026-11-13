@@ -67,9 +67,35 @@ function isoToday() {
   return new Date().toISOString().slice(0, 10)
 }
 
-function subYears(dateStr: string, years: number) {
-  const d = new Date(dateStr)
-  d.setFullYear(d.getFullYear() - years)
+/** Same labels and order as the product page 统计区间 menu. */
+const COMPARE_PERIOD_OPTIONS = [
+  "自定义",
+  "成立以来",
+  "运作以来",
+  "今年以来",
+  "近一周",
+  "近一月",
+  "近三月",
+  "近六月",
+  "近一年",
+  "近两年",
+  "近三年",
+  "近五年",
+  "近十年",
+  "2026年",
+  "2025年",
+  "2024年",
+  "2023年",
+  "2022年",
+  "2021年",
+  "2020年",
+] as const
+
+function shiftDate(dateStr: string, n: number, unit: "day" | "month" | "year"): string {
+  const d = new Date(`${dateStr.slice(0, 10)}T12:00:00`)
+  if (unit === "year") d.setFullYear(d.getFullYear() - n)
+  else if (unit === "month") d.setMonth(d.getMonth() - n)
+  else d.setDate(d.getDate() - n)
   return d.toISOString().slice(0, 10)
 }
 
@@ -262,6 +288,7 @@ export function FundCompareDetailView({
   const [rawFundSeries, setRawFundSeries] = useState<FundSeries[]>([])
   const [benchSeries, setBenchSeries] = useState<BenchSeries>({ returnPoints: [], navPoints: [] })
   const [visibleFunds, setVisibleFunds] = useState<Set<string>>(() => new Set(initialCompare.funds.map((f) => f.beian_hao)))
+  const [benchVisible, setBenchVisible] = useState(true)
   const [loading, setLoading] = useState(false)
   const [analyzed, setAnalyzed] = useState(false)
 
@@ -270,7 +297,7 @@ export function FundCompareDetailView({
     [compare.funds],
   )
   const defaultFrom = useMemo(
-    () => subYears(defaultTo, 1),
+    () => shiftDate(defaultTo, 1, "year"),
     [defaultTo],
   )
 
@@ -293,15 +320,40 @@ export function FundCompareDetailView({
 
   function applyPeriod(period: string) {
     setFilterPeriod(period)
-    const to = filterTo || defaultTo
+    if (period === "自定义") return
+    const toLatest = defaultTo
     let from = defaultFrom
-    if (period === "近一年") from = subYears(to, 1)
-    else if (period === "近六月") {
-      const d = new Date(to)
-      d.setMonth(d.getMonth() - 6)
-      from = d.toISOString().slice(0, 10)
-    } else if (period === "成立以来") {
+    let to = toLatest
+    const yearMatch = /^(\d{4})年$/.exec(period)
+    if (period === "成立以来" || period === "运作以来") {
+      // Compare rows have no separate operation date, so 运作以来 uses the same earliest start as 成立以来.
       from = minDate(compare.funds.map((f) => f.nav_start_date ?? f.inception_date ?? ""))
+      if (from > to) from = to
+    } else if (period === "今年以来") {
+      from = `${toLatest.slice(0, 4)}-01-01`
+    } else if (period === "近一周") {
+      from = shiftDate(toLatest, 7, "day")
+    } else if (period === "近一月") {
+      from = shiftDate(toLatest, 1, "month")
+    } else if (period === "近三月") {
+      from = shiftDate(toLatest, 3, "month")
+    } else if (period === "近六月") {
+      from = shiftDate(toLatest, 6, "month")
+    } else if (period === "近一年" || period === "近1年") {
+      from = shiftDate(toLatest, 1, "year")
+    } else if (period === "近两年") {
+      from = shiftDate(toLatest, 2, "year")
+    } else if (period === "近三年" || period === "近3年") {
+      from = shiftDate(toLatest, 3, "year")
+    } else if (period === "近五年" || period === "近5年") {
+      from = shiftDate(toLatest, 5, "year")
+    } else if (period === "近十年") {
+      from = shiftDate(toLatest, 10, "year")
+    } else if (yearMatch) {
+      const year = yearMatch[1]
+      from = `${year}-01-01`
+      const endOfYear = `${year}-12-31`
+      to = endOfYear < toLatest ? endOfYear : toLatest
     }
     setFilterFrom(from)
     setFilterTo(to)
@@ -375,6 +427,7 @@ export function FundCompareDetailView({
 
   function toggleAllFunds(selectAll: boolean) {
     setVisibleFunds(selectAll ? new Set(compare.funds.map((f) => f.beian_hao)) : new Set())
+    if (selectAll) setBenchVisible(true)
   }
 
   function invertFundSelection() {
@@ -385,6 +438,7 @@ export function FundCompareDetailView({
       }
       return next
     })
+    setBenchVisible((prev) => !prev)
   }
 
   const benchLabel = `${BENCHMARK_OPTIONS.find((b) => b.key === appliedBench)?.label ?? "基准"}(基准)`
@@ -410,9 +464,10 @@ export function FundCompareDetailView({
       const pts = isNavMode ? s.navPoints : s.returnPoints
       pts.forEach((p) => dates.add(p.d))
     })
-    if (appliedBench) {
-      const benchPts = isNavMode ? alignedBench.navPoints : alignedBench.returnPoints
-      benchPts.forEach((p) => dates.add(p.d))
+    const benchPtsForChart = isNavMode ? alignedBench.navPoints : alignedBench.returnPoints
+    const showBench = Boolean(appliedBench && benchVisible && benchPtsForChart.length > 0)
+    if (showBench) {
+      benchPtsForChart.forEach((p) => dates.add(p.d))
     }
     const sortedDates = [...dates].sort()
 
@@ -444,27 +499,28 @@ export function FundCompareDetailView({
 
     const series = [...fundEchartsSeries]
 
-    const benchPts = isNavMode ? alignedBench.navPoints : alignedBench.returnPoints
-    if (appliedBench && benchPts.length > 0) {
+    if (showBench) {
       series.push({
         name: benchLabel,
         type: "line" as const,
         yAxisIndex: isNavMode ? 1 : 0,
-        showSymbol: benchPts.length <= 60,
+        showSymbol: benchPtsForChart.length <= 60,
         symbol: "circle",
         symbolSize: 4,
         smooth: false,
         connectNulls: true,
         lineStyle: { width: 2, color: "#60a5fa" },
         itemStyle: { color: "#60a5fa" },
-        data: toLineData(benchPts),
+        data: toLineData(benchPtsForChart),
       })
     }
+
+    const showBenchAxis = isNavMode && showBench
 
     return {
       useUTC: true,
       animation: false,
-      grid: { left: 56, right: isNavMode ? 64 : 24, top: 24, bottom: 72 },
+      grid: { left: 56, right: showBenchAxis ? 64 : 24, top: 24, bottom: 72 },
       dataZoom: [
         { type: "inside" as const, xAxisIndex: 0, filterMode: "none" as const },
         {
@@ -508,6 +564,7 @@ export function FundCompareDetailView({
       legend: { show: false },
       xAxis: echartsTimeXAxis(sortedDates),
       yAxis: isNavMode
+        ? showBenchAxis
         ? [
             {
               type: "value",
@@ -534,6 +591,17 @@ export function FundCompareDetailView({
           ]
         : {
             type: "value",
+            name: "净值",
+            scale: true,
+            axisLabel: {
+              formatter: (v: number) => Number(v).toFixed(2),
+              fontSize: 10,
+              color: "#71717a",
+            },
+            splitLine: { lineStyle: { color: "#f4f4f5" } },
+          }
+        : {
+            type: "value",
             name: "收益率(%)",
             axisLabel: {
               formatter: (v: number) => `${v}%`,
@@ -544,7 +612,7 @@ export function FundCompareDetailView({
           },
       series,
     }
-  }, [activeSeries, alignedChartBench, appliedBench, chartMode, benchLabel, filterFreq])
+  }, [activeSeries, alignedChartBench, appliedBench, benchVisible, chartMode, benchLabel, filterFreq])
 
   return (
     <div className="flex flex-col min-h-0">
@@ -586,7 +654,7 @@ export function FundCompareDetailView({
             onChange={(e) => applyPeriod(e.target.value)}
             className="border rounded px-2 py-1 bg-white"
           >
-            {["近一年", "近六月", "成立以来", "自定义"].map((o) => <option key={o}>{o}</option>)}
+            {COMPARE_PERIOD_OPTIONS.map((o) => <option key={o}>{o}</option>)}
           </select>
         </div>
         <DateInput
@@ -720,7 +788,14 @@ export function FundCompareDetailView({
               )
             })}
             {appliedBench && (chartMode === "nav" ? alignedChartBench.navPoints : alignedChartBench.returnPoints).length > 0 && (
-              <span className="inline-flex items-center gap-2 text-xs text-zinc-500">
+              <button
+                type="button"
+                onClick={() => setBenchVisible((prev) => !prev)}
+                className={[
+                  "inline-flex items-center gap-2 text-xs text-zinc-500 transition-opacity",
+                  benchVisible ? "opacity-100" : "opacity-40",
+                ].join(" ")}
+              >
                 <span className="w-3 h-0.5 rounded bg-sky-400" />
                 {benchLabel}
                 {chartMode === "nav" ? (
@@ -732,7 +807,7 @@ export function FundCompareDetailView({
                     {alignedChartBench.returnPoints.at(-1)!.v >= 0 ? "+" : ""}{alignedChartBench.returnPoints.at(-1)!.v.toFixed(2)}%
                   </span>
                 )}
-              </span>
+              </button>
             )}
           </div>
 
@@ -740,7 +815,8 @@ export function FundCompareDetailView({
             <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
               点击「开始分析」查看收益对比
             </div>
-          ) : activeSeries.every((s) => (chartMode === "nav" ? s.navPoints : s.returnPoints).length === 0) ? (
+          ) : activeSeries.every((s) => (chartMode === "nav" ? s.navPoints : s.returnPoints).length === 0)
+            && !(benchVisible && appliedBench && (chartMode === "nav" ? alignedChartBench.navPoints : alignedChartBench.returnPoints).length > 0) ? (
             <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
               暂无足够净值数据
             </div>
