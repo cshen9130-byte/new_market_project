@@ -10,6 +10,12 @@ export async function OPTIONS() {
 export async function GET(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
   const origin = originFromRequest(req)
   const { path = [] } = await ctx.params
+  // Root document points at the fund-data MCP; path-specific documents are preferred.
+  if (path.length === 0) {
+    return Response.json(protectedResourceMetadata(origin, "/ma/api/fund-data/mcp"), {
+      headers: { ...OAUTH_CORS, "Cache-Control": "no-store" },
+    })
+  }
   const resourcePath = `/${path.join("/")}`
   const family = resourceFamily(`${origin}${resourcePath}`)
   const normalized =
