@@ -21,6 +21,7 @@ const SectorDailyPnlChart      = dynamic(() => import("@/components/ma/sector-da
 const ProductDailyPnlChart     = dynamic(() => import("@/components/ma/product-daily-pnl-chart"),     { ssr: false })
 const SandboxProductMcrPieChart = dynamic(() => import("@/components/ma/sandbox-product-mcr-pie-chart"), { ssr: false })
 const VarMcrTimeseriesCharts   = dynamic(() => import("@/components/ma/var-mcr-timeseries-charts"), { ssr: false })
+const VarMcrSuggestionsPanel  = dynamic(() => import("@/components/ma/var-mcr-suggestions-panel"), { ssr: false })
 const AccountDailyPnlChart     = dynamic(() => import("@/components/ma/account-daily-pnl-chart"),     { ssr: false })
 const AdvisorPnlHistogramChart = dynamic(() => import("@/components/ma/advisor-pnl-histogram-chart"), { ssr: false })
 const AdvisorEquityCurveChart  = dynamic(() => import("@/components/ma/advisor-equity-curve-chart"), { ssr: false })
@@ -2911,6 +2912,7 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
         <VarSandboxContent />
       </div>
       <VarMcrTimeseriesCharts />
+      <VarMcrSuggestionsPanel />
 
       <section id="section-intraday-margin">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -9181,6 +9183,10 @@ html[data-mom-embed="1"] #mom-briefing-printable {
               onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })}
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >VaR沙盒 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-mcr-suggestions")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >处置建议 ↓</button>
             <button
               onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })}
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
