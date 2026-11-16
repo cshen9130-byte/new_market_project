@@ -20,6 +20,7 @@ const SectorPositionCharts     = dynamic(() => import("@/components/ma/sector-po
 const SectorDailyPnlChart      = dynamic(() => import("@/components/ma/sector-daily-pnl-chart"),      { ssr: false })
 const ProductDailyPnlChart     = dynamic(() => import("@/components/ma/product-daily-pnl-chart"),     { ssr: false })
 const SandboxProductMcrPieChart = dynamic(() => import("@/components/ma/sandbox-product-mcr-pie-chart"), { ssr: false })
+const VarMcrTimeseriesCharts   = dynamic(() => import("@/components/ma/var-mcr-timeseries-charts"), { ssr: false })
 const AccountDailyPnlChart     = dynamic(() => import("@/components/ma/account-daily-pnl-chart"),     { ssr: false })
 const AdvisorPnlHistogramChart = dynamic(() => import("@/components/ma/advisor-pnl-histogram-chart"), { ssr: false })
 const AdvisorEquityCurveChart  = dynamic(() => import("@/components/ma/advisor-equity-curve-chart"), { ssr: false })
@@ -2909,6 +2910,7 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
       <div id="section-intraday-sandbox">
         <VarSandboxContent />
       </div>
+      <VarMcrTimeseriesCharts />
 
       <section id="section-intraday-margin">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
