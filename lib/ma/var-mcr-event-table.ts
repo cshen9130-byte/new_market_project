@@ -390,6 +390,225 @@ export function classifyRegimeFlags(metrics: RegimeMetrics, thresholds: RegimeTh
   }
 }
 
+/** Share of finite observations at or below `x`, in percent. */
+export function empiricalPercentile(values: readonly (number | null | undefined)[], x: number | null): number | null {
+  if (x == null || !Number.isFinite(x)) return null
+  const xs = values.filter((value): value is number => value != null && Number.isFinite(value))
+  if (xs.length === 0) return null
+  return (xs.filter((value) => value <= x).length / xs.length) * 100
+}
+
+const NEAR_RATIO = 0.95
+const CRITICAL_RATIO = 0.02
+const LOW_CORR_PCT = 20
+
+export type RegimeTrigger = "yes" | "near" | "no"
+
+export type RegimeStatusRow = {
+  key: string
+  status: string
+  rule: string
+  trigger: RegimeTrigger
+  triggerText: string
+  meaning: string
+}
+
+export type RegimeStatusTable = {
+  date: string
+  dateLabel: string
+  matureDays: number
+  rows: RegimeStatusRow[]
+}
+
+function formatPctRatio(value: number | null, digits: number): string {
+  if (value == null || !Number.isFinite(value)) return "—"
+  return `${(value * 100).toFixed(digits)}%`
+}
+
+function formatCorr(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "—"
+  return value.toFixed(3)
+}
+
+function pctilePhrase(pctile: number | null): string {
+  if (pctile == null || !Number.isFinite(pctile)) return "分位不足"
+  return `约 ${Math.round(pctile)}% 分位`
+}
+
+function isCritical(value: number | null, threshold: number | null): boolean {
+  if (value == null || threshold == null || !Number.isFinite(value) || !Number.isFinite(threshold)) return false
+  const scale = Math.max(Math.abs(threshold), 1e-6)
+  return Math.abs(value - threshold) / scale <= CRITICAL_RATIO
+}
+
+function nearUpper(value: number | null, threshold: number | null): boolean {
+  if (value == null || threshold == null || !Number.isFinite(value) || !Number.isFinite(threshold) || threshold <= 0) return false
+  if (value >= threshold) return false
+  return value / threshold >= NEAR_RATIO
+}
+
+function nearLower(value: number | null, threshold: number | null): boolean {
+  if (value == null || threshold == null || !Number.isFinite(value) || !Number.isFinite(threshold) || threshold <= 0) return false
+  if (value <= threshold) return false
+  return value / threshold <= 1 + (1 - NEAR_RATIO)
+}
+
+function statusOf(on: boolean, near: boolean): RegimeTrigger {
+  if (on) return "yes"
+  if (near) return "near"
+  return "no"
+}
+
+function triggerSentence(kind: RegimeTrigger, detail: string, critical = false): string {
+  if (kind === "yes" && critical) return "是（临界触发）"
+  if (kind === "yes") return `是（${detail}）`
+  if (kind === "near") return `接近（${detail}），未达阈值`
+  return `否（${detail}）`
+}
+
+function countSentence(count: number, limit: number): { trigger: RegimeTrigger; triggerText: string } {
+  if (count >= limit) return { trigger: "yes", triggerText: `是（${count} 个）` }
+  if (count === limit - 1) return { trigger: "near", triggerText: `接近（${count} 个），未达阈值` }
+  return { trigger: "no", triggerText: `否（${count} 个）` }
+}
+
+/**
+ * Chapter-5 market-state table for one trading day.
+ * Thresholds are the mature-sample quantiles; the trigger cell is that day's reading.
+ */
+export function buildRegimeStatusTable(input: {
+  date: string
+  metrics: RegimeMetrics
+  mature: readonly RegimeMetrics[]
+}): RegimeStatusTable {
+  const { metrics, mature } = input
+  const thresholds = regimeThresholds(mature)
+  const flags = classifyRegimeFlags(metrics, thresholds)
+  const pct = {
+    sig: empiricalPercentile(mature.map((row) => row.medSigma), metrics.medSigma),
+    corr: empiricalPercentile(mature.map((row) => row.meanCorr), metrics.meanCorr),
+    breadth: empiricalPercentile(mature.map((row) => row.breadth), metrics.breadth),
+    gap: empiricalPercentile(mature.map((row) => row.gapMed), metrics.gapMed),
+    jump: empiricalPercentile(mature.map((row) => row.jumpMed), metrics.jumpMed),
+    abs: empiricalPercentile(mature.map((row) => row.maxAbsR), metrics.maxAbsR),
+  }
+  const dOn = over(metrics.dMedSigma, thresholds.p95Dsig)
+  const volKind = statusOf(flags.vol_spike, nearUpper(metrics.medSigma, thresholds.p95Sig) || nearUpper(metrics.dMedSigma, thresholds.p95Dsig))
+  const volDetail = `${formatPctRatio(metrics.medSigma, 2)}，${pctilePhrase(pct.sig)}；${dOn ? "一日增量达 95% 分位" : "增量未达 95%"}`
+  const corrLow = flags.corr_collapse || (pct.corr != null && pct.corr <= LOW_CORR_PCT)
+  const corrSurgeKind = statusOf(flags.corr_surge, nearUpper(metrics.meanCorr, thresholds.p95Corr))
+  const corrCollapseKind = statusOf(flags.corr_collapse, nearLower(metrics.meanCorr, thresholds.p05Corr))
+  const breadthKind = statusOf(flags.regime_breadth, nearUpper(metrics.breadth, thresholds.p95Breadth))
+  const gapKind = statusOf(flags.gap, nearUpper(metrics.gapMed, thresholds.p95Gap))
+  const jumpKind = statusOf(flags.jump, nearUpper(metrics.jumpMed, thresholds.p95Jump))
+  const shockKind = statusOf(flags.idiosyncratic, nearUpper(metrics.maxAbsR, thresholds.p99Abs))
+  const shockDetail = shockKind === "no"
+    ? `最大约 ${formatPctRatio(metrics.maxAbsR, 1)}`
+    : `最大约 ${formatPctRatio(metrics.maxAbsR, 1)}，${pctilePhrase(pct.abs)}`
+  const liq = countSentence(metrics.nLiqGap, 3)
+  const roll = countSentence(metrics.nSpike, 2)
+
+  const rows: RegimeStatusRow[] = [
+    {
+      key: "vol_spike",
+      status: "波动抬升",
+      rule: `持仓品种 20 日 σ 中位数 ≥ 95% 分位（${formatPctRatio(thresholds.p95Sig, 2)}），或其中位数一日增量 ≥ 95% 分位`,
+      trigger: volKind,
+      triggerText: triggerSentence(volKind, volDetail, false),
+      meaning: "不因市场波动升高而砍仓；可冻结硬阈值、加强观察",
+    },
+    {
+      key: "corr_surge",
+      status: "高相关传染",
+      rule: `持仓品种 252 日平均两两相关 ≥ 95% 分位（约 ${formatCorr(thresholds.p95Corr)}）`,
+      trigger: corrSurgeKind,
+      triggerText: !flags.corr_surge && corrLow
+        ? `否（${formatCorr(metrics.meanCorr)}，反而是低相关）`
+        : triggerSentence(corrSurgeKind, `${formatCorr(metrics.meanCorr)}，${pctilePhrase(pct.corr)}`, isCritical(metrics.meanCorr, thresholds.p95Corr)),
+      meaning: "高相关时同样的贡献占比更危险，可临时收紧软预警",
+    },
+    {
+      key: "corr_collapse",
+      status: "相关塌缩",
+      rule: `持仓品种平均两两相关 ≤ 5% 分位（约 ${formatCorr(thresholds.p05Corr)}）`,
+      trigger: corrCollapseKind,
+      triggerText: triggerSentence(
+        corrCollapseKind,
+        `${formatCorr(metrics.meanCorr)}，${pctilePhrase(pct.corr)}`,
+        isCritical(metrics.meanCorr, thresholds.p05Corr),
+      ),
+      meaning: "分散化改善，通常不应收紧贡献上限",
+    },
+    {
+      key: "regime_breadth",
+      status: "截面同向",
+      rule: `当日持仓品种收益同向占比 ≥ 95% 分位（约 ${formatPctRatio(thresholds.p95Breadth, 1)}）`,
+      trigger: breadthKind,
+      triggerText: triggerSentence(
+        breadthKind,
+        `${formatPctRatio(metrics.breadth, 1)}，${pctilePhrase(pct.breadth)}`,
+        isCritical(metrics.breadth, thresholds.p95Breadth),
+      ),
+      meaning: "「万物同向」日观察隔夜与板块上限，仍不以市场为由砍仓",
+    },
+    {
+      key: "gap",
+      status: "隔夜缺口",
+      rule: `持仓品种开盘相对前结算的缺口中位数 ≥ 95% 分位（约 ${formatPctRatio(thresholds.p95Gap, 2)}）`,
+      trigger: gapKind,
+      triggerText: triggerSentence(
+        gapKind,
+        `${formatPctRatio(metrics.gapMed, 2)}，${pctilePhrase(pct.gap)}`,
+        isCritical(metrics.gapMed, thresholds.p95Gap),
+      ),
+      meaning: "关注跳空是否来自商品自身事件；不自动减仓",
+    },
+    {
+      key: "jump",
+      status: "收益跳跃",
+      rule: `持仓品种 |收益| 中位数 ≥ 95% 分位（约 ${formatPctRatio(thresholds.p95Jump, 2)}）`,
+      trigger: jumpKind,
+      triggerText: triggerSentence(
+        jumpKind,
+        `${formatPctRatio(metrics.jumpMed, 2)}，${pctilePhrase(pct.jump)}`,
+        isCritical(metrics.jumpMed, thresholds.p95Jump),
+      ),
+      meaning: "与波动抬升类似，先定性再决定是否观察仓位",
+    },
+    {
+      key: "idiosyncratic",
+      status: "个品种冲击",
+      rule: `持仓品种最大 |收益| ≥ 99% 分位（约 ${formatPctRatio(thresholds.p99Abs, 1)}）`,
+      trigger: shockKind,
+      triggerText: triggerSentence(shockKind, shockDetail, isCritical(metrics.maxAbsR, thresholds.p99Abs)),
+      meaning: "若冲击来自单一商品事件，检查该品种持仓是否被动放大；仅在持仓同步扩张时升级",
+    },
+    {
+      key: "liq",
+      status: "流动性缺口",
+      rule: "成交量低于 20 日中位数 30% 的持仓品种数 ≥ 3",
+      trigger: liq.trigger,
+      triggerText: liq.triggerText,
+      meaning: "流动性差时更不宜强迫减仓（冲击成本高），应放宽执行时限",
+    },
+    {
+      key: "roll",
+      status: "移仓/异常跳价",
+      rule: "系统 MAD 规则标记的跳价品种数 ≥ 2",
+      trigger: roll.trigger,
+      triggerText: roll.triggerText,
+      meaning: "优先检查连续合约与近月切换是否污染 σ，而非干预策略",
+    },
+  ]
+
+  return {
+    date: input.date,
+    dateLabel: formatMdDate(input.date),
+    matureDays: mature.length,
+    rows,
+  }
+}
+
 export type EventTableRow = {
   date: string
   dateShort: string
@@ -429,6 +648,7 @@ export type EventTablesPayload = {
   selectedDate: string
   productTable: EventTableBlock | null
   sectorTable: EventTableBlock | null
+  regimeTable: RegimeStatusTable | null
   footnote: string
   volDays: number
   corrDays: number

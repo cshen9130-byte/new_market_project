@@ -50,6 +50,7 @@ CHART_HOST="${CHART_HOST:-127.0.0.1}"
 CHART_PORT="${CHART_PORT:-8000}"
 BUILD_MEMORY_MB="1024"
 BUILD_MEMORY_USER_SET="0"
+BUILD_PARALLELISM="1"
 TEMP_SWAP_GB="4"
 DEBUG_BUILD="0"
 BUILD_DEBUG_INTERVAL_SEC="30"
@@ -305,10 +306,19 @@ auto_tune_build_settings() {
     fi
   fi
 
+  # Parallelism 1 is what made the 2026-11-16 compile take 11.4 min (4 CPUs, cache
+  # already off). The October OOM was packing that disk cache into one string at
+  # a 3072 MB cap; next.config.mjs still sets cache=false. Four in-flight modules
+  # run only when the heap cap is at least 5120 MB. A 2048 MB heap stays at 1.
+  BUILD_PARALLELISM="1"
+  if [[ "$BUILD_MEMORY_MB" -ge 5120 ]]; then
+    BUILD_PARALLELISM="4"
+  fi
+
   # --debug-build adds heartbeats + build-debug.log only; never shrink the heap here
   # (previously forced 1024 MB on <4.5 GiB hosts, overriding --build-memory-mb).
 
-  echo "Build settings: memory=${BUILD_MEMORY_MB}MB, temp_swap=${TEMP_SWAP_GB}G, debug=${DEBUG_BUILD}, interval=${BUILD_DEBUG_INTERVAL_SEC}s"
+  echo "Build settings: memory=${BUILD_MEMORY_MB}MB, parallelism=${BUILD_PARALLELISM}, temp_swap=${TEMP_SWAP_GB}G, debug=${DEBUG_BUILD}, interval=${BUILD_DEBUG_INTERVAL_SEC}s"
 }
 
 # Ensure we are in the project root
@@ -356,7 +366,7 @@ echo "pnpm install finished; starting Next.js build next."
 rm -rf "$PROJECT_ROOT/.next/cache"
 
 run_next_build() {
-  echo "Starting Next.js build (parent heap=${BUILD_MEMORY_MB}MB via node argv; workers do not inherit)..."
+  echo "Starting Next.js build (parent heap=${BUILD_MEMORY_MB}MB, webpack parallelism=${BUILD_PARALLELISM}; workers do not inherit the heap)..."
   # Prefer local next binary; fall back to pnpm if the path layout differs.
   local next_bin="$PROJECT_ROOT/node_modules/next/dist/bin/next"
   if [[ ! -f "$next_bin" ]]; then
@@ -375,8 +385,9 @@ run_next_build() {
   echo "Memory immediately before next build:"
   free -h || true
   swapon --show || true
-  FORCE_COLOR=0 MALLOC_ARENA_MAX=1 UV_THREADPOOL_SIZE=1 \
+  FORCE_COLOR=0 MALLOC_ARENA_MAX=1 UV_THREADPOOL_SIZE="${BUILD_PARALLELISM}" \
   CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 \
+  NEXT_BUILD_PARALLELISM="${BUILD_PARALLELISM}" \
   node --max-old-space-size="${BUILD_MEMORY_MB}" "$next_bin" build --webpack
 }
 

@@ -1,0 +1,59 @@
+{
+  "name": "investment-review-analyst",
+  "version": "1.0.0",
+  "description": "Reads FOF underlying holdings and weekly reviews, and generates the same Excel workbooks as the website.",
+  "author": {
+    "name": "MA"
+  },
+  "agents": [
+    "./agents/investment-review-analyst.md"
+  ],
+  "expertType": "agent",
+  "agentName": "investment-review-analyst",
+  "displayName": {
+    "en": "周报与FOF分析",
+    "zh": "周报与FOF分析"
+  },
+  "profession": {
+    "en": "投研周报分析",
+    "zh": "投研周报分析"
+  },
+  "displayDescription": {
+    "en": "FOF holdings, weekly stock and futures reviews, public enhanced-index reviews, and external private-fund rankings, plus the same Excel export as the website.",
+    "zh": "在用户本人的投资页权限下读取 FOF底层和周度回顾，并生成与网站相同的周报 Excel。"
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "Summarize this week's JY equity weekly review and generate the Excel.",
+    "zh": "总结这周 JY跟踪池的股票周度回顾，并生成 Excel。"
+  },
+  "plugin": "investment-review-analyst",
+  "tags": [
+    {
+      "en": "Weekly review",
+      "zh": "周度回顾"
+    },
+    {
+      "en": "FOF holdings",
+      "zh": "FOF底层"
+    },
+    {
+      "en": "External rankings",
+      "zh": "外部业绩榜"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "en": "Summarize this week's JY equity weekly review and generate the Excel.",
+      "zh": "总结这周 JY跟踪池的股票周度回顾，并生成 Excel。"
+    },
+    {
+      "en": "Which FOF underlyings have the largest market value, and what was their latest move?",
+      "zh": "FOF底层里市值最大的产品，最新涨跌幅是多少？"
+    },
+    {
+      "en": "Show this week's external private-fund ranking for subjective long-only managers.",
+      "zh": "看这周外部私募业绩排行里的主观多头。"
+    }
+  ]
+}

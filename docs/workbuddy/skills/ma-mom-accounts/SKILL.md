@@ -23,9 +23,10 @@ author: MA
 - 每日核算：`mom_account_daily`
 - 成交 / 持仓 / 平仓 / 委托 / 品种 / 出入金：`mom_account_trades`、`mom_account_positions`、`mom_account_closes`、`mom_account_orders`、`mom_account_products`、`mom_account_cashflows`
 - 区间风险指标：`mom_account_metrics`（单账户历史模拟法 1 日 VaR）
-- 日间风控报告走 HTTP，MCP 只是去调这些接口：`GET /risk/var`、`GET /risk/margin`、`GET /risk/var-forecast`、`GET /risk/marginal`。工具名是 `mom_risk_var`、`mom_risk_margin`、`mom_risk_var_forecast`、`mom_risk_marginal`。这是风控页的参数法 VaR、保证金风险度和次日预测，不是 `mom_account_metrics`。
-- 要历史时：保证金曲线给 `mom_risk_margin` 传 `history=1`；VaR 回测给 `mom_risk_var_forecast` 传 `history=1`（大约最近 180 个交易日）；板块边际贡献历史用 `mom_risk_marginal`。库里没有单独的 VaR 结果表。
+- 日间风控的参数法 VaR、保证金和次日预测用 `mom_risk_var`、`mom_risk_margin`、`mom_risk_var_forecast`、`mom_risk_marginal`、`mom_risk_var_history`。这不是 `mom_account_metrics` 的历史模拟 VaR。口径、单位、入库窗口和集中度读法以技能 `ma-mom-var` 为准。
 - 单账户监控中心：`cfmmc_accounts`、`cfmmc_account_nav`、`cfmmc_account_daily`、`cfmmc_account_positions`、`cfmmc_account_trades`、`cfmmc_account_closes`、`cfmmc_rows`
+- 单账户总览表用 `cfmmc_overview`。列、合计和单位以技能 `ma-account-overview` 为准，不要用母基金的 `mom_accounts` 回答这张表。
+- 投资分析「MOM底层」用 `mom_underlying`。读法以技能 `ma-mom-underlying` 为准。不要用 `mom_accounts` 代替这张关联表。
 
 内部账户（国信 / GUOXIN / GUOSEN / 665300200077）不会出现。不要编造账号；一律以接口返回为准。
 

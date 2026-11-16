@@ -30,4 +30,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("var-mcr-suggestions", _GET)
+export const GET = withMomCache("var-mcr-suggestions-mask", _GET)

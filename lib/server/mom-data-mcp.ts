@@ -28,6 +28,14 @@ const ACCOUNT = { type: "string", description: "资金账号，与 /accounts 返
 
 export const MOM_DATA_MCP_TOOLS: Tool[] = [
   {
+    name: "mom_underlying",
+    description: "投资分析「MOM底层」表。每行是一只产品及其对比账户或单账户。返回产品名、备案号、账户、账户说明、策略、最新单位净值、涨跌幅（百分点，-1.48 表示 -1.48%）和最新权益（元）。kind=compare 是 MOM 对比账户，kind=account 是单账户资金账号。q 按产品、备案号、账户或策略筛选。只读，不修改关联。这不是 mom_accounts 的母基金核算列表。",
+    inputSchema: obj({
+      q: { type: "string", description: "产品名、备案号、账户或策略" },
+      kind: { type: "string", description: "all（默认）、compare（对比账户）、account（单账户）" },
+    }),
+  },
+  {
     name: "mom_accounts",
     description: "列出可查询的 MOM 资金账号。每条含投顾名称、板块、区间，以及最新权益、保证金占用、保证金使用率（保证金占用/客户权益）和结算单风险度。内部账户不会返回。",
     inputSchema: obj({
@@ -119,6 +127,14 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
       limit: { type: "integer", description: "默认 200，最大 2000" },
       offset: { type: "integer" },
     }, ["account"]),
+  },
+  {
+    name: "cfmmc_overview",
+    description: "单账户总览表，和页面「单账户每日风控 → 单账户总览」同一张表。每个资金账号一行，取最新交易日。金额是元。risk_pct、unilateral_risk_pct、nav_return_pct 是百分点（11.86 表示 11.86%）。daily_pnl 是当日盈亏（权益差减去出入金）。holding_pnl 是当日浮动变动，不是结算单持仓浮动水平。合计用返回的 total，不要把各行 risk_pct 做简单平均。q 可按产品、期货公司、账号、PM 筛选。group 取 none（默认）、fund、company、pm。不读 MOM 母基金表。",
+    inputSchema: obj({
+      q: { type: "string", description: "产品名、期货公司、资金账号或 PM" },
+      group: { type: "string", description: "none（默认，逐账号）、fund、company、pm" },
+    }),
   },
   {
     name: "cfmmc_accounts",
@@ -262,7 +278,7 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
   },
   {
     name: "mom_risk_marginal",
-    description: "板块边际波动贡献的历史占比。对应 GET /risk/marginal。与 VaR 沙盒饼图同一口径，按交易日展开。用每日持仓现算。group 取 sector（默认）、category 或 sub。默认最近 120 个交易日。",
+    description: "板块边际波动贡献的历史占比。对应 GET /risk/marginal。与 VaR 沙盒饼图同一口径，按交易日展开。用每日持仓现算，可改窗口。group 取 sector（默认）、category 或 sub。默认最近 120 个交易日。要已入库的 VaR 金额用 mom_risk_var_history。",
     inputSchema: obj({
       group: { type: "string", description: "sector（默认）、category、sub" },
       vol_days: { type: "integer", description: "波动窗口，默认 20" },
@@ -270,6 +286,16 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
       start_date: DATE,
       end_date: DATE,
       limit: { type: "integer", description: "默认 120，最大 2000" },
+    }),
+  },
+  {
+    name: "mom_risk_var_history",
+    description: "已入库的 MOM 持仓 VaR 历史。对应 GET /risk/var-history。读 public.mom_position_var_daily，不是现算。每个交易日有组合 1 日 VaR（total_var，元），以及板块和品种的 component_var（元，品种相加等于 total_var）和 marginal_pct（百分点，与持仓VaR走势面积图一致）。固定 95% 正态、20 日波动、252 日相关。group 默认 all（板块+品种），也可取 sector、product、category、sub。默认最近 250 个交易日。不含国信账户。",
+    inputSchema: obj({
+      group: { type: "string", description: "all（默认，板块和品种）、sector、product、category、sub" },
+      start_date: DATE,
+      end_date: DATE,
+      limit: { type: "integer", description: "默认 250，最大 2000。只保留窗口末尾" },
     }),
   },
   {
@@ -294,6 +320,8 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
     if (value != null && value !== "") record[key] = String(value)
   }
   switch (name) {
+    case "mom_underlying":
+      return handleMomDataRequest("underlying", record)
     case "mom_accounts":
       return handleMomDataRequest("accounts", record)
     case "mom_account_daily":
@@ -320,6 +348,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
       return handleMomDataRequest("risk/var-forecast", record)
     case "mom_risk_marginal":
       return handleMomDataRequest("risk/marginal", record)
+    case "mom_risk_var_history":
+      return handleMomDataRequest("risk/var-history", record)
+    case "cfmmc_overview":
+      return handleAccountRiskDataRequest("overview", record)
     case "cfmmc_accounts":
       return handleAccountRiskDataRequest("accounts", record)
     case "cfmmc_account_nav":

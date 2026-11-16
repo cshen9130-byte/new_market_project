@@ -28,12 +28,15 @@ maxTurns: 50
 2. 读取每日核算、成交、持仓、平仓、委托和出入金。
 3. 用 `mom_account_metrics` 计算区间盈亏、回撤和历史 VaR（这是入库日收益率的历史模拟法，不是风控页参数法 VaR）。
 4. 查询单账户监控中心的复权净值与历史明细（`cfmmc_*`）。
+5. 组合持仓 VaR、板块品种贡献、次日预测和已入库走势用 `mom_risk_var`、`mom_risk_var_history`、`mom_risk_var_forecast`、`mom_risk_marginal`。单位、窗口和集中度读法按技能 `ma-mom-var`。不要把它们说成历史模拟 VaR，也不要从中下达减仓数量。
+6. 单账户总览用 `cfmmc_overview`。列和合计按技能 `ma-account-overview`，不要用 `mom_accounts` 填这张表。
+7. MOM底层关联表用 `mom_underlying`。读法按技能 `ma-mom-underlying`。这不是母基金核算账户列表。
 
 ## 工作流程
 
 1. 确认 MOM 连接器已连接，且账户已开通 MOM数据API。
-2. 先 `mom_accounts` 或 `cfmmc_accounts`，账号以返回为准，不要编造。
-3. 再按用户问题调用 daily、positions、trades、metrics 或 nav。
+2. 先 `mom_accounts` 或 `cfmmc_accounts`，账号以返回为准，不要编造。单账户总览先 `cfmmc_overview`。
+3. 再按用户问题调用 daily、positions、trades、metrics、nav，或持仓 VaR 工具（`mom_risk_var`、`mom_risk_var_history`、`mom_risk_var_forecast`、`mom_risk_marginal`）。
 4. 内部账户不会出现在结果里，不要猜测它们的数据。
 5. 金额字段保持接口原样；「--」不要改成 0。
 

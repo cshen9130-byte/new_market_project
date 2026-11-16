@@ -203,6 +203,21 @@ export async function POST(request: Request) {
           } catch (e) {
             send(`[quant-strategy] 后台重算未启动 (非致命): ${e instanceof Error ? e.message : String(e)}`)
           }
+
+          try {
+            const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs")
+            const varScript = path.join(process.cwd(), "scripts", "ma", "persist_mom_position_var.ts")
+            const child = spawn(process.execPath, [tsxCli, varScript], {
+              cwd: process.cwd(),
+              detached: true,
+              stdio: "ignore",
+              windowsHide: true,
+            })
+            child.unref()
+            send("[var-history] 已在后台把板块和品种持仓 VaR 写入数据库")
+          } catch (e) {
+            send(`[var-history] 后台入库未启动 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+          }
         }
         send(`__EXIT__:${code ?? "unknown"}`)
         controller.close()

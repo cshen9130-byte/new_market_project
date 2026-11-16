@@ -11,6 +11,10 @@
  *   npx tsx scripts/ma/precompute_quant_strategy.ts
  *   npx tsx scripts/ma/precompute_quant_strategy.ts --force
  *   npx tsx scripts/ma/precompute_quant_strategy.ts --account=319 --range=全部
+ *
+ * Without --force, a payload already cached today is kept. A miss is left
+ * for the page (stale file, refresh when that account/range is opened).
+ * --force recomputes every selected payload and bypasses the file cache.
  */
 
 import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
@@ -67,6 +71,7 @@ async function main() {
 
   let ok = 0
   let cached = 0
+  let skipped = 0
   let failed = 0
   const errors: string[] = []
   const t0 = Date.now()
@@ -83,8 +88,13 @@ async function main() {
       console.error(`[precompute_quant_strategy] cache ${label}`)
       continue
     }
+    if (!force) {
+      skipped++
+      console.error(`[precompute_quant_strategy] keep ${label}`)
+      continue
+    }
     const url = new URL(`http://127.0.0.1/ma/api/mom-analysis/quant-strategy?${sp}`)
-    if (force) url.searchParams.set("nocache", "1")
+    url.searchParams.set("nocache", "1")
     const started = Date.now()
     try {
       const res = await GET(new Request(url))
@@ -109,12 +119,13 @@ async function main() {
   console.log(JSON.stringify({
     ok,
     cached,
+    skipped,
     failed,
     total: queries.length,
     ms: Date.now() - t0,
     errors: errors.slice(0, 20),
   }))
-  process.exit(ok + cached === 0 ? 1 : 0)
+  process.exit(ok + cached + skipped === 0 ? 1 : 0)
 }
 
 main().catch((e) => {

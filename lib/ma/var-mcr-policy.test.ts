@@ -30,6 +30,12 @@ test("account codes display as RX335", () => {
   assert.equal(personLabel(null, "rx335"), "RX335（对照表中无姓名）")
 })
 
+test("RX000 always labels as 自营, not the roster nickname", () => {
+  assert.equal(personLabel("BEN", "rx000"), "自营（RX000）")
+  assert.equal(personLabel("BEN", "RX000"), "自营（RX000）")
+  assert.equal(personLabel(null, "RX 000"), "自营（RX000）")
+})
+
 test("trailing streak counts only the current run through the as-of date", () => {
   assert.equal(trailingStreak([10, 31, 32, 29, 30.3], 30), 1)
   assert.equal(trailingStreak([40, 51, 52, 55], 50), 3)
@@ -162,6 +168,78 @@ test("cut amounts follow k and do not smear residual holders when one or two boo
   assert.equal(a.direction, "long")
 })
 
+test("a losing book held past its usual length is cut harder than a same-sized book opened today", () => {
+  const stale = holder("rx001", "甲", "MA", 1_000_000, 100)
+  stale.hold = {
+    holdDays: 40,
+    holdSince: "2026-10-01",
+    holdCapped: false,
+    holdMode: "direction",
+    lotAgeDays: 40,
+    oldestLotDate: "2026-10-01",
+    typicalDays: 10,
+    typicalN: 12,
+    typicalScope: "product",
+    productTypicalDays: 10,
+    productTypicalN: 12,
+    accountTypicalDays: 8,
+    accountTypicalN: 40,
+    floatPnl: -80_000,
+  }
+  const fresh = holder("rx002", "乙", "MA", 1_000_000, 100)
+  fresh.hold = {
+    holdDays: 0,
+    holdSince: "2026-11-13",
+    holdCapped: false,
+    holdMode: "direction",
+    lotAgeDays: 0,
+    oldestLotDate: "2026-11-13",
+    typicalDays: 10,
+    typicalN: 12,
+    typicalScope: "product",
+    productTypicalDays: 10,
+    productTypicalN: 12,
+    accountTypicalDays: 8,
+    accountTypicalN: 40,
+    floatPnl: 20_000,
+  }
+  const { included } = allocateCuts({ k: 0.5, holders: [stale, fresh], products: ["MA"] })
+  const staleCut = included.find((row) => row.account === "rx001")
+  const freshCut = included.find((row) => row.account === "rx002")
+  assert.ok(staleCut && freshCut)
+  assert.equal(staleCut.careNote, "浮亏且持有长于惯用")
+  assert.equal(freshCut.careNote, "当日开仓")
+  assert.ok(staleCut.cutAbsMv > freshCut.cutAbsMv)
+  assert.ok(staleCut.cutLots > freshCut.cutLots)
+  // Same total yuan as cutting both books by half.
+  assert.ok(Math.abs(staleCut.cutAbsMv + freshCut.cutAbsMv - 1_000_000) <= 1)
+})
+
+test("a profitable book held past its usual length is not leaned on harder", () => {
+  const winner = holder("rx001", "甲", "MA", 1_000_000, 100)
+  winner.hold = {
+    holdDays: 40,
+    holdSince: "2026-10-01",
+    holdCapped: false,
+    holdMode: "direction",
+    lotAgeDays: 40,
+    oldestLotDate: "2026-10-01",
+    typicalDays: 10,
+    typicalN: 12,
+    typicalScope: "product",
+    productTypicalDays: 10,
+    productTypicalN: 12,
+    accountTypicalDays: 8,
+    accountTypicalN: 40,
+    floatPnl: 80_000,
+  }
+  const ordinary = holder("rx002", "乙", "MA", 1_000_000, 100)
+  const { included } = allocateCuts({ k: 0.5, holders: [winner, ordinary], products: ["MA"] })
+  assert.equal(included[0].cutAbsMv, 500_000)
+  assert.equal(included[1].cutAbsMv, 500_000)
+  assert.equal(included[0].careNote, "")
+})
+
 test("a short book is cut by buying back lots, not by selling more", () => {
   const { included } = allocateCuts({
     k: 0.5,
@@ -204,8 +282,9 @@ test("equity/capital hits ignore a withdrawal that only crosses the line because
   assert.equal(day.stopHit, true)
   assert.equal(day.nearWarn, false)
   const note = accountLayerNote(day, true)
-  assert.equal(note.action, "升级投资经理")
-  assert.match(note.note, /不把首次触及写成自动清仓/)
+  assert.equal(note.action, "上报投资经理")
+  assert.match(note.note, /上报投资经理/)
+  assert.match(note.note, /首次触及止损不等于自动清仓/)
 })
 
 test("the 2pp band above an account's own 预警 line is near-warn, not a stop", () => {
@@ -272,5 +351,6 @@ function holder(account: string, name: string, prod: string, netMv: number, netL
     grossLots: Math.abs(netLots),
     shareOfObject: 0,
     shareOfAccount: 0,
+    hold: null,
   }
 }

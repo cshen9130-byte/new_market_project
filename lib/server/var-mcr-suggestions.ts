@@ -1,5 +1,16 @@
 import { query } from "@/lib/db"
+import { maskPersonName } from "@/lib/ma/mask-person-name"
 import { PROD_SECTOR, prodLabel } from "@/lib/ma/prod-sector"
+import {
+  holdSpell,
+  lotFloatingPnl,
+  openLotAge,
+  pickTypicalHold,
+  weightedMedian,
+  type ExposureDay,
+  type PositionHoldStats,
+} from "@/lib/ma/position-hold"
+import { getFuturesMultiplier } from "@/lib/server/futures-multipliers"
 import { getPrefix } from "@/lib/server/prod-utils"
 import {
   BOOK_CAP_MIN,
@@ -216,6 +227,211 @@ async function loadAccountPositions(date: string): Promise<ContractPos[]> {
   return [...map.values()]
 }
 
+const ACCOUNT_KEY_SQL = `LOWER(REGEXP_REPLACE(TRIM("账户"::text), '\\s+', '', 'g'))`
+
+function sqlOpenDate(col: string): string {
+  const raw = `NULLIF(TRIM(COALESCE("${col}"::text, '')), '')`
+  return `CASE
+    WHEN ${raw} IS NULL THEN NULL
+    WHEN ${raw} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN ${raw}::date
+    WHEN ${raw} ~ '^[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$'
+         AND ROUND(${raw}::numeric)::bigint BETWEEN 19900101 AND 21001231
+      THEN to_date(ROUND(${raw}::numeric)::bigint::text, 'YYYYMMDD')
+    ELSE NULL
+  END`
+}
+
+function focusBook(breaches: BreachRow[], positions: ContractPos[]): { accounts: string[]; products: string[] } {
+  const products = new Set<string>()
+  const accounts = new Set<string>()
+  for (const breach of breaches) {
+    const names = breach.kind === "product"
+      ? new Set([breach.name])
+      : new Set(positions.filter((row) => productSector(row.prod) === breach.name).map((row) => row.prod))
+    for (const row of positions) {
+      if (!names.has(row.prod)) continue
+      if (Math.abs(row.netMv) < MV_MIN && row.grossMv < MV_MIN) continue
+      products.add(row.prod)
+      accounts.add(row.account)
+    }
+  }
+  return { accounts: [...accounts], products: [...products] }
+}
+
+async function loadHolderHoldStats(
+  date: string,
+  accounts: string[],
+  products: string[],
+): Promise<Map<string, PositionHoldStats>> {
+  const out = new Map<string, PositionHoldStats>()
+  if (accounts.length === 0 || products.length === 0) return out
+  const productSet = new Set(products)
+  const openExpr = sqlOpenDate("开仓日期")
+  const tradeOpenExpr = sqlOpenDate("实际成交日期")
+
+  const [startRows, presenceRows, exposureRows, lotRows, closeRows] = await Promise.all([
+    query<{ d: string | null }>(`SELECT MIN("交易日期")::text AS d FROM mom_position_details`),
+    query<{ d: string; account: string }>(
+      `SELECT "交易日期"::text AS d, ${ACCOUNT_KEY_SQL} AS account
+       FROM mom_daily_reports
+       WHERE "交易日期" <= $1::date
+         AND ${ACCOUNT_KEY_SQL} = ANY($2::text[])
+       GROUP BY 1, 2`,
+      [date, accounts],
+    ),
+    query<{ d: string; account: string; contract: string; net_lots: string; gross_lots: string }>(
+      `SELECT "交易日期"::text AS d,
+              ${ACCOUNT_KEY_SQL} AS account,
+              UPPER(TRIM("合约")) AS contract,
+              SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("买持仓")} ELSE -${numExpr("卖持仓")} END)::text AS net_lots,
+              SUM(CASE WHEN ${numExpr("买持仓")} > 0 THEN ${numExpr("买持仓")} ELSE ${numExpr("卖持仓")} END)::text AS gross_lots
+       FROM mom_position_details
+       WHERE "交易日期" <= $1::date
+         AND ${ACCOUNT_KEY_SQL} = ANY($2::text[])
+         AND UPPER(SUBSTRING(TRIM("合约") FROM '^[A-Za-z]+')) = ANY($3::text[])
+         ${ACCOUNT_FILTER}
+       GROUP BY 1, 2, 3`,
+      [date, accounts, products],
+    ),
+    query<{
+      account: string; contract: string; buy_lots: string; buy_px: string; sell_lots: string; sell_px: string
+      settle: string; mv: string; open_date: string | null
+    }>(
+      `SELECT ${ACCOUNT_KEY_SQL} AS account,
+              UPPER(TRIM("合约")) AS contract,
+              ${numExpr("买持仓")}::text AS buy_lots,
+              ${numExpr("买入价")}::text AS buy_px,
+              ${numExpr("卖持仓")}::text AS sell_lots,
+              ${numExpr("卖出价")}::text AS sell_px,
+              ${numExpr("今结算价")}::text AS settle,
+              ${numExpr("持仓市値")}::text AS mv,
+              (${tradeOpenExpr})::text AS open_date
+       FROM mom_position_details
+       WHERE "交易日期" = $1::date
+         AND ${ACCOUNT_KEY_SQL} = ANY($2::text[])
+         AND UPPER(SUBSTRING(TRIM("合约") FROM '^[A-Za-z]+')) = ANY($3::text[])
+         ${ACCOUNT_FILTER}`,
+      [date, accounts, products],
+    ),
+    query<{ account: string; contract: string; hold_days: string; lots: string }>(
+      `SELECT account, contract, hold_days::text AS hold_days, lots::text AS lots
+       FROM (
+         SELECT ${ACCOUNT_KEY_SQL} AS account,
+                UPPER(TRIM("合约")) AS contract,
+                ("交易日期"::date - (${openExpr})) AS hold_days,
+                ${numExpr("手数")} AS lots
+         FROM mom_close_details
+         WHERE "交易日期" <= $1::date
+           AND ${ACCOUNT_KEY_SQL} = ANY($2::text[])
+           ${ACCOUNT_FILTER}
+       ) closes
+       WHERE hold_days BETWEEN 0 AND 800`,
+      [date, accounts],
+    ),
+  ])
+
+  const dataStart = asDate(startRows[0]?.d)
+  const presentByAccount = new Map<string, string[]>()
+  for (const row of presenceRows) {
+    const account = normAccount(row.account)
+    const day = asDate(row.d)
+    if (!account || !day) continue
+    const list = presentByAccount.get(account) ?? []
+    list.push(day)
+    presentByAccount.set(account, list)
+  }
+
+  const exposureByKey = new Map<string, ExposureDay[]>()
+  for (const row of exposureRows) {
+    const account = normAccount(row.account)
+    const prod = getPrefix(row.contract)
+    if (!account || !productSet.has(prod)) continue
+    const key = `${account}::${prod}`
+    const list = exposureByKey.get(key) ?? []
+    list.push({ date: asDate(row.d), netLots: toNum(row.net_lots), grossLots: toNum(row.gross_lots) })
+    exposureByKey.set(key, list)
+  }
+
+  const pnlByKey = new Map<string, number>()
+  const pnlSeen = new Set<string>()
+  const ageLots = new Map<string, Array<{ openDate: string | null; lots: number }>>()
+  for (const row of lotRows) {
+    const account = normAccount(row.account)
+    const prod = getPrefix(row.contract)
+    if (!account || !productSet.has(prod)) continue
+    const key = `${account}::${prod}`
+    pnlSeen.add(key)
+    const buyLots = toNum(row.buy_lots)
+    const sellLots = toNum(row.sell_lots)
+    const pnl = lotFloatingPnl({
+      buyLots,
+      buyPx: toNum(row.buy_px),
+      sellLots,
+      sellPx: toNum(row.sell_px),
+      settle: toNum(row.settle),
+      marketValue: toNum(row.mv),
+      multiplierFallback: getFuturesMultiplier(row.contract),
+    })
+    if (pnl != null) pnlByKey.set(key, (pnlByKey.get(key) ?? 0) + pnl)
+    const lots = buyLots + sellLots
+    const ages = ageLots.get(key) ?? []
+    ages.push({ openDate: row.open_date ? asDate(row.open_date) : null, lots })
+    ageLots.set(key, ages)
+  }
+
+  const productCloses = new Map<string, Array<{ value: number; weight: number }>>()
+  const accountCloses = new Map<string, Array<{ value: number; weight: number }>>()
+  for (const row of closeRows) {
+    const account = normAccount(row.account)
+    const prod = getPrefix(row.contract)
+    const lots = toNum(row.lots)
+    if (!account || !(lots > 0)) continue
+    const sample = { value: toNum(row.hold_days), weight: lots }
+    const accountList = accountCloses.get(account) ?? []
+    accountList.push(sample)
+    accountCloses.set(account, accountList)
+    if (!prod) continue
+    const key = `${account}::${prod}`
+    const list = productCloses.get(key) ?? []
+    list.push(sample)
+    productCloses.set(key, list)
+  }
+
+  const keys = new Set<string>([...exposureByKey.keys(), ...pnlSeen])
+  for (const key of keys) {
+    const [account, prod] = key.split("::")
+    if (!account || !prod || !productSet.has(prod)) continue
+    const spell = holdSpell({
+      exposure: exposureByKey.get(key) ?? [],
+      presentDates: presentByAccount.get(account) ?? [],
+      asOf: date,
+      dataStart: dataStart || null,
+    })
+    const age = openLotAge(ageLots.get(key) ?? [], date)
+    const productTypical = weightedMedian(productCloses.get(key) ?? [])
+    const accountTypical = weightedMedian(accountCloses.get(account) ?? [])
+    const typical = pickTypicalHold(productTypical, accountTypical)
+    const floatPnl = pnlSeen.has(key) && pnlByKey.has(key) ? Math.round(pnlByKey.get(key) ?? 0) : null
+    out.set(key, {
+      holdDays: spell?.days ?? null,
+      holdSince: spell?.since ?? null,
+      holdCapped: spell?.capped ?? false,
+      holdMode: spell?.mode ?? null,
+      lotAgeDays: age.weightedDays,
+      oldestLotDate: age.oldestDate,
+      typicalDays: typical?.days ?? null,
+      typicalN: typical?.n ?? 0,
+      typicalScope: typical?.scope ?? null,
+      productTypicalDays: productTypical?.median ?? null,
+      productTypicalN: productTypical?.n ?? 0,
+      accountTypicalDays: accountTypical?.median ?? null,
+      accountTypicalN: accountTypical?.n ?? 0,
+      floatPnl,
+    })
+  }
+  return out
+}
+
 async function loadProductMvs(date: string): Promise<Map<string, number>> {
   const rows = await query<{ contract: string; mv: string }>(
     `SELECT UPPER(TRIM("合约")) AS contract,
@@ -385,6 +601,7 @@ function buildHolders(
   advisors: Map<string, AdvisorRow>,
   kind: ObjectKind,
   name: string,
+  holdStats: Map<string, PositionHoldStats>,
 ): HolderRow[] {
   const products = kind === "product" ? [name] : [...new Set(positions.map((row) => row.prod).filter((prod) => productSector(prod) === name))]
   const relevant = positions.filter((row) => products.includes(row.prod) && (Math.abs(row.netMv) >= MV_MIN || row.grossMv >= MV_MIN))
@@ -402,7 +619,7 @@ function buildHolders(
       account: row.account,
       accountDisp: adv?.accountDisp ?? displayAccount(row.account),
       traderName: adv?.name ?? null,
-      displayName: personLabel(adv?.name ?? null, adv?.accountDisp ?? row.account),
+      displayName: shownPerson(adv?.name, adv?.accountDisp ?? row.account),
       prod: row.prod,
       prodLabel: prodLabel(row.prod),
       sector: productSector(row.prod),
@@ -412,6 +629,7 @@ function buildHolders(
       grossLots: Math.round(row.grossLots),
       shareOfObject: objectGross > 0 ? weight / objectGross : 0,
       shareOfAccount: acctGross > 0 ? row.grossMv / acctGross : 0,
+      hold: holdStats.get(`${row.account}::${row.prod}`) ?? null,
     }
   })
   rows.sort((a, b) => {
@@ -625,8 +843,14 @@ export async function buildVarMcrSuggestions(req: Request): Promise<SuggestionPa
     budgetHard,
   })
 
+  const focus = focusBook(breaches, positions)
+  const holdStats = await loadHolderHoldStats(selectedDate, focus.accounts, focus.products).catch((err) => {
+    console.error("[var-mcr-suggestions] hold stats", err instanceof Error ? err.message : err)
+    return new Map<string, PositionHoldStats>()
+  })
+
   const objects = breaches.map((breach) => {
-    const holders = buildHolders(positions, advisors, breach.kind, breach.name)
+    const holders = buildHolders(positions, advisors, breach.kind, breach.name, holdStats)
     const scaleNames = productsToScale(breach.kind, breach.name, [...new Set(positions.map((row) => row.prod))])
     const holderSort: "gross" | "absNet" = holders.some((row) => row.grossMv > Math.abs(row.netMv) * 1.5 && Math.abs(row.netMv) < 0.25 * Math.max(row.grossMv, 1))
       ? "gross"
@@ -657,9 +881,10 @@ export async function buildVarMcrSuggestions(req: Request): Promise<SuggestionPa
         : "当日持仓里还没有看到该对象的账户明细。",
       breach.nnrAlreadyInEffect ? "该限制已于上一交易日收盘后生效。" : "该限制从次一交易日起生效。",
     ].join("")
+    const cutSplit = "减仓总额仍按这个系数。账户之间不再平均：浮亏、且持有天数已经超过该交易员惯用持仓的仓位少留一些；报告日当天新开的仓位少动一些；其余按净市值。优先仓位不够减时，剩余部分回到其他账户，总额不缩小。过小的尾仓单独列出，不作为必须执行的砍仓指令。"
     const cutNote = breach.formalCut
-      ? `已满足正式硬砍条件。建议按缩放系数 k=${k.toFixed(3)}，把${breach.label}的贡献从 ${breach.sharePct.toFixed(1)}% 压回软线 ${breach.softPct}%。下列数量按各账户对该对象净市值的比例分摊，已把过小的尾仓单独列出、不作为必须执行的砍仓指令。减仓指降低绝对暴露（多头减多、空头回补），不是再朝拥挤方向加仓。`
-      : `尚未达到正式硬砍条件（需要硬线持续不少于 ${3} 个交易日，且持仓是 VaR 上升主因或 VaR/资本已超过 ${VAR_BUDGET_SOFT}%，市场驱动日还要冻结硬砍）。下表只是「若把贡献压回软线 ${breach.softPct}%」的测算，缩放系数 k=${k.toFixed(3)}，不是数量减仓令。`
+      ? `已满足正式硬砍条件。建议按缩放系数 k=${k.toFixed(3)}，把${breach.label}的贡献从 ${breach.sharePct.toFixed(1)}% 压回软线 ${breach.softPct}%。${cutSplit}减仓指降低绝对暴露（多头减多、空头回补），不是再朝拥挤方向加仓。`
+      : `尚未达到正式硬砍条件（需要硬线持续不少于 ${3} 个交易日，且持仓是 VaR 上升主因或 VaR/资本已超过 ${VAR_BUDGET_SOFT}%，市场驱动日还要冻结硬砍）。下表只是「若把贡献压回软线 ${breach.softPct}%」的测算，缩放系数 k=${k.toFixed(3)}，不是数量减仓令。${cutSplit}`
     return {
       kind: breach.kind,
       name: breach.name,
@@ -696,7 +921,7 @@ export async function buildVarMcrSuggestions(req: Request): Promise<SuggestionPa
       account,
       accountDisp: adv?.accountDisp ?? displayAccount(account),
       traderName: adv?.name ?? null,
-      displayName: personLabel(adv?.name ?? null, adv?.accountDisp ?? account),
+      displayName: shownPerson(adv?.name, adv?.accountDisp ?? account),
       asOfDate: state.date,
       equity: state.equity,
       capital: state.capital,
@@ -728,11 +953,11 @@ export async function buildVarMcrSuggestions(req: Request): Promise<SuggestionPa
     .sort()
   const rosterWithoutEquity = [...advisors.values()]
     .filter((row) => !equityMap.has(row.account))
-    .map((row) => personLabel(row.name, row.accountDisp))
+    .map((row) => shownPerson(row.name, row.accountDisp))
     .sort()
   const missingWarningLines = [...advisors.values()]
     .filter((row) => (row.warnPct == null || row.stopPct == null) && tradingAccounts.has(row.account))
-    .map((row) => personLabel(row.name, row.accountDisp))
+    .map((row) => shownPerson(row.name, row.accountDisp))
     .sort()
 
   return {
@@ -763,6 +988,11 @@ export async function buildVarMcrSuggestions(req: Request): Promise<SuggestionPa
     volDays,
     corrDays,
   }
+}
+
+function shownPerson(name: string | null | undefined, account: string): string {
+  const trimmed = (name ?? "").trim()
+  return personLabel(trimmed ? maskPersonName(trimmed) : null, account)
 }
 
 function uniquePeople(holders: HolderRow[]): string[] {

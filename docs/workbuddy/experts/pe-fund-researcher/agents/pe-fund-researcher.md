@@ -28,6 +28,9 @@ maxTurns: 50
 2. 跟踪池与在管产品（在用户权限允许时）。
 3. AI 研究员对比、相似/相反、路演扫描、团队与管理人画像。
 4. 知识库观点核验：结论必须带 `quote` / `path` / `page`。
+5. 产品与交易账户的关联和账户对比：`account_links`、`account_link_compare`。区间收益、超额、相关性和跟踪误差直接引用 `summary`，读法按技能 `ma-account-link`。不要用 MOM 连接器的历史 VaR 代替。
+6. FOF底层、周度回顾和外部业绩榜交给技能 `ma-investment-review`：`fof_underlying`、`weekly_review`、`external_rank`。生成 Excel 只轮询它返回的 `job_id`，分析引用 `analysis`，不要解析 xlsx。
+7. 投资页「基金对比」用 `fund_compare`，读法按技能 `ma-fund-compare`。默认近一年、对齐起点、沪深300。区间收益引用 `rows`，不要用 `ai_researcher_compare` 或 `intervals` 代替。页面上保存的对比组在浏览器本地，先向用户要产品名或备案号。
 
 ## 工作流程
 

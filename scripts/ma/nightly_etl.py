@@ -298,20 +298,36 @@ def run_node_script(
 
     env = {**os.environ}
     try:
-        result = subprocess.run(
+        # tsx keeps a second Node process under the CLI. subprocess.run's timeout
+        # kills only that CLI, and the script is reparented to init and keeps
+        # running after the step is already marked failed. A new session lets
+        # the timeout kill the whole tree, same as run_script().
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=env,
             cwd=str(project_root),
+            start_new_session=(sys.platform != "win32"),
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        if result.returncode != 0:
-            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log.error("[%s] timed out after %ds — killing process tree", script_name, timeout)
+            _kill_process_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(proc)
+                stdout, stderr = "", ""
+            return None
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
+        if proc.returncode != 0:
+            log.warning("[%s] exit %d: %s", script_name, proc.returncode, stderr[:800])
         elif stderr:
             log.info("[%s] stderr:\n%s", script_name, stderr[:5000])
         if stdout:
@@ -325,9 +341,6 @@ def run_node_script(
         log.warning("[%s] no valid JSON in stdout", script_name)
         if stderr:
             log.warning("[%s] stderr: %s", script_name, stderr[:800])
-        return None
-    except subprocess.TimeoutExpired:
-        log.error("[%s] timed out after %ds", script_name, timeout)
         return None
     except Exception as exc:
         log.error("[%s] exception: %s", script_name, exc)
@@ -5672,35 +5685,39 @@ def step_amac_futures(force_full: bool = False) -> int:
     return 0
 
 
-def step_quant_strategy_cache() -> int:
-    """Precompute 量化策略分析 so the page reads today's file cache.
+def step_quant_strategy_cache(force: bool = False) -> int:
+    """Keep 量化策略分析 on today's file cache.
 
-    Covers every account × range, including book risk, trade frequency,
-    sector vol, alpha/beta, R:R shape, linear scatters, and the factor
-    panel (core + full).
-    Runs after market data is loaded. A later MOM settlement import
-    refreshes the same files from the data-import job.
+    A normal nightly run reuses payloads already written today and leaves
+    the rest for the page's stale-while-revalidate path. It does not rebuild
+    every account × range. Nightly ``--force`` still rebuilds them all.
+    A MOM settlement import rebuilds from the data-import job.
     """
-    log.info("quant_strategy_cache: precomputing 量化策略分析 payloads …")
+    extra_args = ["--force"] if force else []
+    log.info(
+        "quant_strategy_cache: %s 量化策略分析 payloads …",
+        "rebuilding" if force else "checking cached",
+    )
     result = run_node_script(
         "precompute_quant_strategy.ts",
-        extra_args=["--force"],
+        extra_args=extra_args,
         timeout=7200,
     )
     if not result:
         raise RuntimeError("quant_strategy_cache: no result from precompute_quant_strategy.ts")
     ok = int(result.get("ok") or 0)
     cached = int(result.get("cached") or 0)
+    skipped = int(result.get("skipped") or 0)
     failed = int(result.get("failed") or 0)
     log.info(
-        "quant_strategy_cache: ok=%d cached=%d failed=%d total=%s in %.1fs",
-        ok, cached, failed, result.get("total"), (result.get("ms") or 0) / 1000,
+        "quant_strategy_cache: ok=%d cached=%d skipped=%d failed=%d total=%s in %.1fs",
+        ok, cached, skipped, failed, result.get("total"), (result.get("ms") or 0) / 1000,
     )
     for err in (result.get("errors") or [])[:10]:
         log.warning("  quant_strategy_cache: %s", err)
-    if ok + cached == 0:
+    if ok + cached + skipped == 0:
         raise RuntimeError(f"quant_strategy_cache: all {failed} payloads failed")
-    return ok + cached
+    return ok + cached + skipped
 
 
 def step_warm_mom_cache() -> int:
@@ -6036,7 +6053,7 @@ def main():
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "valuation_cache":                 lambda: step_valuation_cache(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
-        "quant_strategy_cache":            lambda: step_quant_strategy_cache(),
+        "quant_strategy_cache":            lambda: step_quant_strategy_cache(force=force),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }
 

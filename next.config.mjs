@@ -1,6 +1,14 @@
 /** @type {import('next').NextConfig} */
 const isLowMemBuild = process.env.NEXT_BUILD_LOW_MEMORY === "1"
 
+// Deploy script sets this only when the V8 heap cap is >= 5120 MB.
+// Hard ceiling: four in-flight modules, never the webpack default of 100.
+function lowMemParallelism() {
+  const raw = Number(process.env.NEXT_BUILD_PARALLELISM || "1")
+  if (!Number.isFinite(raw) || raw < 1) return 1
+  return Math.min(4, Math.floor(raw))
+}
+
 const nextConfig = {
   productionBrowserSourceMaps: !isLowMemBuild,
   // Next.js 16 enables Turbopack by default; an empty config acknowledges the
@@ -39,11 +47,12 @@ const nextConfig = {
   outputFileTracingRoot: process.cwd(),
   webpack: (config, { nextRuntime, webpack }) => {
     if (isLowMemBuild) {
-      // Cap concurrent module builds so peak RSS fits a small deploy host.
-      config.parallelism = 1
-      // Filesystem cache serializes the whole module graph into one string
-      // (V8 String::SlowFlatten / Utf8Length) and has OOM'd a 3 GB heap on a
-      // 7 GiB server while RAM was still free. Disk cache is not worth that.
+      // One module at a time made the 2026-11-16 production compile take 11.4 min.
+      // The finished module graph already fit in a 3072 MB heap that day; the OOM
+      // was a later allocation that packed the filesystem cache into one string.
+      // Cache stays off. Parallelism only widens the in-flight slice and is
+      // capped at 4, and only when the heap cap is 5120 MB (see the deploy script).
+      config.parallelism = lowMemParallelism()
       config.cache = false
     }
     // middleware.ts keeps an edge compilation of instrumentation.ts.

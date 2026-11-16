@@ -24,6 +24,7 @@ import {
   formatWan,
   prodLabel,
   prodShortName,
+  buildRegimeStatusTable,
   regimeThresholds,
   sectorLabel,
   type BookDayState,
@@ -384,6 +385,7 @@ function emptyPayload(volDays: number, corrDays: number, date = ""): EventTables
     selectedDate: date,
     productTable: null,
     sectorTable: null,
+    regimeTable: null,
     footnote: FOOTNOTE,
     volDays,
     corrDays,
@@ -683,6 +685,12 @@ export async function buildVarMcrEvents(req: Request): Promise<EventTablesPayloa
 
   const days = attachBookState(eventInputs)
   const latestDate = days[days.length - 1].date
+  const latestHistory = history[history.length - 1]
+  const regimeTable = buildRegimeStatusTable({
+    date: latestDate,
+    metrics: latestHistory.metrics,
+    mature,
+  })
   const selectedDate = requested && days.some((day) => day.date === requested) ? requested : latestDate
   const asOfIndex = days.findIndex((day) => day.date === selectedDate)
   const asOf = days[asOfIndex]
@@ -698,6 +706,7 @@ export async function buildVarMcrEvents(req: Request): Promise<EventTablesPayloa
     selectedDate,
     productTable: asOf.maxProd ? packTable("product", asOf.maxProd, days, history, productWindow.start, productWindow.end) : null,
     sectorTable: asOf.maxSec ? packTable("sector", asOf.maxSec, days, history, sectorWindow.start, sectorWindow.end) : null,
+    regimeTable,
     footnote: FOOTNOTE,
     volDays,
     corrDays,

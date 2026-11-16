@@ -1,6 +1,7 @@
 /** Agreed MOM-lite concentration and account-layer rules for the live suggestion panel. */
 
 import { PROD_NAMES, PROD_SECTOR, prodLabel } from "@/lib/ma/prod-sector"
+import type { PositionHoldStats } from "@/lib/ma/position-hold"
 import { varConcentrationShares } from "@/lib/mom-var-concentration"
 
 export const PRODUCT_SOFT = 30
@@ -17,6 +18,10 @@ export const BOOK_CAP_MIN = 10_000_000
 export const MV_MIN = 1_000
 export const CUT_COVERAGE = 0.9
 export const CUT_MIN_SHARE = 0.05
+/** Same-day opens take a quarter of a same-sized ordinary book's cut. */
+export const CUT_FRESH_WEIGHT = 0.25
+/** A losing book held three times its usual length is the strongest priority. */
+export const CUT_CARE_CAP = 4
 
 export const SECTOR_DISPLAY: Record<string, string> = { 农产: "农产品" }
 
@@ -65,6 +70,7 @@ export type HolderRow = {
   grossLots: number
   shareOfObject: number
   shareOfAccount: number
+  hold: PositionHoldStats | null
 }
 
 export type CutRow = {
@@ -83,6 +89,9 @@ export type CutRow = {
   shareOfObject: number
   direction: "long" | "short" | "flat"
   residual: boolean
+  /** Relative claim on the cut budget. 1 means the same fraction as a plain size split. */
+  careWeight: number
+  careNote: string
 }
 
 export type AccountLayerAction = {
@@ -101,7 +110,7 @@ export type AccountLayerAction = {
   warnHit: boolean
   stopHit: boolean
   stillTrading: boolean
-  action: "限制该账户新增" | "升级投资经理" | null
+  action: "限制该账户新增" | "上报投资经理" | null
   note: string
 }
 
@@ -145,6 +154,8 @@ export function displayAccount(value: string | null | undefined): string {
 
 export function personLabel(name: string | null | undefined, account: string): string {
   const disp = displayAccount(account)
+  // RX000 is the house/self-operated book; never surface the roster nickname (e.g. BEN).
+  if (normAccount(account) === "rx000") return `自营（${disp}）`
   const trimmed = (name ?? "").trim()
   if (!trimmed) return `${disp}（对照表中无姓名）`
   return `${trimmed}（${disp}）`
@@ -354,7 +365,73 @@ export function productsToScale(kind: ObjectKind, name: string, allProducts: rea
 }
 
 /**
- * Allocate a book-level k across accounts, proportional to |net MV|.
+ * How hard this book should be leaned on, relative to its size.
+ * A loss that is already showing, combined with a hold longer than this trader's own median,
+ * raises the weight. A position opened on the report day lowers it.
+ * Missing hold stats stay at 1, which is the old even split.
+ */
+export function cutCareWeight(row: HolderRow): { weight: number; note: string } {
+  const hold = row.hold
+  if (!hold) return { weight: 1, note: "" }
+  const age = hold.lotAgeDays ?? hold.holdDays
+  const typical = hold.typicalDays
+  const openedToday = hold.holdDays != null && hold.holdDays <= 0
+  const losing = hold.floatPnl != null && hold.floatPnl < -1
+  const overstay = age != null && typical != null && typical > 0 && age > typical
+  if (losing && overstay) {
+    const ratio = Math.min(age / typical, 3)
+    const weight = Math.min(CUT_CARE_CAP, 1 + (ratio - 1) * 1.5)
+    return { weight, note: "浮亏且持有长于惯用" }
+  }
+  if (openedToday) return { weight: CUT_FRESH_WEIGHT, note: "当日开仓" }
+  return { weight: 1, note: "" }
+}
+
+/**
+ * Split `budget` of absolute market value across rows by |mv| × care weight.
+ * A row cannot be asked to cut more than it holds; leftover budget is filled
+ * back onto the rows that still have room, so the total cut does not shrink.
+ */
+function allocateCutBudget(rows: readonly HolderRow[], budget: number): Map<HolderRow, number> {
+  const state = rows.map((row) => ({
+    row,
+    abs: Math.abs(row.netMv),
+    weight: cutCareWeight(row).weight,
+    cut: 0,
+  }))
+  let left = Math.max(0, budget)
+  let open = state.filter((item) => item.abs > 0 && item.weight > 0)
+  for (let iter = 0; iter < 12 && left > 0.5 && open.length > 0; iter += 1) {
+    const room = open.map((item) => ({ item, room: item.abs - item.cut }))
+    const wsum = room.reduce((sum, entry) => sum + entry.room * entry.item.weight, 0)
+    if (wsum <= 0) break
+    const capped = room.filter((entry) => left * (entry.room * entry.item.weight) / wsum >= entry.room - 1e-6)
+    if (capped.length === 0) {
+      for (const entry of room) {
+        entry.item.cut += left * (entry.room * entry.item.weight) / wsum
+      }
+      left = 0
+      break
+    }
+    let spent = 0
+    const cappedRows = new Set(capped.map((entry) => entry.item))
+    for (const entry of capped) {
+      entry.item.cut += entry.room
+      spent += entry.room
+    }
+    if (spent <= 1e-6) break
+    left -= spent
+    open = open.filter((item) => !cappedRows.has(item))
+  }
+  return new Map(state.map((item) => [item.row, item.cut]))
+}
+
+/**
+ * Allocate a book-level k across accounts.
+ * The yuan to cut is still |net MV| × (1 − k) on the accounts that cover the book.
+ * That yuan is not split evenly: a losing book held past the trader's usual length
+ * takes more, and a book opened today takes less. Equal care weights reproduce
+ * the old same-percentage split.
  * Tiny residual holders stay on the holder list but are not given a cut order
  * unless they are needed to reach 90% coverage or have at least 5% of the object.
  */
@@ -380,16 +457,25 @@ export function allocateCuts(input: {
       covered += share
     }
   }
+  const sorted = [...relevant].sort((a, b) => Math.abs(b.netMv) - Math.abs(a.netMv))
+  const includedRows = sorted.filter((row) => includedAccounts.has(row.account))
+  const residualRows = sorted.filter((row) => !includedAccounts.has(row.account))
+  const cares = includedRows.map(cutCareWeight)
+  const uneven = cares.some((care) => care.weight !== cares[0]?.weight)
+  const includedBudget = includedRows.reduce((sum, row) => sum + Math.abs(row.netMv), 0) * (1 - k)
+  const weightedCuts = uneven ? allocateCutBudget(includedRows, includedBudget) : null
+
   const toCut = (row: HolderRow, residual: boolean): CutRow => {
-    const currentMv = row.netMv
-    const targetMv = currentMv * k
-    const cutAbsMv = Math.abs(currentMv) * (1 - k)
+    const care = cutCareWeight(row)
+    const absMv = Math.abs(row.netMv)
+    const cutAbs = residual || !weightedCuts ? absMv * (1 - k) : (weightedCuts.get(row) ?? 0)
     const currentLots = row.netLots
     const absLots = Math.abs(currentLots)
-    const rawCutLots = absLots > 0 ? (1 - k) * absLots : 0
+    const frac = absMv > 0 ? Math.min(1, Math.max(0, cutAbs / absMv)) : 0
+    const rawCutLots = absLots > 0 ? frac * absLots : 0
     const cutLots = absLots > 0 ? Math.min(absLots, Math.max(0, Math.ceil(rawCutLots - 1e-9))) : 0
-    const sign = currentLots > 0 ? 1 : currentLots < 0 ? -1 : currentMv > 0 ? 1 : currentMv < 0 ? -1 : 0
-    const targetLots = sign * (absLots - cutLots)
+    const sign = currentLots > 0 ? 1 : currentLots < 0 ? -1 : row.netMv > 0 ? 1 : row.netMv < 0 ? -1 : 0
+    const kept = absMv - cutAbs
     return {
       account: row.account,
       accountDisp: row.accountDisp,
@@ -397,26 +483,24 @@ export function allocateCuts(input: {
       displayName: row.displayName,
       prod: row.prod,
       prodLabel: row.prodLabel || prodLabel(row.prod),
-      currentMv: Math.round(currentMv),
-      targetMv: Math.round(targetMv),
-      cutAbsMv: Math.round(cutAbsMv),
+      currentMv: Math.round(row.netMv),
+      targetMv: Math.round(sign * kept),
+      cutAbsMv: Math.round(cutAbs),
       currentLots: Math.round(currentLots),
-      targetLots: Math.round(targetLots),
+      targetLots: sign * (absLots - cutLots),
       cutLots,
-      shareOfObject: objectGross > 0 ? Math.abs(currentMv) / objectGross : 0,
-      direction: currentMv > 0 ? "long" : currentMv < 0 ? "short" : "flat",
+      shareOfObject: objectGross > 0 ? absMv / objectGross : 0,
+      direction: row.netMv > 0 ? "long" : row.netMv < 0 ? "short" : "flat",
       residual,
+      careWeight: Math.round(care.weight * 100) / 100,
+      careNote: care.note,
     }
   }
-  const included: CutRow[] = []
-  const residual: CutRow[] = []
-  const sorted = [...relevant].sort((a, b) => Math.abs(b.netMv) - Math.abs(a.netMv))
-  for (const row of sorted) {
-    const item = toCut(row, !includedAccounts.has(row.account))
-    if (item.residual) residual.push(item)
-    else included.push(item)
+  return {
+    included: includedRows.map((row) => toCut(row, false)),
+    residual: residualRows.map((row) => toCut(row, true)),
+    k,
   }
-  return { included, residual, k }
 }
 
 export function buildCapitalPath(
@@ -481,10 +565,10 @@ export function accountLayerNote(state: CapitalState, stillTrading: boolean): { 
   const warnTxt = state.warnPct != null ? `${(state.warnPct * 100).toFixed(0)}%` : "—"
   const stopTxt = state.stopPct != null ? `${(state.stopPct * 100).toFixed(0)}%` : "—"
   if (state.stopHit) {
-    const action: AccountLayerAction["action"] = stillTrading ? "升级投资经理" : "限制该账户新增"
+    const action: AccountLayerAction["action"] = stillTrading ? "上报投资经理" : "限制该账户新增"
     const note = stillTrading
-      ? `权益/净入金 ${ratioTxt}，已跌破该账户止损线 ${stopTxt}，且仍有持仓。建议当晚升级投资经理，讨论暂停新增、收缩或退出安排。不把首次触及写成自动清仓。`
-      : `权益/净入金 ${ratioTxt}，已跌破该账户止损线 ${stopTxt}。建议具名沟通；不把首次触及写成自动清仓。`
+      ? `权益/净入金 ${ratioTxt}，已跌破该账户止损线 ${stopTxt}，且仍有持仓。建议当晚把该账户情况上报投资经理，共同决定是否暂停新增、收缩仓位或安排退出；首次触及止损不等于自动清仓。`
+      : `权益/净入金 ${ratioTxt}，已跌破该账户止损线 ${stopTxt}。建议具名沟通；首次触及止损不等于自动清仓。`
     return { action, note }
   }
   if (state.warnHit) {

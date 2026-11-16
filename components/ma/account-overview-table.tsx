@@ -9,6 +9,7 @@ type OverviewRow = {
   fundName: string
   companyName: string
   accountNo: string
+  pm?: string
   selectKey?: string
   tradeDate: string
   equity: number | null
@@ -89,6 +90,7 @@ type SortKey =
   | "fundName"
   | "companyName"
   | "accountNo"
+  | "pm"
   | "nav"
   | "equity"
   | "margin"
@@ -99,12 +101,13 @@ type SortKey =
   | "unilateralRiskPct"
   | "commission"
 
-type GroupBy = "none" | "fund" | "company"
+type GroupBy = "none" | "fund" | "company" | "pm"
 
 type TableRow = {
   key: string
   fundName: string
   companyName: string
+  pm: string
   accountLabel: string
   selectKey: string
   nav: number[]
@@ -120,7 +123,7 @@ type TableRow = {
   sortNav: number | null
 }
 
-const TEXT_SORT_KEYS = new Set<SortKey>(["fundName", "companyName", "accountNo"])
+const TEXT_SORT_KEYS = new Set<SortKey>(["fundName", "companyName", "accountNo", "pm"])
 
 function navReturn(nav: number[] | undefined): number | null {
   if (!nav || nav.length < 2) return null
@@ -176,8 +179,9 @@ function toTableRow(members: OverviewRow[], groupBy: GroupBy, key: string): Tabl
   const single = groupBy === "none" && members.length === 1 ? members[0] : null
   return {
     key,
-    fundName: groupBy === "company" ? labelMany(members.map((row) => row.fundName), "个") : (single ? single.fundName : key),
-    companyName: groupBy === "fund" ? labelMany(members.map((row) => row.companyName), "家") : (single ? single.companyName : key),
+    fundName: groupBy === "company" || groupBy === "pm" ? labelMany(members.map((row) => row.fundName), "个") : (single ? single.fundName : key),
+    companyName: groupBy === "fund" || groupBy === "pm" ? labelMany(members.map((row) => row.companyName), "家") : (single ? single.companyName : key),
+    pm: groupBy === "pm" ? (key || "—") : (single ? (single.pm || "—") : labelMany(members.map((row) => row.pm || ""), "人")),
     accountLabel: single ? (single.accountNo || "—") : `${members.length}个账号`,
     selectKey: single ? (single.selectKey || single.accountNo) : "",
     nav: single?.nav ?? [],
@@ -200,7 +204,8 @@ function groupRows(rows: OverviewRow[], groupBy: GroupBy): TableRow[] {
   }
   const groups = new Map<string, OverviewRow[]>()
   for (const row of rows) {
-    const key = ((groupBy === "fund" ? row.fundName : row.companyName) || "—").trim() || "—"
+    const raw = groupBy === "fund" ? row.fundName : groupBy === "company" ? row.companyName : row.pm
+    const key = (raw || "—").trim() || "—"
     const list = groups.get(key)
     if (list) list.push(row)
     else groups.set(key, [row])
@@ -234,6 +239,7 @@ function AccountCells({ row, onSelectAccount }: { row: TableRow; onSelectAccount
           row.accountLabel || "—"
         )}
       </td>
+      <td className="whitespace-nowrap px-2 py-1.5">{row.pm || "—"}</td>
       <td className="px-2 py-1 text-center">
         {row.nav.length >= 2 ? <NavSparkline values={row.nav} /> : <span className="text-muted-foreground">—</span>}
       </td>
@@ -265,7 +271,7 @@ function displayName(value: string): string {
   return name || "—"
 }
 
-function uniqueNames(rows: OverviewRow[], key: "fundName" | "companyName"): string[] {
+function uniqueNames(rows: OverviewRow[], key: "fundName" | "companyName" | "pm"): string[] {
   const names = new Set<string>()
   for (const row of rows) names.add(displayName(row[key] || ""))
   return [...names].sort((a, b) => a.localeCompare(b, "zh-CN"))
@@ -328,10 +334,11 @@ function ColumnValueFilter({
   )
 }
 
-const COLUMNS: { key: SortKey; label: string; align: "left" | "right" | "center"; title?: string; filter?: "fundName" | "companyName" }[] = [
+const COLUMNS: { key: SortKey; label: string; align: "left" | "right" | "center"; title?: string; filter?: "fundName" | "companyName" | "pm" }[] = [
   { key: "fundName", label: "私募基金", align: "left", filter: "fundName" },
   { key: "companyName", label: "期货公司", align: "left", filter: "companyName" },
   { key: "accountNo", label: "账号", align: "left" },
+  { key: "pm", label: "PM", align: "left", title: "投资经理缩写，按资金账号对应", filter: "pm" },
   { key: "nav", label: "净值曲线", align: "center", title: "按累计收益率排序。分组与合计不画曲线。" },
   { key: "equity", label: "动态权益", align: "right" },
   { key: "margin", label: "保证金", align: "right" },
@@ -351,6 +358,7 @@ export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (s
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const [fundFilter, setFundFilter] = useState<string[] | null>(null)
   const [companyFilter, setCompanyFilter] = useState<string[] | null>(null)
+  const [pmFilter, setPmFilter] = useState<string[] | null>(null)
 
   useEffect(() => {
     let stop = false
@@ -373,13 +381,16 @@ export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (s
 
   const fundOptions = useMemo(() => uniqueNames(rows, "fundName"), [rows])
   const companyOptions = useMemo(() => uniqueNames(rows, "companyName"), [rows])
+  const pmOptions = useMemo(() => uniqueNames(rows, "pm"), [rows])
   const filteredRows = useMemo(() => rows.filter((row) => {
     const fund = displayName(row.fundName || "")
     const company = displayName(row.companyName || "")
+    const pm = displayName(row.pm || "")
     if (fundFilter && !fundFilter.includes(fund)) return false
     if (companyFilter && !companyFilter.includes(company)) return false
+    if (pmFilter && !pmFilter.includes(pm)) return false
     return true
-  }), [rows, fundFilter, companyFilter])
+  }), [rows, fundFilter, companyFilter, pmFilter])
   const asOf = filteredRows.reduce((max, row) => (row.tradeDate > max ? row.tradeDate : max), "")
   const tableRows = useMemo(() => {
     const grouped = groupRows(filteredRows, groupBy)
@@ -419,6 +430,7 @@ export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (s
             <option value="none">不汇总</option>
             <option value="fund">私募基金</option>
             <option value="company">期货公司</option>
+            <option value="pm">PM</option>
           </select>
         </label>
         {asOf && <span className="text-xs text-muted-foreground tabular-nums">截至 {asOf}</span>}
@@ -462,6 +474,9 @@ export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (s
                             {col.filter === "companyName" && (
                               <ColumnValueFilter options={companyOptions} selected={companyFilter} onChange={setCompanyFilter} />
                             )}
+                            {col.filter === "pm" && (
+                              <ColumnValueFilter options={pmOptions} selected={pmFilter} onChange={setPmFilter} />
+                            )}
                           </span>
                         </th>
                       )
@@ -482,7 +497,7 @@ export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (s
                 {totalRow && (
                   <tfoot>
                     <tr className="border-t bg-muted/40 font-medium">
-                      <AccountCells row={{ ...totalRow, fundName: "合计", companyName: "—", selectKey: "" }} />
+                      <AccountCells row={{ ...totalRow, fundName: "合计", companyName: "—", pm: "—", selectKey: "" }} />
                     </tr>
                   </tfoot>
                 )}

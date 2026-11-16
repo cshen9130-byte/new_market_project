@@ -21,6 +21,7 @@ const SectorDailyPnlChart      = dynamic(() => import("@/components/ma/sector-da
 const ProductDailyPnlChart     = dynamic(() => import("@/components/ma/product-daily-pnl-chart"),     { ssr: false })
 const SandboxProductMcrPieChart = dynamic(() => import("@/components/ma/sandbox-product-mcr-pie-chart"), { ssr: false })
 const VarMcrTimeseriesCharts   = dynamic(() => import("@/components/ma/var-mcr-timeseries-charts"), { ssr: false })
+const VarMcrRegimeTable       = dynamic(() => import("@/components/ma/var-mcr-event-tables").then((mod) => mod.VarMcrRegimeTable), { ssr: false })
 const VarMcrSuggestionsPanel  = dynamic(() => import("@/components/ma/var-mcr-suggestions-panel"), { ssr: false })
 const VarMcrEventTables       = dynamic(() => import("@/components/ma/var-mcr-event-tables"), { ssr: false })
 const AccountDailyPnlChart     = dynamic(() => import("@/components/ma/account-daily-pnl-chart"),     { ssr: false })
@@ -2913,6 +2914,7 @@ function IntradayContent({ singleAccount = false }: { singleAccount?: boolean })
         <VarSandboxContent />
       </div>
       <VarMcrTimeseriesCharts />
+      {!singleAccount && <VarMcrRegimeTable />}
       <VarMcrSuggestionsPanel />
       <VarMcrEventTables />
 
@@ -9185,6 +9187,12 @@ html[data-mom-embed="1"] #mom-briefing-printable {
               onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })}
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >VaR沙盒 ↓</button>
+            {!isAccount && (
+              <button
+                onClick={() => document.getElementById("section-intraday-regime")?.scrollIntoView({ behavior: "smooth" })}
+                className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+              >极端状态 ↓</button>
+            )}
             <button
               onClick={() => document.getElementById("section-intraday-mcr-suggestions")?.scrollIntoView({ behavior: "smooth" })}
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"

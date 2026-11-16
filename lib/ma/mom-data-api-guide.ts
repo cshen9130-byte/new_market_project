@@ -195,7 +195,7 @@ ${FENCE}
 
 ## 日间风控报告
 
-和页面「MOM 每日风控 → 日间风控」同一口径。MCP 的 \`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\` 调用的就是这些 GET。库里没有单独的 VaR 结果表。保证金历史来自每日核算；VaR 回测和边际贡献历史用每日持仓现算。
+和页面「MOM 每日风控 → 日间风控」同一口径。MCP 的 \`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\`、\`mom_risk_var_history\` 调用的就是这些 GET。板块和品种的持仓 VaR 历史在 \`public.mom_position_var_daily\`，用 \`/risk/var-history\` 读取。保证金历史来自每日核算。次日 VaR 回测，以及自定义窗口的边际贡献占比，仍用每日持仓现算。
 
 ### GET /risk/var
 
@@ -242,6 +242,27 @@ ${FENCE}bash
 curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/marginal?start_date=2026-10-01"
 ${FENCE}
 
+### GET /risk/var-history
+
+已入库的持仓 VaR。每个交易日一行，含组合 1 日 VaR，以及板块、品种的金额和占比。表是 \`public.mom_position_var_daily\`。固定 95% 正态、20 日波动、252 日相关，与持仓分析里「持仓VaR走势」的默认窗口相同。结算导入完成后会补写最近的交易日。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| group | 否 | all（默认，板块和品种都返回）、sector、product、category、sub |
+| start_date / end_date | 否 | YYYY-MM-DD，含当天 |
+| limit | 否 | 默认 250，最大 2000，保留窗口末尾 |
+
+\`total_var\` 是组合 1 日 VaR，单位元，正数表示亏损金额。\`products[].component_var\` 是分到该品种的金额，同一天相加等于 \`total_var\`。\`marginal_pct\` 是边际波动贡献占比，单位是百分点。默认返回 \`sectors\` 和 \`products\`。\`group=category\` 换成 \`categories\`，\`group=sub\` 换成 \`sub_sectors\`。不含国信账户。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/var-history?group=sector&start_date=2026-10-01"
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/risk/var-history?group=product&limit=5"
+${FENCE}
+
+${FENCE}json
+{ "name": "mom_risk_var_history", "arguments": { "group": "sector", "start_date": "2026-10-01" } }
+${FENCE}
+
 ## 5. HTTP 示例
 
 ${FENCE}python
@@ -257,13 +278,34 @@ metrics = requests.get(f"{BASE}/account/metrics", params={"account": account}, h
 print(account, daily["data"]["rows"][0]["margin_usage_pct"], metrics["data"]["var"]["var_95_loss"])
 ${FENCE}
 
+## MOM底层
+
+\`GET /underlying\`。MCP：\`mom_underlying\`。
+
+和投资分析页「MOM底层」同一张表。一行是一只产品挂着的对比账户或单账户。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| q | 否 | 产品名、备案号、账户或策略 |
+| kind | 否 | all（默认）、compare（对比账户）、account（单账户） |
+
+\`latest_nav\` 是单位净值。\`price_change_pct\` 是百分点，\`-1.48\` 表示 -1.48%。\`equity\` 是元。对比账户的权益来自 MOM 客户权益，单账户的权益来自监控中心。\`compare_count\` 和 \`account_count\` 是全表数量。只读。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/underlying?kind=compare"
+${FENCE}
+
+${FENCE}json
+{ "name": "mom_underlying", "arguments": { "kind": "compare" } }
+${FENCE}
+
 ## 6. MCP 接入
 
 账户没有「MOM数据API」权限时，这个地址直接 403，\`tools/list\` 也不会出现。WorkBuddy 优先用下方的 OAuth 登录。
 
-工具：\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。日间风控工具调用 \`/risk/var\`、\`/risk/margin\`、\`/risk/var-forecast\`、\`/risk/marginal\`。历史要传 \`history=1\` 或日期。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
+工具：\`mom_underlying\`、\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\`、\`mom_risk_var_history\`、\`cfmmc_overview\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`mom_underlying\` 是投资分析「MOM底层」表。日间风控工具调用 \`/risk/var\`、\`/risk/margin\`、\`/risk/var-forecast\`、\`/risk/marginal\`、\`/risk/var-history\`。保证金和次日 VaR 的历史要传 \`history=1\` 或日期。板块和品种的 VaR 金额用 \`mom_risk_var_history\`。\`cfmmc_overview\` 是单账户总览表。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
 
-先 \`mom_accounts\` 拿到 MOM 母基金账号，再查 daily 或 metrics。单账户用 \`cfmmc_accounts\` 和 \`cfmmc_account_nav\`。账号以接口返回为准。
+先 \`mom_underlying\` 看产品挂了哪个对比账户或单账户。母基金核算账号用 \`mom_accounts\`。单账户总览用 \`cfmmc_overview\`，单账户净值用 \`cfmmc_account_nav\`。账号以接口返回为准。
 
 查「国泰君安期货 85121150」的净值时，调用 \`cfmmc_account_nav\`，\`account\` 填 \`85121150\`，\`company\` 填 \`国泰君安期货\`。母基金每日核算用 \`mom_account_daily\`。
 
@@ -279,6 +321,7 @@ ${buildMcpClientsMarkdown("mom", key)}
 
 | 路径 | 入库表 | 内容 |
 | --- | --- | --- |
+| GET /cfmmc/overview | cfmmc_daily_summary + cfmmc_positions | 单账户总览。每个资金账号最新一天，列与页面相同。可选 q、group=none\|fund\|company\|pm |
 | GET /cfmmc/accounts | cfmmc_daily_summary | 已导入账号。q 或 company 按期货公司、产品名、账号模糊匹配 |
 | GET /cfmmc/account/nav | cfmmc_daily_summary | 复权净值，与单账户总览净值曲线相同 |
 | GET /cfmmc/account/daily | cfmmc_daily_summary | 每日结算摘要的全部数值列 |
@@ -292,6 +335,22 @@ ${buildMcpClientsMarkdown("mom", key)}
 | GET /cfmmc/account/export | cfmmc_* + ops | 一次性导出该账号全部入库 CSV（含历史逐日持仓）。默认 \`format=zip\`；\`format=dir\` 只写目录并返回 JSON 清单；单表可 \`format=csv&dataset=positions\`。可选 \`company\`、\`datasets\`、\`start_date\`、\`end_date\` |
 
 \`/accounts\` 每条有 \`account\`、\`fund_name\`、\`company\`（期货公司简称，例如国泰君安期货）、\`company_name\`（结算单原文）、\`first_date\`、\`last_date\`、\`trading_days\`，以及最新一天的权益、保证金、当日盈亏和风险度。
+
+### 单账户总览
+
+\`GET /cfmmc/overview\`。MCP：\`cfmmc_overview\`。
+
+和页面「单账户总览」同一张表。不传参数就是全部账户的最新一天。\`q\` 按产品名、期货公司、资金账号或 PM 筛选。\`group\` 取 \`none\`（默认）、\`fund\`、\`company\`、\`pm\`。
+
+金额单位是元。\`risk_pct\`、\`unilateral_risk_pct\`、\`nav_return_pct\` 是百分点：\`11.86\` 表示 11.86%。\`daily_pnl\` 是当日盈亏，等于客户权益差减去出入金。\`holding_pnl\` 是当日浮动变动（\`daily_pnl − closed_pnl\`），不是结算单上的持仓浮动水平。\`total.risk_pct\` 是保证金合计 / 动态权益合计，不要把各行风险度做平均。\`nav\` 是复权净值曲线，从 1 起。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${MOM_DATA_API_BASE}/cfmmc/overview"
+${FENCE}
+
+${FENCE}json
+{ "name": "cfmmc_overview", "arguments": {} }
+${FENCE}
 
 ### 复权净值
 

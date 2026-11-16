@@ -1588,6 +1588,12 @@ export const FUND_DATA_CATALOG = {
     { path: "/valuation/products", tool: "valuation_products", desc: "已入库估值表的全部产品" },
     { path: "/valuation/dates", tool: "valuation_dates", desc: "一只产品的估值表日期" },
     { path: "/valuation/sheet", tool: "valuation_sheet", desc: "某一天的估值表净值与持仓" },
+    { path: "/account-link", tool: "account_links", desc: "产品与对比账户、单账户的已保存关联" },
+    { path: "/account-link/compare", tool: "account_link_compare", desc: "产品净值与关联账户的重叠区间收益、超额、相关性和跟踪误差" },
+    { path: "/fund/compare", tool: "fund_compare", desc: "投资分析基金对比：区间收益、年化、波动、夏普、回撤。需投资页权限" },
+    { path: "/fof/underlying", tool: "fof_underlying", desc: "投资分析 FOF底层汇总：净值、涨跌幅、市值、区间收益。需投资池权限" },
+    { path: "/weekly-review", tool: "weekly_review", desc: "周度回顾预览、近三周数据状态，以及生成周报 Excel 的任务。需投资页权限" },
+    { path: "/external-rank", tool: "external_rank", desc: "外部私募业绩排行：知识库周报榜单或盈米代销。需投资页权限" },
   ],
 }
 
@@ -1707,6 +1713,18 @@ export async function handleFundDataRequest(
         pagesize: params.pagesize,
         detail_only: params.detail_only,
       })
+    case "account-link":
+      return (await import("@/lib/server/account-link-data")).listAccountLinks(params)
+    case "account-link/compare":
+      return (await import("@/lib/server/account-link-data")).compareAccountLink(params)
+    case "fund/compare":
+      return (await import("@/lib/server/fund-compare-data")).compareFunds(params)
+    case "fof/underlying":
+      return (await import("@/lib/server/investment-review-api")).getFofUnderlyingTable(params)
+    case "weekly-review":
+      return (await import("@/lib/server/investment-review-api")).getWeeklyReview(params)
+    case "external-rank":
+      return (await import("@/lib/server/investment-review-api")).getExternalRank(params)
     default:
       return fundDataErr(1, `unknown endpoint: /${key}`)
   }

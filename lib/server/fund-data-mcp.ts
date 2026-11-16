@@ -242,6 +242,34 @@ export const FUND_DATA_MCP_TOOLS: FundDataMcpTool[] = [
       },
     },
   },
+  {
+    name: "account_links",
+    description: "列出已保存的产品与交易账户关联。对应 GET /account-link。kind=compare 是 MOM 对比账户，kind=account 是单账户监控中心资金账号。account_id 可直接传给 account_link_compare。不写关联，只读。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "产品名、备案号或资金账号，可空" },
+        kind: { type: "string", description: "compare（MOM 对比账户）或 account（单账户）。不传则两类都返回" },
+      },
+    },
+  },
+  {
+    name: "account_link_compare",
+    description: "按产品页「账户对比」口径，比较产品复权净值与关联账户的累计收益。对应 GET /account-link/compare。不传 account 时用该产品已保存的关联。返回区间收益、超额、相关性、跟踪误差，以及重叠起点归一后的曲线。百分比字段 1.28 表示 1.28%，相关性 0.49 是相关系数。不要自己重算。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reg_code: { type: "string", description: "备案号" },
+        account: { type: "string", description: "account_links 返回的 account_id。MOM 账户填账号；单账户填 cfmmc:资金账号。不传则用已保存关联" },
+        kind: { type: "string", description: "不传 account 时：compare 只用 MOM 关联，account 只用单账户关联" },
+        start_date: { type: "string", description: "YYYY-MM-DD，含当天" },
+        end_date: { type: "string", description: "YYYY-MM-DD，含当天" },
+        nav: { type: "string", description: "adjusted（复权净值，默认）、unit（单位净值）、accumulated（累计净值）" },
+        freq: { type: "string", description: "all（默认）、daily、weekly、monthly" },
+      },
+      required: ["reg_code"],
+    },
+  },
 ]
 
 export type McpJsonRpc = {
@@ -374,6 +402,21 @@ export async function callFundDataTool(
         page: str(args, "page"),
         pagesize: str(args, "pagesize"),
         detail_only: str(args, "detail_only"),
+      })
+    case "account_links":
+      return handleFundDataRequest("account-link", {
+        q: str(args, "q"),
+        kind: str(args, "kind"),
+      })
+    case "account_link_compare":
+      return handleFundDataRequest("account-link/compare", {
+        reg_code: str(args, "reg_code"),
+        account: str(args, "account"),
+        kind: str(args, "kind"),
+        start_date: str(args, "start_date"),
+        end_date: str(args, "end_date"),
+        nav: str(args, "nav"),
+        freq: str(args, "freq"),
       })
     default:
       throw new Error(`unknown tool: ${name}`)

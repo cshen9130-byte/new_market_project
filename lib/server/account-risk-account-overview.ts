@@ -11,12 +11,15 @@ import {
 } from "@/lib/server/account-risk-nav"
 import { accountNoMatchesUserId, listImportBooks, type ImportBook } from "@/lib/server/account-risk-books"
 import { productNameFromClientLabel } from "@/lib/server/account-risk-product-elements"
+import { pmForAccount } from "@/lib/server/account-risk-pm"
 import { scopeWhere } from "@/lib/server/account-risk-scope"
 
 export type AccountOverviewRow = {
   fundName: string
   companyName: string
   accountNo: string
+  /** PM abbreviation from the 单账户对应表. Empty when that account is not listed. */
+  pm: string
   /** Switcher value (`book:…` or the 资金账号) so the overview can open this account. */
   selectKey: string
   tradeDate: string
@@ -173,6 +176,164 @@ function bookSelectKey(accountNo: string, sourceFile: string, books: ImportBook[
   return byUser ? `book:${byUser.id}` : accountNo
 }
 
+export type AccountOverviewGroup = "none" | "fund" | "company" | "pm"
+
+export type AccountOverviewApiRow = {
+  fund_name: string
+  company: string
+  account: string
+  pm: string
+  trade_date: string | null
+  account_count: number
+  nav: number[]
+  latest_nav: number | null
+  nav_return_pct: number | null
+  equity: number | null
+  margin: number | null
+  daily_pnl: number | null
+  holding_pnl: number | null
+  closed_pnl: number | null
+  risk_pct: number | null
+  unilateral_risk_pct: number | null
+  commission: number | null
+}
+
+function round2(value: number | null): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  return Math.round(value * 100) / 100
+}
+
+function sumOf(rows: AccountOverviewRow[], key: "equity" | "margin" | "totalPl" | "holdingPl" | "closedPl" | "commission"): number | null {
+  let total = 0
+  let any = false
+  for (const row of rows) {
+    const value = row[key]
+    if (value == null || !Number.isFinite(value)) continue
+    total += value
+    any = true
+  }
+  return any ? total : null
+}
+
+function equityWeightedPct(rows: AccountOverviewRow[]): number | null {
+  let weight = 0
+  let weighted = 0
+  for (const row of rows) {
+    if (row.equity == null || row.equity <= 0 || row.unilateralRiskPct == null) continue
+    weight += row.equity
+    weighted += row.unilateralRiskPct * row.equity
+  }
+  return weight > 0 ? weighted / weight : null
+}
+
+function riskFromSums(margin: number | null, equity: number | null): number | null {
+  if (margin == null || equity == null || equity <= 0) return null
+  return (margin / equity) * 100
+}
+
+function navReturnPct(nav: number[]): number | null {
+  if (nav.length < 2) return null
+  const first = nav[0]
+  const last = nav[nav.length - 1]
+  if (!Number.isFinite(first) || first === 0 || !Number.isFinite(last)) return null
+  return (last / first - 1) * 100
+}
+
+function labelMany(names: string[], unit: string): string {
+  const unique = [...new Set(names.map((name) => name.trim()).filter(Boolean))]
+  if (unique.length === 0) return ""
+  if (unique.length === 1) return unique[0]
+  return `${unique[0]}等${unique.length}${unit}`
+}
+
+function matchesQuery(row: AccountOverviewRow, q: string): boolean {
+  if (!q) return true
+  const hay = [row.fundName, row.companyName, row.accountNo, row.pm].join(" ").toLowerCase().replace(/\s+/g, "")
+  return hay.includes(q)
+}
+
+function toApiRow(members: AccountOverviewRow[], group: AccountOverviewGroup, key: string): AccountOverviewApiRow {
+  const equity = sumOf(members, "equity")
+  const margin = sumOf(members, "margin")
+  const single = group === "none" && members.length === 1 ? members[0] : null
+  const nav = single?.nav ?? []
+  return {
+    fund_name: group === "company" || group === "pm"
+      ? labelMany(members.map((row) => row.fundName), "个")
+      : (single ? single.fundName : key),
+    company: group === "fund" || group === "pm"
+      ? labelMany(members.map((row) => row.companyName), "家")
+      : (single ? single.companyName : key),
+    account: single ? single.accountNo : `${members.length}个账号`,
+    pm: group === "pm" ? key : (single ? single.pm : labelMany(members.map((row) => row.pm), "人")),
+    trade_date: single?.tradeDate ?? null,
+    account_count: members.length,
+    nav,
+    latest_nav: nav.length ? round2(nav[nav.length - 1]) : null,
+    nav_return_pct: round2(navReturnPct(nav)),
+    equity: round2(equity),
+    margin: round2(margin),
+    daily_pnl: round2(sumOf(members, "totalPl")),
+    holding_pnl: round2(sumOf(members, "holdingPl")),
+    closed_pnl: round2(sumOf(members, "closedPl")),
+    risk_pct: round2(single ? single.riskPct : riskFromSums(margin, equity)),
+    unilateral_risk_pct: round2(single ? single.unilateralRiskPct : equityWeightedPct(members)),
+    commission: round2(sumOf(members, "commission")),
+  }
+}
+
+/** Same columns and 合计 rules as 单账户总览. `q` matches 产品、期货公司、账号、PM. */
+export function shapeAccountOverviewTable(
+  rows: AccountOverviewRow[],
+  options: { q?: string; group?: AccountOverviewGroup } = {},
+): { as_of: string | null; rows: AccountOverviewApiRow[]; total: {
+  account_count: number
+  equity: number | null
+  margin: number | null
+  daily_pnl: number | null
+  holding_pnl: number | null
+  closed_pnl: number | null
+  commission: number | null
+  risk_pct: number | null
+  unilateral_risk_pct: number | null
+} } {
+  const q = (options.q ?? "").trim().toLowerCase().replace(/\s+/g, "")
+  const group = options.group ?? "none"
+  const filtered = rows.filter((row) => matchesQuery(row, q))
+  let apiRows: AccountOverviewApiRow[]
+  if (group === "none") {
+    apiRows = filtered.map((row, index) => toApiRow([row], "none", row.accountNo || `${row.fundName}-${index}`))
+  } else {
+    const groups = new Map<string, AccountOverviewRow[]>()
+    for (const row of filtered) {
+      const raw = group === "fund" ? row.fundName : group === "company" ? row.companyName : row.pm
+      const key = (raw || "").trim() || "—"
+      const list = groups.get(key)
+      if (list) list.push(row)
+      else groups.set(key, [row])
+    }
+    apiRows = [...groups.entries()].map(([key, members]) => toApiRow(members, group, key))
+  }
+  const asOf = filtered.reduce((max, row) => (row.tradeDate > max ? row.tradeDate : max), "")
+  const equity = sumOf(filtered, "equity")
+  const margin = sumOf(filtered, "margin")
+  return {
+    as_of: asOf || null,
+    rows: apiRows,
+    total: {
+      account_count: filtered.length,
+      equity: round2(equity),
+      margin: round2(margin),
+      daily_pnl: round2(sumOf(filtered, "totalPl")),
+      holding_pnl: round2(sumOf(filtered, "holdingPl")),
+      closed_pnl: round2(sumOf(filtered, "closedPl")),
+      commission: round2(sumOf(filtered, "commission")),
+      risk_pct: round2(riskFromSums(margin, equity)),
+      unilateral_risk_pct: round2(equityWeightedPct(filtered)),
+    },
+  }
+}
+
 export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
   const [rows, navByAccount] = await Promise.all([
     loadAccountOverviewSnapshots(),
@@ -185,11 +346,12 @@ export async function loadAccountOverviewRows(): Promise<AccountOverviewRow[]> {
       ...rest,
       selectKey: bookSelectKey(row.accountNo, sourceFile, books),
       nav: navByAccount.get(row.accountNo) ?? [],
+      pm: pmForAccount(row.accountNo),
     }
   })
 }
 
-async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOverviewRow, "nav" | "selectKey"> & { sourceFile: string }>> {
+async function loadAccountOverviewSnapshots(): Promise<Array<Omit<AccountOverviewRow, "nav" | "selectKey" | "pm"> & { sourceFile: string }>> {
   const params: unknown[] = []
   const scoped = scopeWhere(params)
   const result = await publicQuery(

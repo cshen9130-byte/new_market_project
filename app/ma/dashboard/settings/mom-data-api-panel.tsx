@@ -141,6 +141,7 @@ const MOM_API_TOC: ApiDocTocItem[] = [
       { id: "mom-ep-risk-margin", label: "GET /risk/margin" },
       { id: "mom-ep-risk-forecast", label: "GET /risk/var-forecast" },
       { id: "mom-ep-risk-marginal", label: "GET /risk/marginal" },
+      { id: "mom-ep-risk-var-history", label: "GET /risk/var-history" },
     ],
   },
   {
@@ -328,7 +329,7 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
           和基金数据是两个 MCP，也是两把 Key。请求头里要带本页生成的 MOM Key。基金数据 Key 会 401，权限被取消后 Key 失效。WorkBuddy 优先用下方的 OAuth 登录。
         </p>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
-          工具与下面的 GET 一一对应：mom_accounts、mom_account_daily、mom_account_trades、mom_account_positions、mom_account_closes、mom_account_products、mom_account_cashflows、mom_account_metrics、mom_risk_var、mom_risk_margin、mom_risk_var_forecast、mom_risk_marginal。
+          工具与下面的 GET 一一对应：mom_accounts、mom_account_daily、mom_account_trades、mom_account_positions、mom_account_closes、mom_account_products、mom_account_cashflows、mom_account_metrics、mom_risk_var、mom_risk_margin、mom_risk_var_forecast、mom_risk_marginal、mom_risk_var_history。
           单账户另有 cfmmc_accounts、cfmmc_account_nav、cfmmc_account_daily、cfmmc_account_positions、cfmmc_account_trades、cfmmc_account_closes、cfmmc_rows。
           查国泰君安期货 85121150 的净值用 cfmmc_account_nav，account 填 85121150，company 填国泰君安期货。
           还原开平仓节奏用 cfmmc_account_positions、cfmmc_account_trades、cfmmc_account_closes，并传入 start_date 和 end_date。
@@ -584,6 +585,31 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
             ["rows[].shares[].name / pct", "该日各组占比，单位是百分点"],
           ]} />
         </div>
+
+        <div>
+          <h4 id="mom-ep-risk-var-history" className="text-sm font-medium mb-2 scroll-mt-6">
+            GET /risk/var-history
+            <span className="ml-2 font-mono text-xs font-normal text-zinc-400">MCP: mom_risk_var_history</span>
+          </h4>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3 leading-relaxed">
+            已入库的持仓 VaR。每个交易日有组合 1 日 VaR，以及板块和品种的金额、边际占比。表是 public.mom_position_var_daily。固定 95% 正态、20 日波动、252 日相关，与「持仓VaR走势」的默认窗口相同。结算导入完成后会补写最近的交易日。不含国信账户。
+          </p>
+          <ParamTable rows={[
+            ["group", "否", "all（默认，板块和品种）、sector、product、category、sub"],
+            ["start_date / end_date", "否", "YYYY-MM-DD，含当天"],
+            ["limit", "否", "默认 250，最大 2000，保留窗口末尾"],
+          ]} />
+          <FieldTable rows={[
+            ["rows[].total_var", "组合 1 日 VaR，单位元。正数表示亏损金额"],
+            ["rows[].net_market_value", "当日品种市值的代数和"],
+            ["rows[].sectors[].marginal_pct", "板块边际波动贡献占比，百分点，与面积图一致"],
+            ["rows[].sectors[].component_var", "分到该板块的 VaR 金额，单位元"],
+            ["rows[].products[].code / name", "品种代码和中文名"],
+            ["rows[].products[].component_var", "分到该品种的 VaR 金额。同一天相加等于 total_var"],
+            ["rows[].products[].market_value / lots", "净市值和净手数"],
+            ["truncated / total", "默认只给最近 250 个交易日。truncated 为 true 时加大 limit 或缩小日期"],
+          ]} />
+        </div>
       </section>
 
       <section className="space-y-4">
@@ -675,6 +701,9 @@ print(account, metrics["data"]["margin_usage"]["latest"], metrics["data"]["var"]
           </button>
           <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading || !account} onClick={() => run("/ma/api/mom-data/account/metrics", { account, start_date: startDate, end_date: endDate })}>
             风险指标
+          </button>
+          <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading} onClick={() => run("/ma/api/mom-data/risk/var-history", { group: "sector", start_date: startDate, end_date: endDate, limit: "5" })}>
+            持仓VaR历史
           </button>
           <button type="button" className="px-3 py-1.5 text-sm border rounded hover:bg-muted" disabled={loading} onClick={() => run("/ma/api/mom-data/cfmmc/accounts", { limit: "20", q: company })}>
             单账户列表

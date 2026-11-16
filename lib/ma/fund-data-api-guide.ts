@@ -91,12 +91,12 @@ ${FENCE}
 
 WorkBuddy 优先用下方的 OAuth 登录。Cursor、豆包、Codex、Claude 用你自己的 API Key 作为请求头。不要把这把 Key 发给同事或写进团队空间。连上之后可以直接用自然语言提问，模型会按下面的工具名去调用。
 
-公开工具（任何持有有效 Key 的账户）：\`fund_search\`、\`fund_info\`、\`fund_price\`、\`fund_price_bulk\`、\`fund_multi_price\`、\`fund_advanced_list\`、\`fund_view\`、\`company_info\`、\`company_fund_list\`、\`amac_fund\`、\`amac_fund_search\`、\`amac_manager\`、\`amac_manager_funds\`。
+公开工具（任何持有有效 Key 的账户）：\`fund_search\`、\`fund_info\`、\`fund_price\`、\`fund_price_bulk\`、\`fund_multi_price\`、\`fund_advanced_list\`、\`fund_view\`、\`company_info\`、\`company_fund_list\`、\`amac_fund\`、\`amac_fund_search\`、\`amac_manager\`、\`amac_manager_funds\`、\`account_links\`、\`account_link_compare\`。
 
 同一地址还会按当前 API Key 所属账户开放内部工具。权限与网页相同。
 
-- 跟踪池（需投资页）：\`tracking_pools\`、\`tracking_pool_list\`、\`tracking_pool_detail\`。detail 里的 \`team_note\` / \`personal_note\` 是跟踪池短备注。
-- 在管产品（需投资池权限）：\`managed_products_list\`。
+- 跟踪池（需投资页）：\`tracking_pools\`、\`tracking_pool_list\`、\`tracking_pool_detail\`、\`fund_compare\`、\`weekly_review\`、\`external_rank\`。detail 里的 \`team_note\` / \`personal_note\` 是跟踪池短备注。基金对比、周度回顾和外部私募业绩排行见文末。
+- 在管产品（需投资池权限）：\`managed_products_list\`、\`fof_underlying\`。FOF底层见文末。
 - AI 研究员（需 AI 研究员）：\`ai_researcher_compare\`、\`ai_researcher_similar\`、\`ai_researcher_opposite\`、\`ai_researcher_roadshow\`、\`ai_researcher_team_background\`、\`ai_researcher_manager_profile\`。
 - AI 知识库（需 AI 知识库）：问某人观点用 \`kb_ask\`，只要原文片段用 \`kb_search\`，读全文用 \`kb_read\`，看有哪些文件用 \`kb_list\`。见下方「问知识库」。
 - 外部业绩榜（需投资页，并且要有 AI 知识库）：\`external_rank_compare\`。用知识库里的点睛等业绩榜 xlsx，和跟踪池同一策略对比。见下方「外部业绩榜」。
@@ -1209,6 +1209,143 @@ ${FENCE}json
     { "subject_code": "1102", "subject_name": "交易性股票投资", "quantity": 1000, "market_value": 50000, "market_weight": 5.01 }
   ]
 }
+${FENCE}
+
+## 账户关联
+
+产品页「账户对比」用的产品与交易账户关联。只读，不在这里新建或删除关联。\`kind=compare\` 是 MOM 对比账户，\`kind=account\` 是单账户监控中心资金账号。
+
+### GET /account-link
+
+MCP：\`account_links\`
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| q | 否 | 产品名、备案号或资金账号 |
+| kind | 否 | compare 或 account。不传则两类都返回 |
+
+\`account_id\` 传给对比接口。单账户的 \`account_id\` 带 \`cfmmc:\` 前缀。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/account-link?q=海宸"
+${FENCE}
+
+${FENCE}json
+{ "name": "account_links", "arguments": { "q": "海宸" } }
+${FENCE}
+
+### GET /account-link/compare
+
+MCP：\`account_link_compare\`
+
+不传 \`account\` 时使用该产品已保存的关联。MOM 关联优先于单账户。要指定单账户时传 \`account=cfmmc:资金账号\`，或 \`kind=account\` 且 \`account\` 为资金账号。
+
+产品默认用复权净值。\`nav\` 可取 adjusted、unit、accumulated。\`freq\` 可取 all、daily、weekly、monthly，默认 all。
+
+\`summary\` 已经算好，直接引用，不要用 \`curve\` 重算。\`fund_period_return_pct\`、\`account_period_return_pct\`、\`excess_return_pct\`、\`tracking_error_pct\` 是百分数数值：\`1.28\` 表示 1.28%。\`correlation\` 是相关系数，\`0.49\` 就是 0.49。\`curve\` 里的 \`fund_pct\` 等也是百分数，重叠起点归一为 0。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/account-link/compare?reg_code=SXXXXX&start_date=2026-10-29&end_date=2026-11-13"
+${FENCE}
+
+${FENCE}json
+{ "name": "account_link_compare", "arguments": { "reg_code": "SXXXXX", "start_date": "2026-10-29", "end_date": "2026-11-13" } }
+${FENCE}
+
+\`summary\` 示例：
+
+${FENCE}json
+{
+  "overlap_start": "2026-10-29",
+  "overlap_end": "2026-11-13",
+  "fund_period_return_pct": 1.28,
+  "account_period_return_pct": 1.16,
+  "excess_return_pct": 0.12,
+  "correlation": 0.49,
+  "tracking_error_pct": 2.86
+}
+${FENCE}
+
+## FOF底层与周度回顾
+
+收益和涨跌幅都是百分点：\`0.61\` 表示 0.61%。夏普、卡玛是比率。金额是元。直接引用返回值，不要再用净值重算，也不要把 Excel 里的小数单元格再乘 100。
+
+### GET /fof/underlying
+
+MCP：\`fof_underlying\`。需要投资池权限。和投资分析「FOF底层 / 底层汇总」同一张表。默认持仓中的私募。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| q | 否 | 产品名或备案号 |
+| holding | 否 | holding（默认）、cleared、all |
+| fund_class | 否 | private（默认）或 public |
+| strategy | 否 | 一级策略 |
+| cutoff | 否 | 指标截止日期 |
+| page / pagesize | 否 | 默认 1 / 50，pagesize 最大 200 |
+
+\`price_change_pct\` 是最新涨跌幅。\`total_market_value\` 是当前筛选的市值合计。\`total\` 不受当前页影响。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/fof/underlying?holding=holding&fund_class=private"
+${FENCE}
+
+${FENCE}json
+{ "name": "fof_underlying", "arguments": { "holding": "holding", "fund_class": "private" } }
+${FENCE}
+
+### GET /weekly-review
+
+MCP：\`weekly_review\`。需要投资页权限。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| report | 否 | preview（默认，只有分组人数）、status（近三周净值是否齐）、run（计算收益并生成 Excel） |
+| variant | 否 | equity 周度回顾(股票)、futures 周度回顾(期货)、public 公募指增 · 周度回顾、external 外部榜合并 Excel |
+| week_end | 否 | YYYY-MM-DD，默认最近周五 |
+| pools | 否 | jy、selected 或 jy,selected。股票和期货用 |
+| file | 否 | run 默认生成 xlsx。0 只返回分析。轮询时 1 才带 content_base64 |
+| job_id | 轮询 | report=run 返回的任务 |
+
+\`report=run\` 先返回 \`job_id\`。用同一个 \`job_id\` 再请求，直到 \`status\` 为 done 或 error。\`analysis.groups[].products[].week_pct\` 已按该分组口径取好：超额分组是超额，绝对收益分组是收益。\`analysis.market.broad[].ret_pct\` 是股票市场一周涨跌。\`status\` 里的 \`missing\` 为 0 时，页面显示「齐」。
+
+${FENCE}json
+{ "name": "weekly_review", "arguments": { "report": "run", "variant": "equity", "pools": "jy" } }
+${FENCE}
+
+${FENCE}json
+{ "name": "weekly_review", "arguments": { "job_id": "返回的 job_id", "file": "1" } }
+${FENCE}
+
+### GET /external-rank
+
+MCP：\`external_rank\`。需要投资页权限。\`source=files\` 是知识库「外部私募业绩排行」对上这一周的榜。\`source=yingmi\` 是盈米代销。和跟踪池对名次仍用 \`external_rank_compare\`。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/external-rank?source=files"
+${FENCE}
+
+${FENCE}json
+{ "name": "external_rank", "arguments": { "source": "yingmi", "strategy": "股票多头" } }
+${FENCE}
+
+## 基金对比
+
+\`GET /fund/compare\`。MCP：\`fund_compare\`。需要投资页权限。
+
+和投资分析页打开一组基金后点分析得到的指标表相同。至少两只，名称或备案号用逗号分开。名称对上多只时不会猜，改传备案号。
+
+默认近一年、对齐起点、基准 \`IF\`（沪深300）。\`period\` 还可以是近一月、近三月、近六月、今年以来、成立以来、近两年、近三年，或 \`2025年\`。自定义区间传 \`start_date\` 和 \`end_date\`。不要基准时 \`benchmark=none\`。不对齐起点时 \`align=0\`。
+
+\`rows\` 是所选区间。\`period_return_pct\` 是区间收益，\`ann_return_pct\`、\`ann_vol_pct\`、\`downside_risk_pct\`、\`max_drawdown_pct\` 也是百分点。\`sharpe\`、\`calmar\`、\`sortino\` 是比率。\`intervals\` 是另一张固定窗口表（近一周到近一年），不要把它当成所选区间的收益。
+
+页面「团队对比」里保存的组存在浏览器本地，这个接口按名称重算，打不开那些组名。
+
+${FENCE}bash
+curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/fund/compare?subjects=SXXXXX,SYYYYY&period=近一年&benchmark=IF"
+${FENCE}
+
+${FENCE}json
+{ "name": "fund_compare", "arguments": { "subjects": "衡颐承和FOF1号,另一只基金", "period": "近一年", "benchmark": "IF" } }
 ${FENCE}
 
 `.replaceAll(FENCE, "```")

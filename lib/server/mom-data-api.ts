@@ -930,6 +930,7 @@ function catalog() {
     auth: "Dedicated MOM API key (prefix mk_), issued on the MOM数据API page. The fund-data key is rejected. The account must have MOM数据API enabled.",
     endpoints: [
       { method: "GET", path: "/accounts", description: "账户列表，含最新权益、保证金使用率和风险度" },
+      { method: "GET", path: "/underlying", description: "投资分析 MOM底层表：产品、备案号、对比账户或单账户、策略、最新净值、涨跌幅和最新权益" },
       { method: "GET", path: "/account/daily", description: "单账户每日核算：权益、盈亏、保证金使用率、风险度" },
       { method: "GET", path: "/account/trades", description: "期货成交、期权成交，以及 market=detail 的成交明细原表" },
       { method: "GET", path: "/account/positions", description: "期货持仓、期权持仓，以及 market=detail 的持仓明细原表。默认最近一个交易日" },
@@ -942,7 +943,9 @@ function catalog() {
       { method: "GET", path: "/risk/margin", description: "日间风控风险水平。history=1 返回组合保证金风险度历史" },
       { method: "GET", path: "/risk/var-forecast", description: "日间风控次日 VaR。history=1 返回最近约 180 个交易日的回测" },
       { method: "GET", path: "/risk/marginal", description: "板块边际波动贡献的历史占比，与 VaR 沙盒饼图同一口径" },
+      { method: "GET", path: "/risk/var-history", description: "已入库的持仓 VaR 历史：每日组合、板块和品种的 1 日 VaR 金额与边际占比" },
       { method: "GET", path: "/cfmmc/accounts", description: "单账户监控中心已导入账号。q 或 company 可填期货公司、产品名或资金账号，例如 国泰君安期货" },
+      { method: "GET", path: "/cfmmc/overview", description: "单账户总览表。每个资金账号最新一天的动态权益、保证金、当日盈亏、风险度和净值曲线" },
       { method: "GET", path: "/cfmmc/account/nav", description: "单账户复权净值，与单账户总览净值曲线相同。例如 account=85121150&company=国泰君安期货" },
     ],
     single_account: {
@@ -967,6 +970,8 @@ export async function handleMomDataRequest(
         return catalog()
       case "accounts":
         return await listAccounts(record)
+      case "underlying":
+        return await (await import("@/lib/server/mom-underlying-api")).getMomUnderlying(record)
       case "account/daily":
         return await accountDaily(record)
       case "account/trades":
@@ -991,6 +996,8 @@ export async function handleMomDataRequest(
         return (await import("@/lib/server/mom-risk-report-api")).getMomRiskVarForecast(record)
       case "risk/marginal":
         return (await import("@/lib/server/mom-risk-report-api")).getMomRiskMarginal(record)
+      case "risk/var-history":
+        return (await import("@/lib/server/mom-risk-report-api")).getMomRiskVarHistory(record)
       default:
         return momDataErr(1, `unknown path: /${key}`)
     }

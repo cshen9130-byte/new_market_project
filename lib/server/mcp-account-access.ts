@@ -227,6 +227,66 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
       },
     }),
   },
+  {
+    name: "fund_compare",
+    area: "tracking",
+    description:
+      "投资分析「基金对比」的分析表。传入至少两只基金的名称或备案号。默认近一年、对齐起点、基准沪深300（IF）。period_return_pct 等是百分点，1.28 表示 1.28%；夏普、卡玛、索提诺是比率。intervals 是页面上另一张固定窗口表，不是所选区间。页面保存的对比组在浏览器本地，不能按组名打开。需要投资页权限。不要用 ai_researcher_compare 代替这张表。",
+    inputSchema: obj({
+      subjects: { type: "string", description: "产品名或备案号，逗号分隔，2 到 8 只" },
+      period: { type: "string", description: "近一年（默认）、近一月、近三月、近六月、今年以来、成立以来、近两年、近三年，或某年如 2025年" },
+      start_date: { type: "string", description: "自定义开始 YYYY-MM-DD，与 end_date 同时用" },
+      end_date: { type: "string", description: "自定义结束 YYYY-MM-DD" },
+      benchmark: { type: "string", description: "基准代码，默认 IF（沪深300）。none 表示不要基准。可选 IM、IC、IH、000905 用 IC" },
+      align: { type: "string", description: "1（默认）对齐起点。0 各用自己的区间起点" },
+    }, ["subjects"]),
+  },
+  {
+    name: "fof_underlying",
+    area: "managed",
+    description:
+      "投资分析「FOF底层」汇总表。一行一只底层产品：备案号、策略、首次入库、最新单位净值、最新涨跌幅、市值、开放日和区间收益。price_change_pct 与 ret_*_pct 是百分点，0.61 表示 0.61%。市值是元。默认持仓中的私募。需要投资池权限。",
+    inputSchema: obj({
+      q: { type: "string", description: "产品名或备案号" },
+      holding: { type: "string", description: "holding（默认，持仓中）、cleared（已清仓）、all" },
+      fund_class: { type: "string", description: "private（默认）或 public" },
+      strategy: { type: "string", description: "一级策略" },
+      cutoff: { type: "string", description: "指标计算截止日期 YYYY-MM-DD" },
+      fof_reg_code: { type: "string", description: "只看某一只 FOF 母基金的底层" },
+      page: { type: "integer", description: "页码，默认 1" },
+      pagesize: { type: "integer", description: "每页条数，默认 50，最大 200" },
+    }),
+  },
+  {
+    name: "weekly_review",
+    area: "tracking",
+    description:
+      "周度回顾。report=preview 只看分组和产品数；report=status 是近三周净值是否齐；report=run 按页面红色按钮同一套计算生成分析，并默认生成 Excel。variant=equity 是周度回顾(股票)，futures 是周度回顾(期货)，public 是公募指增 · 周度回顾，external 是外部私募业绩排行合并 Excel。收益是百分点。用返回的 job_id 再调用直到 done。分析引用 analysis，不要解析 xlsx。需要投资页权限。",
+    inputSchema: obj({
+      report: { type: "string", description: "preview（默认）、status、run。查任务进度时不传，只传 job_id" },
+      variant: { type: "string", description: "equity、futures、public、external。status 时 equity 或 futures" },
+      week_end: { type: "string", description: "周末或截止日 YYYY-MM-DD。不传为最近一个周五" },
+      pools: { type: "string", description: "jy（默认）、selected，或 jy,selected。公募指增和外部榜不用" },
+      q: { type: "string", description: "只返回名称或备案号匹配的产品" },
+      full: { type: "string", description: "1 时每个分组多返回产品，默认只给前后若干名" },
+      file: { type: "string", description: "run 时默认生成 Excel。0 只算分析。轮询 done 时传 1 才返回 content_base64" },
+      refresh: { type: "string", description: "status 时 1 表示不走缓存" },
+      job_id: { type: "string", description: "report=run 返回的任务 ID" },
+    }),
+  },
+  {
+    name: "external_rank",
+    area: "tracking",
+    description:
+      "外部私募业绩排行。source=files（默认）读知识库里对上这一周的榜单；source=yingmi 读盈米代销私募。ytd_pct、ret_1w_pct、ret_1y_pct 是百分点。和跟踪池对名次仍用 external_rank_compare。生成本周合并 Excel 用 weekly_review，variant=external，report=run。需要投资页权限。",
+    inputSchema: obj({
+      source: { type: "string", description: "files 或 yingmi" },
+      week_end: { type: "string", description: "YYYY-MM-DD，只用于 files" },
+      strategy: { type: "string", description: "策略或分组，例如主观多头、500指增" },
+      q: { type: "string", description: "管理人、产品或备案号" },
+      limit: { type: "integer", description: "盈米结果条数，默认 40，最大 80" },
+    }),
+  },
 ]
 
 const TOOL_AREA = new Map(ACCOUNT_MCP_TOOLS.map((tool) => [tool.name, tool.area]))

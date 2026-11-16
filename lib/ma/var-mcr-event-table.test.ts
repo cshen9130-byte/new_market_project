@@ -10,6 +10,7 @@ import {
   formatMdDate,
   formatSharePct,
   formatWan,
+  buildRegimeStatusTable,
   type DailyEventInput,
 } from "./var-mcr-event-table"
 
@@ -166,6 +167,66 @@ describe("episodeWindowIndices", () => {
     const shares = Array.from({ length: 30 }, (_, i) => (i >= 2 ? 55 : 20))
     const w = episodeWindowIndices(shares, 50, shares.length - 1)
     assert.equal(w.end - w.start + 1, 18)
+  })
+})
+
+describe("buildRegimeStatusTable", () => {
+  it("reproduces the 11-11 market-state readings", () => {
+    const mature = Array.from({ length: 100 }, (_, i) => ({
+      medSigma: i === 0 ? 0.0146 : i >= 82 ? [0.015, 0.0152, 0.0154, 0.0156, 0.0158, 0.016, 0.0161, 0.01615, 0.01618, 0.01619, 0.0162, 0.0162, 0.0162, 0.0162, 0.017, 0.018, 0.019, 0.02][i - 82] : 0.01,
+      dMedSigma: i === 0 ? 0.0001 : 0.001,
+      meanCorr: i <= 5 ? 0.155 : 0.3,
+      breadth: i === 0 ? 0.841 : i >= 92 ? [0.85, 0.855, 0.861, 0.861, 0.9, 0.92, 0.95, 0.97][i - 92] : 0.5,
+      gapMed: i === 0 ? 0.0078 : i >= 94 ? [0.008, 0.008, 0.009, 0.01, 0.011, 0.012][i - 94] : 0.005,
+      jumpMed: i === 0 ? 0.0104 : i >= 87 ? [0.011, 0.011, 0.011, 0.011, 0.011, 0.011, 0.011, 0.0126, 0.0126, 0.02, 0.021, 0.022, 0.023][i - 87] : 0.005,
+      maxAbsR: i === 0 ? 0.046 : i >= 98 ? 0.279 : 0.02,
+      nLiqGap: 0,
+      nSpike: 0,
+    }))
+    const table = buildRegimeStatusTable({ date: "2026-11-11", metrics: mature[0], mature })
+    const by = Object.fromEntries(table.rows.map((row) => [row.key, row]))
+    assert.equal(table.dateLabel, "11-11")
+    assert.equal(by.vol_spike.trigger, "no")
+    assert.equal(by.vol_spike.triggerText, "否（1.46%，约 82% 分位；增量未达 95%）")
+    assert.match(by.vol_spike.rule, /1\.62%/)
+    assert.equal(by.corr_surge.trigger, "no")
+    assert.equal(by.corr_surge.triggerText, "否（0.155，反而是低相关）")
+    assert.match(by.corr_surge.rule, /^持仓品种 252 日平均两两相关/)
+    assert.match(by.corr_collapse.rule, /^持仓品种平均两两相关/)
+    assert.equal(by.corr_collapse.trigger, "yes")
+    assert.equal(by.corr_collapse.triggerText, "是（临界触发）")
+    assert.match(by.corr_collapse.rule, /0\.155/)
+    assert.equal(by.regime_breadth.trigger, "near")
+    assert.equal(by.regime_breadth.triggerText, "接近（84.1%，约 92% 分位），未达阈值")
+    assert.match(by.regime_breadth.rule, /86\.1%/)
+    assert.equal(by.gap.trigger, "near")
+    assert.equal(by.gap.triggerText, "接近（0.78%，约 94% 分位），未达阈值")
+    assert.match(by.gap.rule, /0\.80%/)
+    assert.equal(by.jump.trigger, "no")
+    assert.equal(by.jump.triggerText, "否（1.04%，约 87% 分位）")
+    assert.match(by.jump.rule, /1\.26%/)
+    assert.equal(by.idiosyncratic.trigger, "no")
+    assert.equal(by.idiosyncratic.triggerText, "否（最大约 4.6%）")
+    assert.match(by.idiosyncratic.rule, /27\.9%/)
+    assert.equal(by.liq.triggerText, "否（0 个）")
+    assert.equal(by.roll.triggerText, "否（0 个）")
+  })
+
+  it("marks a one-short liquidity count as 接近 and a three-name gap as 是", () => {
+    const quiet = {
+      medSigma: 0.01, dMedSigma: 0, meanCorr: 0.2, breadth: 0.5,
+      gapMed: 0.002, jumpMed: 0.004, maxAbsR: 0.02, nLiqGap: 0, nSpike: 0,
+    }
+    const day = { ...quiet, nLiqGap: 2, nSpike: 3 }
+    const table = buildRegimeStatusTable({
+      date: "2026-11-13",
+      metrics: day,
+      mature: [day, quiet],
+    })
+    const by = Object.fromEntries(table.rows.map((row) => [row.key, row]))
+    assert.equal(by.liq.triggerText, "接近（2 个），未达阈值")
+    assert.equal(by.roll.triggerText, "是（3 个）")
+    assert.equal(table.dateLabel, "11-13")
   })
 })
 

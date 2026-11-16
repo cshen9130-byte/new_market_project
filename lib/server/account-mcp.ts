@@ -12,6 +12,35 @@ const KB_LIST_CAP = 400
 const KB_TEXT_CAP = 24_000
 const REPORT_CAP = 80_000
 
+async function unwrapFundCompare(args: Record<string, unknown>): Promise<unknown> {
+  const record: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(args)) {
+    if (value == null) continue
+    record[key] = Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean).join(",") : String(value)
+  }
+  if (!record.subjects && record.q) record.subjects = record.q
+  const { compareFunds } = await import("@/lib/server/fund-compare-data")
+  const result = await compareFunds(record)
+  if (result.error_code !== 0) throw new Error(result.msg)
+  return result.data
+}
+
+async function unwrapInvestmentReview(name: string, args: Record<string, unknown>): Promise<unknown> {
+  const record: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(args)) {
+    if (value == null) continue
+    record[key] = String(value)
+  }
+  const api = await import("@/lib/server/investment-review-api")
+  const result = name === "fof_underlying"
+    ? await api.getFofUnderlyingTable(record)
+    : name === "weekly_review"
+      ? await api.getWeeklyReview(record)
+      : await api.getExternalRank(record)
+  if (result.error_code !== 0) throw new Error(result.msg)
+  return result.data
+}
+
 function str(args: Record<string, unknown>, key: string): string {
   const value = args[key]
   if (value == null) return ""
@@ -604,6 +633,12 @@ export async function callAccountMcpTool(
         topN: intArg(args, "top_n", 30, 100),
       })
     }
+    case "fund_compare":
+      return unwrapFundCompare(args)
+    case "fof_underlying":
+    case "weekly_review":
+    case "external_rank":
+      return unwrapInvestmentReview(name, args)
     default:
       throw new Error(`unknown tool: ${name}`)
   }

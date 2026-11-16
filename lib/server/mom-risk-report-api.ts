@@ -6,6 +6,7 @@
 
 import { PROD_NAMES, PROD_SECTOR } from "@/lib/ma/prod-sector"
 import { momDataErr, momDataOk, type MomDataEnvelope } from "@/lib/server/mom-data-api"
+import { MOM_POSITION_VAR_SPEC } from "@/lib/server/mom-position-var-math"
 import { varConcentrationShares } from "@/lib/mom-var-concentration"
 
 type SandboxProduct = { prod: string; mv: number; lots: number; sigma: number }
@@ -284,6 +285,92 @@ export async function getMomRiskMarginal(record: Record<string, string | undefin
     vol_days: volDays,
     corr_days: corrDays,
     ...windowed.history,
-    note: "与持仓分析里「板块边际波动贡献」历史曲线同一口径，也就是 VaR 沙盒饼图按交易日展开。用每日持仓现算，不是入库的结果表。group=sector（默认）、category 或 sub。默认最近 120 个交易日，用 start_date、end_date、limit 收窄。",
+    note: "与持仓分析里「板块边际波动贡献」历史曲线同一口径，也就是 VaR 沙盒饼图按交易日展开。用每日持仓现算，可改波动和相关窗口。group=sector（默认）、category 或 sub。默认最近 120 个交易日，用 start_date、end_date、limit 收窄。默认窗口的品种和板块 VaR 金额在 GET /risk/var-history，读的是 public.mom_position_var_daily。",
+  })
+}
+
+export async function getMomRiskVarHistory(record: Record<string, string | undefined>): Promise<MomDataEnvelope<unknown>> {
+  const groupRaw = (record.group ?? "all").trim().toLowerCase()
+  const group = groupRaw === "all" || groupRaw === "sector" || groupRaw === "product" || groupRaw === "category" || groupRaw === "sub"
+    ? groupRaw
+    : null
+  if (!group) return momDataErr(1, "group must be all, sector, product, category, or sub")
+
+  const spec = MOM_POSITION_VAR_SPEC
+  const volRaw = (record.vol_days ?? record.volDays ?? "").trim()
+  const corrRaw = (record.corr_days ?? record.corrDays ?? "").trim()
+  if (volRaw && Number(volRaw) !== spec.volDays) {
+    return momDataErr(1, `stored history only keeps vol_days=${spec.volDays}`)
+  }
+  if (corrRaw && Number(corrRaw) !== spec.corrDays) {
+    return momDataErr(1, `stored history only keeps corr_days=${spec.corrDays}`)
+  }
+  if ((record.confidence ?? "").trim() && Number(record.confidence) !== spec.confidence) {
+    return momDataErr(1, `stored history only keeps confidence=${spec.confidence}`)
+  }
+  if ((record.dist ?? "").trim() && record.dist !== spec.dist) {
+    return momDataErr(1, `stored history only keeps dist=${spec.dist}`)
+  }
+  const start = record.start_date ? isoDate(record.start_date) : null
+  const end = record.end_date ? isoDate(record.end_date) : null
+  if (record.start_date && !start) return momDataErr(1, "start_date must be YYYY-MM-DD")
+  if (record.end_date && !end) return momDataErr(1, "end_date must be YYYY-MM-DD")
+  if (start && end && start > end) return momDataErr(1, "start_date must be on or before end_date")
+  const limit = intParam(record.limit, 250, 1, 2000)
+
+  const { readMomPositionVarHistory } = await import("@/lib/server/mom-position-var-store")
+  const history = await readMomPositionVarHistory({ group, start, end, limit })
+  if (history.missing || history.storedDays === 0) {
+    return momDataErr(2, "position VaR history is not loaded yet")
+  }
+
+  const share = (item: { name: string; marginalPct: number; componentVar: number; marketValue: number }) => ({
+    name: item.name,
+    marginal_pct: item.marginalPct,
+    component_var: item.componentVar,
+    market_value: item.marketValue,
+  })
+
+  return momDataOk({
+    method: "parametric",
+    horizon: "1d",
+    confidence: spec.confidence,
+    z_score: spec.zScore,
+    vol_days: spec.volDays,
+    corr_days: spec.corrDays,
+    dist: spec.dist,
+    group,
+    source: "public.mom_position_var_daily",
+    stored_at: history.computedAt,
+    start_date: history.days[0]?.date ?? null,
+    end_date: history.days[history.days.length - 1]?.date ?? null,
+    total: history.total,
+    truncated: history.truncated,
+    rows: history.days.map((day) => {
+      const row: Record<string, unknown> = {
+        date: day.date,
+        total_var: day.totalVar,
+        net_market_value: day.netMarketValue,
+      }
+      if (group === "all" || group === "sector") row.sectors = day.sectors.map(share)
+      if (group === "all" || group === "product") {
+        row.products = day.products.map((item) => ({
+          code: item.code,
+          name: item.name,
+          sector: item.sector,
+          category: item.category,
+          sub_sector: item.subSector,
+          market_value: item.marketValue,
+          lots: item.lots,
+          sigma: item.sigma,
+          component_var: item.componentVar,
+          marginal_pct: item.marginalPct,
+        }))
+      }
+      if (group === "category") row.categories = day.categories.map(share)
+      if (group === "sub") row.sub_sectors = day.subSectors.map(share)
+      return row
+    }),
+    note: "与持仓分析「持仓VaR走势」同一口径，并给出 95% 正态的 1 日 VaR 金额。数据在 public.mom_position_var_daily，波动 20 日、相关 252 日。total_var 和 component_var 单位是元，正的 total_var 表示亏损金额，同一天品种的 component_var 相加等于 total_var。marginal_pct 是边际波动贡献占比，单位是百分点，与板块面积图一致。不含国信账户。默认最近 250 个交易日；group 默认 all，同时给板块和品种。group=sector、product、category、sub 只返回对应一组。自定义窗口仍用 /risk/marginal 现算，那个接口只有占比。",
   })
 }

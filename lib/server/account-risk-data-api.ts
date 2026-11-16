@@ -1,6 +1,11 @@
 import { publicQuery } from "@/lib/db"
 import { productNameFromClientLabel } from "@/lib/server/account-risk-product-elements"
 import {
+  loadAccountOverviewRows,
+  shapeAccountOverviewTable,
+  type AccountOverviewGroup,
+} from "@/lib/server/account-risk-account-overview"
+import {
   aggregateEquityByDate,
   compoundAccountRiskNav,
   type AccountRiskNavPoint,
@@ -166,6 +171,7 @@ function catalog() {
     auth: "Same MOM API key (prefix mk_). The fund-data key is rejected.",
     endpoints: [
       { method: "GET", path: "/accounts", description: "已导入的单账户列表。q 可填期货公司、产品名或资金账号，例如 国泰君安期货" },
+      { method: "GET", path: "/overview", description: "单账户总览表：每个资金账号最新一天的动态权益、保证金、当日盈亏、浮动盈亏、平仓盈亏、风险度、单边风险度和净值曲线。与页面「单账户总览」同一口径" },
       { method: "GET", path: "/account/nav", description: "复权净值，与单账户总览净值曲线相同。例如 account=85121150&company=国泰君安期货" },
       { method: "GET", path: "/account/daily", description: "cfmmc_daily_summary 每日结算摘要。传 start_date 与 end_date 取历史区间" },
       { method: "GET", path: "/account/products", description: "cfmmc_product_pnl 品种盈亏。传 start_date 与 end_date 取每个交易日" },
@@ -177,6 +183,28 @@ function catalog() {
       { method: "GET", path: "/account/securities", description: "cfmmc_securities 证券成交" },
       { method: "GET", path: "/account/export", description: "一次性导出该资金账号全部入库数据（含历史逐日持仓）为 CSV；默认 zip。参数 account、可选 company、datasets、start_date、end_date、format=zip|dir|csv" },
     ],
+  })
+}
+
+const OVERVIEW_NOTE =
+  "与页面「单账户每日风控 → 单账户总览」同一张表，每个资金账号只取最新一个已导入交易日。金额单位是元。risk_pct 和 unilateral_risk_pct 是百分点，11.86 表示 11.86%。daily_pnl 是客户权益差减去出入金。holding_pnl = daily_pnl − closed_pnl，是当日浮动变动，不是结算单上的持仓浮动水平。合计的 risk_pct = 保证金合计 / 动态权益合计，unilateral_risk_pct 按动态权益加权。nav 是复权净值，从 1 起，与净值曲线相同。这是单账户监控中心，不是 MOM 母基金。"
+
+function overviewGroup(raw: string | undefined): AccountOverviewGroup | null {
+  const text = (raw ?? "").trim().toLowerCase()
+  if (!text || text === "none" || text === "all") return "none"
+  if (text === "fund" || text === "company" || text === "pm") return text
+  return null
+}
+
+async function accountOverview(record: Record<string, string | undefined>): Promise<MomDataEnvelope<unknown>> {
+  const group = overviewGroup(record.group)
+  if (!group) return momDataErr(1, "group must be none, fund, company, or pm")
+  const table = shapeAccountOverviewTable(await loadAccountOverviewRows(), { q: record.q, group })
+  return momDataOk({
+    ...table,
+    group,
+    count: table.rows.length,
+    note: OVERVIEW_NOTE,
   })
 }
 
@@ -467,6 +495,7 @@ export async function handleAccountRiskDataRequest(
   try {
     if (key === "" || key === "meta") return catalog()
     if (key === "accounts") return await listAccounts(record)
+    if (key === "overview") return await accountOverview(record)
     if (key === "account/nav") return await readNav(record)
     if (key === "account/export") return await handleAccountRiskExport(record)
     if (key.startsWith("account/")) {
