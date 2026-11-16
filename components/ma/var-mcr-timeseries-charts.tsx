@@ -57,6 +57,9 @@ const RED = "#C53030"
 const TEAL = "#2B6CB0"
 const GRAY_LINE = "#A0AEC0"
 
+/** First included date: mature sample starts when n_prod first reaches 20. */
+const HISTORY_START = "2025-08-06"
+
 type McrPayload = {
   ok: boolean
   dates: string[]
@@ -91,6 +94,24 @@ function peakIndex(series: number[]): number {
 
 function axisDate(v: string): string {
   return (v ?? "").slice(0, 10)
+}
+
+function cropHistory(payload: McrPayload): McrPayload {
+  const startIdx = payload.dates.findIndex(d => axisDate(d) >= HISTORY_START)
+  if (startIdx <= 0) return payload
+  const cut = <T,>(arr: T[]) => arr.slice(startIdx)
+  const cutMap = (obj: Record<string, number[]>) =>
+    Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, cut(v)]))
+  return {
+    ...payload,
+    dates: cut(payload.dates),
+    productData: cutMap(payload.productData),
+    sectorData: cutMap(payload.sectorData),
+    maxProductShare: cut(payload.maxProductShare),
+    maxSectorShare: cut(payload.maxSectorShare),
+    distanceProduct: cut(payload.distanceProduct),
+    distanceSector: cut(payload.distanceSector),
+  }
 }
 
 export default function VarMcrTimeseriesCharts() {
@@ -135,14 +156,15 @@ export default function VarMcrTimeseriesCharts() {
     }
   }, [load])
 
-  const productSoft = data?.productSoft ?? PRODUCT_SOFT
-  const productHard = data?.productHard ?? PRODUCT_HARD
-  const sectorSoft = data?.sectorSoft ?? SECTOR_SOFT
-  const sectorHard = data?.sectorHard ?? SECTOR_HARD
-  const dates = data?.dates ?? []
+  const view = useMemo(() => (data ? cropHistory(data) : null), [data])
+  const productSoft = view?.productSoft ?? PRODUCT_SOFT
+  const productHard = view?.productHard ?? PRODUCT_HARD
+  const sectorSoft = view?.sectorSoft ?? SECTOR_SOFT
+  const sectorHard = view?.sectorHard ?? SECTOR_HARD
+  const dates = view?.dates ?? []
 
   const distanceOption = useMemo(() => {
-    if (!data || dates.length === 0) return null
+    if (!view || dates.length === 0) return null
     return {
       title: {
         text: `距离建议软预警线（品种${productSoft}% / 板块${sectorSoft}%）`,
@@ -182,7 +204,7 @@ export default function VarMcrTimeseriesCharts() {
         {
           name: "距品种软预警（百分点，负值=已突破）",
           type: "line",
-          data: data.distanceProduct,
+          data: view.distanceProduct,
           symbol: "none",
           lineStyle: { width: 1.6, color: TEAL },
           itemStyle: { color: TEAL },
@@ -191,7 +213,7 @@ export default function VarMcrTimeseriesCharts() {
         {
           name: "距板块软预警（百分点）",
           type: "line",
-          data: data.distanceSector,
+          data: view.distanceSector,
           symbol: "none",
           lineStyle: { width: 1.6, color: GOLD },
           itemStyle: { color: GOLD },
@@ -209,11 +231,11 @@ export default function VarMcrTimeseriesCharts() {
         },
       ],
     }
-  }, [data, dates, productSoft, sectorSoft])
+  }, [view, dates, productSoft, sectorSoft])
 
   const productsOption = useMemo(() => {
-    if (!data || dates.length === 0) return null
-    const entries = Object.entries(data.productData)
+    if (!view || dates.length === 0) return null
+    const entries = Object.entries(view.productData)
     const peak = entries
       .map(([code, series]) => ({ code, series, max: Math.max(0, ...series) }))
       .sort((a, b) => b.max - a.max)
@@ -288,7 +310,7 @@ export default function VarMcrTimeseriesCharts() {
 
     return {
       title: {
-        text: "全部品种边际波动贡献占比（时序，全历史）",
+        text: "全部品种边际波动贡献占比（时序，自 2025-08-06 起）",
         left: "center",
         top: 4,
         textStyle: { fontSize: 13, fontWeight: 600, color: "#1f2937" },
@@ -339,11 +361,11 @@ export default function VarMcrTimeseriesCharts() {
       },
       series,
     }
-  }, [data, dates, productSoft, productHard])
+  }, [view, dates, productSoft, productHard])
 
   const sectorsOption = useMemo(() => {
-    if (!data || dates.length === 0) return null
-    const entries = Object.entries(data.sectorData)
+    if (!view || dates.length === 0) return null
+    const entries = Object.entries(view.sectorData)
       .map(([name, series]) => ({ name, series, max: Math.max(0, ...series) }))
       .sort((a, b) => b.max - a.max)
 
@@ -401,7 +423,7 @@ export default function VarMcrTimeseriesCharts() {
 
     return {
       title: {
-        text: "全部板块边际波动贡献占比（时序，全历史）",
+        text: "全部板块边际波动贡献占比（时序，自 2025-08-06 起）",
         left: "center",
         top: 4,
         textStyle: { fontSize: 13, fontWeight: 600, color: "#1f2937" },
@@ -445,10 +467,10 @@ export default function VarMcrTimeseriesCharts() {
       },
       series,
     }
-  }, [data, dates, sectorSoft, sectorHard])
+  }, [view, dates, sectorSoft, sectorHard])
 
   const footnote = dates.length > 0
-    ? `口径对齐日间风控 VaR 沙盘（vol=20日, corr=252日, 含当日窗口）。共 ${Object.keys(data?.productData ?? {}).length} 个品种、${Object.keys(data?.sectorData ?? {}).length} 个板块，${dates[0]} 至 ${dates[dates.length - 1]}。彩色品种线为历史上曾达到或超过 ${productSoft}% 的品种；加粗板块线为曾达到或超过 ${sectorSoft}% 软预警的板块。`
+    ? `口径对齐日间风控 VaR 沙盘（vol=20日, corr=252日, 含当日窗口）。共 ${Object.keys(view?.productData ?? {}).length} 个品种、${Object.keys(view?.sectorData ?? {}).length} 个板块，${dates[0]} 至 ${dates[dates.length - 1]}。建仓期（此前品种少、贡献易被放大）不进入本图。彩色品种线为这段样本中曾达到或超过 ${productSoft}% 的品种；加粗板块线为曾达到或超过 ${sectorSoft}% 软预警的板块。`
     : "口径对齐日间风控 VaR 沙盘（含当日窗口）。"
 
   if (loading && !data) {

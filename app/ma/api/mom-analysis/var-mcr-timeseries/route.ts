@@ -13,6 +13,9 @@ export const PRODUCT_HARD = 50
 export const SECTOR_SOFT = 50
 export const SECTOR_HARD = 65
 
+/** First included date on the history charts: mature sample (n_prod first reaches 20). */
+const HISTORY_START = "2025-08-06"
+
 function toNum(v: unknown): number {
   if (v == null) return 0
   const n = parseFloat(String(v).replace(/[,%\s]/g, ""))
@@ -293,24 +296,41 @@ async function _GET(req: Request) {
         productSoft: PRODUCT_SOFT, productHard: PRODUCT_HARD,
         sectorSoft: SECTOR_SOFT, sectorHard: SECTOR_HARD,
         volDays, corrDays, window: "inclusive",
+        historyStart: HISTORY_START,
       })
     }
 
-    const allProductKeys = [...new Set(rows.flatMap(r => Object.keys(r.product)))]
-    const allSectorKeys = [...new Set(rows.flatMap(r => Object.keys(r.sector)))]
+    // Compute every holding day (July build-up is needed for the early-August
+    // rolling vol/corr windows), but only return the mature-sample window.
+    const visibleRows = rows.filter(r => r.date >= HISTORY_START)
+
+    if (visibleRows.length === 0) {
+      return NextResponse.json({
+        ok: true, dates: [], productData: {}, sectorData: {},
+        maxProductShare: [], maxSectorShare: [],
+        distanceProduct: [], distanceSector: [],
+        productSoft: PRODUCT_SOFT, productHard: PRODUCT_HARD,
+        sectorSoft: SECTOR_SOFT, sectorHard: SECTOR_HARD,
+        volDays, corrDays, window: "inclusive",
+        historyStart: HISTORY_START,
+      })
+    }
+
+    const allProductKeys = [...new Set(visibleRows.flatMap(r => Object.keys(r.product)))]
+    const allSectorKeys = [...new Set(visibleRows.flatMap(r => Object.keys(r.sector)))]
 
     const productData: Record<string, number[]> = {}
     const sectorData: Record<string, number[]> = {}
-    for (const k of allProductKeys) productData[k] = rows.map(r => r.product[k] ?? 0)
-    for (const k of allSectorKeys) sectorData[k] = rows.map(r => r.sector[k] ?? 0)
+    for (const k of allProductKeys) productData[k] = visibleRows.map(r => r.product[k] ?? 0)
+    for (const k of allSectorKeys) sectorData[k] = visibleRows.map(r => r.sector[k] ?? 0)
 
-    const maxProductShare = rows.map(r => r.maxProductShare)
-    const maxSectorShare = rows.map(r => r.maxSectorShare)
+    const maxProductShare = visibleRows.map(r => r.maxProductShare)
+    const maxSectorShare = visibleRows.map(r => r.maxSectorShare)
     const round1 = (v: number) => Math.round(v * 10) / 10
 
     return NextResponse.json({
       ok: true,
-      dates: rows.map(r => r.date),
+      dates: visibleRows.map(r => r.date),
       productData,
       sectorData,
       maxProductShare,
@@ -324,6 +344,7 @@ async function _GET(req: Request) {
       volDays,
       corrDays,
       window: "inclusive",
+      historyStart: HISTORY_START,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -342,4 +363,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("var-mcr-timeseries", _GET)
+export const GET = withMomCache("var-mcr-timeseries-from-20250806", _GET)
