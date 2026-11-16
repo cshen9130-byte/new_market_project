@@ -44,6 +44,7 @@ function buildRoutesToWarm() {
     "/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252",
     "/ma/api/mom-analysis/var-mcr-timeseries?volDays=20&corrDays=252",
     "/ma/api/mom-analysis/var-mcr-suggestions?volDays=20&corrDays=252",
+    "/ma/api/mom-analysis/var-mcr-events?volDays=20&corrDays=252",
     "/ma/api/mom-analysis/var-sector-timeseries?corrDays=252",
     "/ma/api/mom-analysis/pnl-sector-timeseries",
     "/ma/api/mom-analysis/marginal-vol-timeseries",
