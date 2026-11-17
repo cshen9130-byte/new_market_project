@@ -340,7 +340,7 @@ ${buildMcpClientsMarkdown("mom", key)}
 
 \`GET /cfmmc/overview\`。MCP：\`cfmmc_overview\`。
 
-和页面「单账户总览」同一张表。不传参数就是全部账户的最新一天。\`q\` 按产品名、期货公司、资金账号或 PM 筛选。\`group\` 取 \`none\`（默认）、\`fund\`、\`company\`、\`pm\`。
+和页面「单账户总览」同一张表。不传参数就是全部账户的最新一天。\`trade_date\` 是该行金额对应的数据日期；分组时取组内最晚一天。\`q\` 按产品名、期货公司、资金账号或 PM 筛选。\`group\` 取 \`none\`（默认）、\`fund\`、\`company\`、\`pm\`。
 
 金额单位是元。\`risk_pct\`、\`unilateral_risk_pct\`、\`nav_return_pct\` 是百分点：\`11.86\` 表示 11.86%。\`daily_pnl\` 是当日盈亏，等于客户权益差减去出入金。\`holding_pnl\` 是当日浮动变动（\`daily_pnl − closed_pnl\`），不是结算单上的持仓浮动水平。\`total.risk_pct\` 是保证金合计 / 动态权益合计，不要把各行风险度做平均。\`nav\` 是复权净值曲线，从 1 起。
 

@@ -27,6 +27,31 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+async function openComparePage(resolved: Array<{
+  reg_code: string
+  name: string
+  latest: string | null
+  inception: string | null
+}>): Promise<string | null> {
+  try {
+    const { buildSavedFundCompare, saveFundCompareLink } = await import("@/lib/server/fund-compare-link")
+    const compare = buildSavedFundCompare(resolved.map((fund) => ({
+      beian_hao: fund.reg_code,
+      product_name: fund.name,
+      manager: null,
+      fund_type: "私募" as const,
+      nav_start_date: null,
+      latest_nav_date: fund.latest,
+      inception_date: fund.inception,
+      ret_ann_since_inception: null,
+    })))
+    return await saveFundCompareLink(compare)
+  } catch (err) {
+    console.error("[fund-compare] link", err)
+    return null
+  }
+}
+
 export async function compareFunds(
   record: Record<string, string | undefined>,
 ): Promise<FundDataEnvelope<unknown>> {
@@ -168,7 +193,8 @@ export async function compareFunds(
         sharpe_1y: row.metrics.sharpe_1y,
         calmar_1y: row.metrics.calmar_1y,
       })),
-      note: NOTE,
+      url: await openComparePage(resolved),
+      note: `${NOTE} url 是网站基金对比页。打开后页面会装入这几只基金并执行对比。回答末尾给出这个链接，不要另造地址。`,
     })
   } catch (err) {
     return fundDataErr(3, messageOf(err))

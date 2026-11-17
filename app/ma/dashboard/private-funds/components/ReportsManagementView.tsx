@@ -22,8 +22,10 @@ import { canAccessPfInvestmentPool } from "@/lib/permissions"
 import {
   AUTO_WEEKLY_TEMPLATE_ID,
   AUTO_WEEKLY_TEMPLATE_OPTIONS,
+  WEEKLY_DISPLAY_TEMPLATE_OPTIONS,
   officialReportTemplateShortLabel,
   resolveAutoWeeklyTemplate,
+  resolveWeeklyDisplayTemplate,
 } from "@/lib/ma/auto-weekly-templates"
 import { loadCustomReports, type SavedCustomReport } from "@/lib/ma/custom-report-storage"
 import {
@@ -428,7 +430,7 @@ function parsePickerOptions(json: unknown, source: ProductOption["source"], sour
 
 
 const AUTO_WEEKLY_TEMPLATE_HINT =
-  "夜间任务会同时生成「超额版」和「持仓版」。订阅模板只选择列表展示哪一种，切换立即生效，不会当场重新生成。若某周的对应版本还没生成，该周会暂时不显示，等夜间任务补齐后再出现。"
+  "夜间任务会同时生成「超额版」「持仓版s」和「持仓版l」。这个开关只改变当前账号看到的版本，切换立即生效，不会当场重新生成。若某周的对应版本还没生成，该周会暂时不显示，等夜间任务补齐后再出现。"
 
 function AutoWeeklyTemplateSelect({
   value,
@@ -984,7 +986,7 @@ export function ReportsManagementView({
         throw new Error(json.error || `加载失败 HTTP ${resp.status}`)
       }
       if (typeof json.weeklyReportTemplate === "string") {
-        setTeamDisplayTemplateId(resolveAutoWeeklyTemplate(json.weeklyReportTemplate).id)
+        setTeamDisplayTemplateId(resolveWeeklyDisplayTemplate(json.weeklyReportTemplate).id)
       }
       setTeamReports((json.data || []).map((r) => mapApiRow(r, "team")))
     } catch (err) {
@@ -1414,7 +1416,7 @@ export function ReportsManagementView({
   }
 
   async function handleSwitchAllTeamTemplate(templateId: string) {
-    const nextTemplate = resolveAutoWeeklyTemplate(templateId)
+    const nextTemplate = resolveWeeklyDisplayTemplate(templateId)
     if (teamDisplayTemplateId === nextTemplate.id) return
     setTeamTemplateBusy(true)
     setTeamTemplateMessage(null)
@@ -1430,7 +1432,7 @@ export function ReportsManagementView({
         prefs?: { weeklyReportTemplate?: string }
       }
       if (!resp.ok || !json.ok) throw new Error(json.error || "保存默认模板失败")
-      const savedId = resolveAutoWeeklyTemplate(json.prefs?.weeklyReportTemplate).id
+      const savedId = resolveWeeklyDisplayTemplate(json.prefs?.weeklyReportTemplate).id
       setTeamDisplayTemplateId(savedId)
       await refreshTeamReports(canSeeSystem)
       setTeamTemplateMessage(`已将列表默认显示切换为「${nextTemplate.shortName}」，仅对当前账号生效`)
@@ -1566,7 +1568,7 @@ export function ReportsManagementView({
           )}
           {section === "weekly" && scopeTab === "team" && canSeeSystem && (
             <div className="inline-flex h-9 rounded-md border border-border overflow-hidden shrink-0" title="切换当前账号默认查看的周报版本">
-              {AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item, index) => (
+              {WEEKLY_DISPLAY_TEMPLATE_OPTIONS.map((item, index) => (
                 <button
                   key={item.id}
                   type="button"
@@ -1585,7 +1587,7 @@ export function ReportsManagementView({
               ))}
             </div>
           )}
-          {section === "weekly" && scopeTab === "team" && canSeeSystem && teamDisplayTemplateId === "weekly-track-holdings" && (
+          {section === "weekly" && scopeTab === "team" && canSeeSystem && (teamDisplayTemplateId === "weekly-track-holdings" || teamDisplayTemplateId === "weekly-track-longview") && (
             <button
               type="button"
               onClick={() => {

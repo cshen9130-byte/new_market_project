@@ -111,6 +111,7 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("pf-custom-index", "自建指数", "/ma/dashboard/private-funds?tab=funds&side=custom-index", "私募基金 → 基金 → 自建指数", "any", []),
 
   p("pf-market-stock", "私募-股票市场", "/ma/dashboard/private-funds?tab=market&side=stock-market", "私募基金 → 市场 → 股票市场", "any", []),
+  p("pf-strategy-env", "策略环境", "/ma/dashboard/private-funds?tab=market&side=strategy-environment", "私募基金 → 市场 → 策略环境", "any", ["环境分", "市场环境"]),
   p("pf-futures-style", "期货风格因子", "/ma/dashboard/private-funds?tab=market&side=futures-style", "私募基金 → 市场 → 期货风格因子", "any", ["期货因子"]),
   p("pf-equity-style", "股票风格因子", "/ma/dashboard/private-funds?tab=market&side=equity-style", "私募基金 → 市场 → 股票风格因子", "any", ["股票因子"]),
   p("pf-strategy-obs", "策略观察", "/ma/dashboard/private-funds?tab=market&side=strategy-observation", "私募基金 → 市场 → 策略观察", "any", []),

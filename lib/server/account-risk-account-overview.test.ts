@@ -58,5 +58,15 @@ describe("account overview table shape", () => {
     assert.equal(shaped.rows[0]?.account, "2个账号")
     assert.equal(shaped.rows[0]?.equity, 40)
     assert.equal(shaped.rows[0]?.nav.length, 0)
+    assert.equal(shaped.rows[0]?.trade_date, "2026-11-16")
+  })
+
+  it("uses the latest trade date when a group mixes dates", () => {
+    const shaped = shapeAccountOverviewTable([
+      row({ accountNo: "1", equity: 10, margin: 1, companyName: "银河期货", tradeDate: "2026-11-14" }),
+      row({ accountNo: "2", equity: 30, margin: 3, companyName: "银河期货", tradeDate: "2026-11-17" }),
+    ], { group: "company" })
+    assert.equal(shaped.rows[0]?.trade_date, "2026-11-17")
+    assert.equal(shaped.as_of, "2026-11-17")
   })
 })

@@ -32,6 +32,7 @@ import {
   resolveFofWeeklyProductNavRange,
   resolveProductBeianHao,
 } from "@/lib/server/fof-weekly-report"
+import { getAssignedManagerView } from "@/lib/server/auto-weekly-manager-views"
 import { getCustomFundByCode, listAllCustomFundRecords } from "@/lib/server/custom-funds"
 import { getServerStoragePath } from "@/lib/server/storage"
 
@@ -377,7 +378,7 @@ export async function ensureMineWeeklyReportForProduct(
     const liveNav = range.latest_nav_date || null
     const variantItems: AutoWeeklyEtlItem[] = []
 
-    // Night job always builds both templates. 订阅模板 is only a display switch.
+    // Same three templates as the team night job. 订阅模板 is only a display switch.
     for (const template of AUTO_WEEKLY_TEMPLATE_OPTIONS) {
       const existing = readIndex(userId).reports.find(
         (r) =>
@@ -412,6 +413,9 @@ export async function ensureMineWeeklyReportForProduct(
         benchmark_key: "IF",
         nav_frequency: "weekly",
         report_variant: template.variant,
+        ...(template.variant === "holdings" || template.variant === "longview"
+          ? { manager_view: getAssignedManagerView(displayName, resolvedBeian).text }
+          : {}),
       })
 
       persistAutoWeeklyReportFiles(result.reportId)

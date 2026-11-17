@@ -191,12 +191,12 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  // Friday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then
+  // Thursday 16:00 Beijing: 火富牛 previous-Friday NAV (list-first, then
   // skip/update_slow with a list NAV in the last month → weekly + FundPrice history,
   // then FundMultiPrice, then late retry of last week's no_data only for funds
-  // that arrived this Friday, then universe maintain: 3-week empty → update_slow,
+  // that arrived this week, then universe maintain: 3-week empty → update_slow,
   // new ≤2-month funds → weekly). Just-revived funds are not downgraded the same run.
-  // Still runs if *this* Friday is a CN holiday (fetch last week). A holiday
+  // Still runs if *this* Thursday is a CN holiday (fetch last week). A holiday
   // Friday uses the last open day of that week (2026-10-02 → 2026-09-30).
   // Skips only when that whole Mon–Fri has no trading day.
   // Tue-Thu 14:00 Beijing: cheap FundAdvancedList (<=2 pages / credits) for
@@ -204,7 +204,7 @@ cron.schedule("30 18 * * 1-5", () => {
   // when the list already shows them; leftover rows on the same pages backfill
   // prioritized holes (default 2026-10-09) then other missing tips. No
   // FundMultiPrice, no universe maintain, no skip-revival. Distinct from
-  // Friday 16:00 (list+FundMultiPrice+maintain). Pause with
+  // Thursday 16:00 (list+FundMultiPrice+maintain). Pause with
   // FOF99_MIDWEEK_ETL_DISABLED=1.
   cron.schedule("0 14 * * 2-4", () => {
     void (async () => {
@@ -224,7 +224,7 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  cron.schedule("0 16 * * 5", () => {
+  cron.schedule("0 16 * * 4", () => {
     void (async () => {
       try {
         const { startFof99FridayAfternoonEtlJob } = await import("./fof99-friday-afternoon-etl-job")
@@ -242,8 +242,9 @@ cron.schedule("30 18 * * 1-5", () => {
 
   // Once the latest complete 周度回顾 week has NAV, tell every account.
   // Mon–Thu 16:30 covers the week the page is showing (last Friday), after the
-  // Tue–Thu 14:00 火富牛 list. Friday evening covers the week the 16:00 job
-  // just filled, because that Friday's own week is usually still thin.
+  // Tue–Thu 14:00 火富牛 list. Thursday 16:00 fills that previous Friday.
+  // Friday evening covers the same week again, because that Friday's own week
+  // is usually still thin.
   // A week already sent returns before rebuilding the status.
   for (const expr of ["30 16 * * 1-4", "30 18 * * 5", "30 21 * * 5"] as const) {
     cron.schedule(expr, () => {

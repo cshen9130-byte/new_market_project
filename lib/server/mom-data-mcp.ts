@@ -130,7 +130,7 @@ export const MOM_DATA_MCP_TOOLS: Tool[] = [
   },
   {
     name: "cfmmc_overview",
-    description: "单账户总览表，和页面「单账户每日风控 → 单账户总览」同一张表。每个资金账号一行，取最新交易日。金额是元。risk_pct、unilateral_risk_pct、nav_return_pct 是百分点（11.86 表示 11.86%）。daily_pnl 是当日盈亏（权益差减去出入金）。holding_pnl 是当日浮动变动，不是结算单持仓浮动水平。合计用返回的 total，不要把各行 risk_pct 做简单平均。q 可按产品、期货公司、账号、PM 筛选。group 取 none（默认）、fund、company、pm。不读 MOM 母基金表。",
+    description: "单账户总览表，和页面「单账户每日风控 → 单账户总览」同一张表。每个资金账号一行，取最新交易日。trade_date 是该行数据日期，分组时取组内最晚一天。金额是元。risk_pct、unilateral_risk_pct、nav_return_pct 是百分点（11.86 表示 11.86%）。daily_pnl 是当日盈亏（权益差减去出入金）。holding_pnl 是当日浮动变动，不是结算单持仓浮动水平。合计用返回的 total，不要把各行 risk_pct 做简单平均。q 可按产品、期货公司、账号、PM 筛选。group 取 none（默认）、fund、company、pm。不读 MOM 母基金表。",
     inputSchema: obj({
       q: { type: "string", description: "产品名、期货公司、资金账号或 PM" },
       group: { type: "string", description: "none（默认，逐账号）、fund、company、pm" },

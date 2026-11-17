@@ -7,11 +7,14 @@ import {
   AUTO_WEEKLY_TEMPLATE_ID,
   AUTO_WEEKLY_TEMPLATE_NAME,
   AUTO_WEEKLY_TEMPLATE_OPTIONS,
+  WEEKLY_DISPLAY_TEMPLATE_OPTIONS,
   autoWeeklyTemplateShortLabel,
   isAutoWeeklyTemplateId,
+  isWeeklyDisplayTemplateId,
   officialMonthlyTemplateShortLabel,
   officialReportTemplateShortLabel,
   resolveAutoWeeklyTemplate,
+  resolveWeeklyDisplayTemplate,
 } from "@/lib/ma/auto-weekly-templates"
 
 describe("resolveAutoWeeklyTemplate", () => {
@@ -27,24 +30,44 @@ describe("resolveAutoWeeklyTemplate", () => {
   it("resolves the holdings-pie weekly template", () => {
     const resolved = resolveAutoWeeklyTemplate("weekly-track-holdings")
     assert.equal(resolved.id, "weekly-track-holdings")
-    assert.equal(resolved.name, "跟踪产品（持仓版）")
+    assert.equal(resolved.name, "跟踪产品（持仓版s）")
+    assert.equal(resolved.shortName, "持仓版s")
     assert.equal(resolved.variant, "holdings")
+  })
+
+  it("includes 持仓版l in the night job and the display switch", () => {
+    const resolved = resolveAutoWeeklyTemplate("weekly-track-longview")
+    assert.equal(resolved.id, "weekly-track-longview")
+    assert.equal(resolved.variant, "longview")
+    const shown = resolveWeeklyDisplayTemplate("weekly-track-longview")
+    assert.equal(shown.id, "weekly-track-longview")
+    assert.equal(shown.name, "跟踪产品（持仓版l）")
+    assert.equal(shown.shortName, "持仓版l")
+    assert.equal(isWeeklyDisplayTemplateId("weekly-track-longview"), true)
+    assert.deepEqual(
+      WEEKLY_DISPLAY_TEMPLATE_OPTIONS.map((item) => item.shortName),
+      ["超额版", "持仓版s", "持仓版l"],
+    )
   })
 
   it("lists only templates the auto scheduler can generate", () => {
     assert.deepEqual(
       AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item) => item.id),
-      ["weekly-track-curve", "weekly-track-holdings"],
+      ["weekly-track-curve", "weekly-track-holdings", "weekly-track-longview"],
     )
     assert.equal(isAutoWeeklyTemplateId("weekly-track-curve"), true)
     assert.equal(isAutoWeeklyTemplateId("weekly-track-holdings"), true)
+    assert.equal(isAutoWeeklyTemplateId("weekly-track-longview"), true)
     assert.equal(isAutoWeeklyTemplateId("weekly-track-general"), false)
   })
 
   it("maps legacy weekly names to short labels and leaves monthly titles alone", () => {
     assert.equal(autoWeeklyTemplateShortLabel("weekly-track-curve", "跟踪产品（通用曲线版）"), "超额版")
     assert.equal(autoWeeklyTemplateShortLabel(undefined, "跟踪产品（通用曲线版）"), "超额版")
-    assert.equal(autoWeeklyTemplateShortLabel("weekly-track-holdings", "跟踪产品（持仓饼图版）"), "持仓版")
+    assert.equal(autoWeeklyTemplateShortLabel("weekly-track-holdings", "跟踪产品（持仓饼图版）"), "持仓版s")
+    assert.equal(autoWeeklyTemplateShortLabel(undefined, "跟踪产品（持仓版）"), "持仓版s")
+    assert.equal(autoWeeklyTemplateShortLabel("weekly-track-longview", "跟踪产品（长观点版）"), "持仓版l")
+    assert.equal(autoWeeklyTemplateShortLabel(undefined, "长观点版"), "持仓版l")
     assert.equal(autoWeeklyTemplateShortLabel(undefined, "跟踪产品（通用曲线版）月报"), "跟踪产品（通用曲线版）月报")
     assert.equal(autoWeeklyTemplateShortLabel("monthly-track-curve", "跟踪产品（通用曲线版）"), "跟踪产品（通用曲线版）")
   })
@@ -57,11 +80,15 @@ describe("official monthly short labels", () => {
     assert.equal(officialMonthlyTemplateShortLabel("monthly-review", "跟踪产品（月度回顾版）"), "马年版")
     assert.equal(officialMonthlyTemplateShortLabel("monthly-pe-official", "私募基金月报-官方"), "低中高波三产品版")
     assert.equal(officialMonthlyTemplateShortLabel("monthly-fund-official", "单产品投资月报"), "表格版")
-    assert.equal(officialMonthlyTemplateShortLabel("monthly-track-holdings", "跟踪产品（持仓版）"), "持仓版")
+    assert.equal(officialMonthlyTemplateShortLabel("monthly-track-holdings", "跟踪产品（持仓版）"), "持仓版s")
+    assert.equal(officialMonthlyTemplateShortLabel("monthly-track-longview", "跟踪产品（长观点版）"), "持仓版l")
     assert.equal(officialMonthlyTemplateShortLabel(undefined, "跟踪产品（通用曲线版）月报"), "超额版")
     assert.equal(officialMonthlyTemplateShortLabel("weekly-track-curve", "跟踪产品（通用曲线版）"), null)
+    assert.equal(officialMonthlyTemplateShortLabel(undefined, "跟踪产品（长观点版）"), null)
     assert.equal(officialReportTemplateShortLabel("monthly-track-curve", "跟踪产品（通用曲线版）"), "超额版")
     assert.equal(officialReportTemplateShortLabel("weekly-track-curve", "跟踪产品（通用曲线版）"), "超额版")
-    assert.equal(officialReportTemplateShortLabel("weekly-track-holdings", "跟踪产品（持仓饼图版）"), "持仓版")
+    assert.equal(officialReportTemplateShortLabel("weekly-track-holdings", "跟踪产品（持仓饼图版）"), "持仓版s")
+    assert.equal(officialReportTemplateShortLabel("weekly-track-longview", "跟踪产品（长观点版）"), "持仓版l")
+    assert.equal(officialReportTemplateShortLabel("monthly-track-longview", "跟踪产品（长观点版）"), "持仓版l")
   })
 })

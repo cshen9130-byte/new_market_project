@@ -50,7 +50,17 @@ const NAV_FREQUENCY_OPTIONS = [
 
 type NavFrequency = (typeof NAV_FREQUENCY_OPTIONS)[number]["value"]
 
-export type FofWeeklyTemplateVariant = "curve" | "holdings"
+export type FofWeeklyTemplateVariant = "curve" | "holdings" | "longview"
+
+const MANAGER_VIEW_LIMIT: Record<FofWeeklyTemplateVariant, number> = {
+  curve: 0,
+  holdings: 800,
+  longview: 2400,
+}
+
+function variantUsesManagerView(variant: FofWeeklyTemplateVariant): boolean {
+  return variant === "holdings" || variant === "longview"
+}
 export type FofWeeklyReportKind = "weekly" | "holding" | "monthly"
 
 const REPORT_KIND_UI: Record<FofWeeklyReportKind, {
@@ -110,9 +120,15 @@ const WEEKLY_TEMPLATE_META: Record<FofWeeklyTemplateVariant, {
   },
   holdings: {
     id: "weekly-track-holdings",
-    name: "跟踪产品（持仓版）",
-    title: "跟踪产品（持仓版）",
+    name: "跟踪产品（持仓版s）",
+    title: "跟踪产品（持仓版s）",
     subtitle: "无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图",
+  },
+  longview: {
+    id: "weekly-track-longview",
+    name: "跟踪产品（持仓版l）",
+    title: "跟踪产品（持仓版l）",
+    subtitle: "无基准曲线。基金经理观点可写长文，指标与持仓饼图并排，净值曲线放大，观点放在页面下方",
   },
 }
 
@@ -121,11 +137,19 @@ function templateMetaFor(
   reportKind: FofWeeklyReportKind,
 ): { id: string; name: string; title: string; subtitle: string } {
   if (reportKind === "monthly") {
+    if (variant === "longview") {
+      return {
+        id: "monthly-track-longview",
+        name: "跟踪产品（持仓版l）",
+        title: "跟踪产品（持仓版l）",
+        subtitle: "选择产品与报告月。基金经理观点可写长文，指标与持仓饼图并排，净值曲线放大，观点放在页面下方",
+      }
+    }
     return variant === "holdings"
       ? {
           id: "monthly-track-holdings",
-          name: "跟踪产品（持仓版）",
-          title: "跟踪产品（持仓版）",
+          name: "跟踪产品（持仓版s）",
+          title: "跟踪产品（持仓版s）",
           subtitle: "选择产品与报告月，无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图",
         }
       : {
@@ -134,6 +158,30 @@ function templateMetaFor(
           title: "跟踪产品（超额版）",
           subtitle: "选择产品与报告月，生成 FOF 产品月报",
         }
+  }
+  if (reportKind === "holding") {
+    if (variant === "longview") {
+      return {
+        id: "weekly-track-longview",
+        name: "跟踪产品（持仓版l）",
+        title: "跟踪产品（持仓版l）",
+        subtitle: "选择持有期起始日期。基金经理观点可写长文，指标与持仓饼图并排，净值曲线放大，观点放在页面下方",
+      }
+    }
+    if (variant === "holdings") {
+      return {
+        id: "weekly-track-holdings",
+        name: "跟踪产品（持仓版s）",
+        title: "跟踪产品（持仓版s）",
+        subtitle: "选择持有期起始日期，无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图",
+      }
+    }
+    return {
+      id: "weekly-track-curve",
+      name: "跟踪产品（超额版）",
+      title: "跟踪产品（超额版）",
+      subtitle: "选择产品与持有期起始日期，生成持有期报告",
+    }
   }
   return WEEKLY_TEMPLATE_META[variant]
 }
@@ -682,7 +730,7 @@ export function FofWeeklyReportDialog({
     setWeekEnd(preset.week_end)
     setBenchmarkKey(preset.benchmark_key)
     setNavFrequency(preset.nav_frequency ?? "weekly")
-    setManagerView(preset.manager_view ?? "")
+    setManagerView((preset.manager_view ?? "").slice(0, MANAGER_VIEW_LIMIT[variant]))
     setSelectedPresetName(preset.name)
     setResult(null)
     setError(null)
@@ -714,7 +762,7 @@ export function FofWeeklyReportDialog({
       week_end: weekEnd,
       benchmark_key: benchmarkKey,
       nav_frequency: navFrequency,
-      manager_view: variant === "holdings" ? managerView.trim() : "",
+      manager_view: variantUsesManagerView(variant) ? managerView.trim().slice(0, MANAGER_VIEW_LIMIT[variant]) : "",
       savedAt: new Date().toISOString(),
     }
     try {
@@ -937,7 +985,7 @@ export function FofWeeklyReportDialog({
           product_tagline: taglineFromVolBand(volBand),
           report_variant: variant,
           report_kind: reportKind,
-          ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
+          ...(variantUsesManagerView(variant) ? { manager_view: managerView.trim().slice(0, MANAGER_VIEW_LIMIT[variant]) } : {}),
         }),
       })
       const json = await readJsonSafe(resp)
@@ -963,7 +1011,7 @@ export function FofWeeklyReportDialog({
             week_begin: weekBegin,
             week_end: weekEnd,
             report_kind: reportKind,
-            ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
+            ...(variantUsesManagerView(variant) ? { manager_view: managerView.trim().slice(0, MANAGER_VIEW_LIMIT[variant]) } : {}),
           },
         })
         onSaved?.()
@@ -986,7 +1034,7 @@ export function FofWeeklyReportDialog({
           week_begin: weekBegin,
           week_end: weekEnd,
           report_kind: reportKind,
-          ...(variant === "holdings" ? { manager_view: managerView.trim() } : {}),
+          ...(variantUsesManagerView(variant) ? { manager_view: managerView.trim().slice(0, MANAGER_VIEW_LIMIT[variant]) } : {}),
         },
       })
       onSaved?.()
@@ -1025,11 +1073,7 @@ export function FofWeeklyReportDialog({
             <div>
               <DialogTitle className="text-base font-semibold">{templateMeta.title}</DialogTitle>
               <p className="mt-0.5 text-xs text-zinc-400">
-                {reportKind === "holding"
-                  ? (variant === "holdings"
-                    ? "选择持有期起始日期，无基准曲线，可填写基金经理观点，右下角为产品二级策略持仓饼图"
-                    : "选择产品与持有期起始日期，生成持有期报告")
-                  : templateMeta.subtitle}
+                {templateMeta.subtitle}
               </p>
             </div>
           </div>
@@ -1144,7 +1188,7 @@ export function FofWeeklyReportDialog({
               </p>
             </div>
 
-            {variant !== "holdings" && (
+            {variant === "curve" && (
               <div>
                 <label className="mb-1.5 block text-sm font-medium">
                   <span className="text-red-500">*</span> 基准指数
@@ -1212,27 +1256,35 @@ export function FofWeeklyReportDialog({
               </p>
             </div>
 
-            {variant === "holdings" && (
+            {variantUsesManagerView(variant) && (
               <div className="sm:col-span-2">
                 <label className="mb-1.5 block text-sm font-medium">基金经理观点</label>
                 <textarea
                   value={managerView}
                   onChange={(e) => {
-                    setManagerView(e.target.value.slice(0, 800))
+                    setManagerView(e.target.value.slice(0, MANAGER_VIEW_LIMIT[variant]))
                     setResult(null)
                   }}
-                  rows={8}
+                  rows={variant === "longview" ? 14 : 8}
                   placeholder={
-                    reportKind === "monthly"
-                      ? "写入本月要点，替换原来的市场环境。留空则显示「本月暂无」。"
-                      : reportKind === "holding"
-                        ? "写入持有期要点，替换原来的市场环境。留空则显示「持有期暂无」。"
-                        : "写入本周要点，替换原来的市场环境。留空则显示「本周暂无」。"
+                    variant === "longview"
+                      ? (reportKind === "monthly"
+                        ? "可写长文。12字以内单独成行是红色小节，例如「市场展望与投资策略」。「名称：正文」会自动编成 1. 2. 3.，写成 1、 （1） 或 - 也可以。更长的一行标题会带上下面的名称分点。编号和名称都是红色。留空则显示「本月暂无」。"
+                        : reportKind === "holding"
+                          ? "可写长文。12字以内单独成行是红色小节，例如「市场展望与投资策略」。「名称：正文」会自动编成 1. 2. 3.，写成 1、 （1） 或 - 也可以。更长的一行标题会带上下面的名称分点。编号和名称都是红色。留空则显示「持有期暂无」。"
+                          : "可写长文。12字以内单独成行是红色小节，例如「上周主要市场概述」。「名称：正文」会自动编成 1. 2. 3.，写成 1、 （1） 或 - 也可以。更长的一行标题会带上下面的名称分点。编号和名称都是红色。留空则显示「本周暂无」。")
+                      : (reportKind === "monthly"
+                        ? "写入本月要点，替换原来的市场环境。留空则显示「本月暂无」。"
+                        : reportKind === "holding"
+                          ? "写入持有期要点，替换原来的市场环境。留空则显示「持有期暂无」。"
+                          : "写入本周要点，替换原来的市场环境。留空则显示「本周暂无」。")
                   }
-                  className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
                 />
                 <p className="mt-1.5 text-xs text-zinc-400">
-                  {managerView.length}/800。持仓饼图取产品估值表里的二级策略，按持仓市值汇总，与产品页饼图一致。
+                  {managerView.length}/{MANAGER_VIEW_LIMIT[variant]}。
+                  {variant === "longview" ? "篇幅变长时报告页会加高。" : ""}
+                  持仓饼图取产品估值表里的二级策略，按持仓市值汇总，与产品页饼图一致。
                 </p>
               </div>
             )}

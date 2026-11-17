@@ -101,6 +101,7 @@ mom_data/
 # Sensitive credential files
 emailpass.txt
 fof99_api/api_key.txt
+fof99_api/zjf_api_key.txt
 
 # Downloaded settlement xlsx files — only at repo root (one-off download scripts)
 /*.xlsx

@@ -30,14 +30,29 @@ const HOLDING_PERIOD_HOLDINGS_EXAMPLE = path.join(
   "低波稳健FOF 1号持有期报告_持仓饼图版_范例.png",
 )
 
+const WEEKLY_LONGVIEW_EXAMPLE = path.join(
+  process.cwd(),
+  "haitai_week_report",
+  "低波稳健FOF 1号周报_持仓版l_范例.png",
+)
+
+const HOLDING_PERIOD_LONGVIEW_EXAMPLE = path.join(
+  process.cwd(),
+  "haitai_week_report",
+  "低波稳健FOF 1号持有期报告_持仓版l_范例.png",
+)
+
 function resolveExamplePath(req: Request): string {
   const params = new URL(req.url).searchParams
   const variant = (params.get("variant") || "").trim().toLowerCase()
   const kind = (params.get("kind") || params.get("report_kind") || "").trim().toLowerCase()
+  const isLongview = variant === "longview"
   const isHoldings = variant === "holdings"
   const isHoldingPeriod = kind === "holding"
+  if (isHoldingPeriod && isLongview) return HOLDING_PERIOD_LONGVIEW_EXAMPLE
   if (isHoldingPeriod && isHoldings) return HOLDING_PERIOD_HOLDINGS_EXAMPLE
   if (isHoldingPeriod) return HOLDING_PERIOD_CURVE_EXAMPLE
+  if (isLongview) return WEEKLY_LONGVIEW_EXAMPLE
   if (isHoldings) return WEEKLY_HOLDINGS_EXAMPLE
   return WEEKLY_CURVE_EXAMPLE
 }

@@ -187,7 +187,7 @@ function catalog() {
 }
 
 const OVERVIEW_NOTE =
-  "与页面「单账户每日风控 → 单账户总览」同一张表，每个资金账号只取最新一个已导入交易日。金额单位是元。risk_pct 和 unilateral_risk_pct 是百分点，11.86 表示 11.86%。daily_pnl 是客户权益差减去出入金。holding_pnl = daily_pnl − closed_pnl，是当日浮动变动，不是结算单上的持仓浮动水平。合计的 risk_pct = 保证金合计 / 动态权益合计，unilateral_risk_pct 按动态权益加权。nav 是复权净值，从 1 起，与净值曲线相同。这是单账户监控中心，不是 MOM 母基金。"
+  "与页面「单账户每日风控 → 单账户总览」同一张表，每个资金账号只取最新一个已导入交易日。trade_date 是该行金额对应的数据日期；分组时取组内最晚一天。金额单位是元。risk_pct 和 unilateral_risk_pct 是百分点，11.86 表示 11.86%。daily_pnl 是客户权益差减去出入金。holding_pnl = daily_pnl − closed_pnl，是当日浮动变动，不是结算单上的持仓浮动水平。合计的 risk_pct = 保证金合计 / 动态权益合计，unilateral_risk_pct 按动态权益加权。nav 是复权净值，从 1 起，与净值曲线相同。这是单账户监控中心，不是 MOM 母基金。"
 
 function overviewGroup(raw: string | undefined): AccountOverviewGroup | null {
   const text = (raw ?? "").trim().toLowerCase()

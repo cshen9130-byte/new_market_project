@@ -57,6 +57,7 @@ const PF_TAB_LABELS: Record<string, string> = {
 
 const PF_SIDE_LABELS: Record<string, string> = {
   "stock-market": "股票市场",
+  "strategy-environment": "策略环境",
   "futures-style": "期货风格因子",
   "equity-style": "股票风格因子",
   "strategy-observation": "策略观察",

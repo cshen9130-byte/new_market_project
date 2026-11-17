@@ -178,7 +178,7 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     name: "kb_search",
     area: "knowledge",
     description:
-      "检索 AI 知识库，只返回命中片段、相关度、文件路径和页码，不生成回答。人名或路演问题会按路径把对应笔记排到前面。片段里没有答案、且 suggest_full_read 为 true 时，再用 kb_read 读该文件。",
+      "检索 AI 知识库，只返回命中片段、相关度、文件路径和页码，不生成回答。人名或路演问题会按路径把对应笔记排到前面。片段里没有答案、且 suggest_full_read 为 true 时，再用 kb_read 读该文件。用户点名网站「投资笔记」页面时，用 investment_note_search，不要只用本工具。",
     inputSchema: obj({
       question: { type: "string", description: "检索问题。例：左广东看多的品种都有哪些？" },
       folder_path: { type: "string", description: "限定文件夹。空为全库" },
@@ -198,6 +198,16 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
       model: { type: "string", description: "plus（默认）、turbo 或 max。抽取事实用 plus，不要用 turbo" },
       debug: { type: "boolean", description: "为 true 时额外返回 passages：检索片段、分数、路径和页码" },
     }, ["question"]),
+  },
+  {
+    name: "investment_note_search",
+    area: "knowledge",
+    description:
+      "搜索网站「投资分析 → 投资笔记」里的笔记，按标题和正文匹配。这是笔记页面本身，不是 AI 知识库文件夹。用户说「投资笔记」时用这个工具。返回 url 可打开该笔记，text 是正文。知识库里的同步稿仍用 kb_search。需要 AI 知识库权限。",
+    inputSchema: obj({
+      q: { type: "string", description: "搜索词，匹配标题、正文、标签和关联产品。例：量衍" },
+      limit: { type: "integer", description: "最多返回条数，默认 8，最大 20" },
+    }, ["q"]),
   },
   {
     name: "external_rank_compare",
@@ -231,7 +241,7 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     name: "fund_compare",
     area: "tracking",
     description:
-      "投资分析「基金对比」的分析表。传入至少两只基金的名称或备案号。默认近一年、对齐起点、基准沪深300（IF）。period_return_pct 等是百分点，1.28 表示 1.28%；夏普、卡玛、索提诺是比率。intervals 是页面上另一张固定窗口表，不是所选区间。页面保存的对比组在浏览器本地，不能按组名打开。需要投资页权限。不要用 ai_researcher_compare 代替这张表。",
+      "投资分析「基金对比」。传入至少两只基金的名称或备案号。返回分析表，并在网站上建好同一组基金。url 是可打开的对比页，打开后页面会执行对比。回答末尾给出 url，不要另造地址。默认近一年、对齐起点、基准沪深300（IF）。period_return_pct 等是百分点，1.28 表示 1.28%；夏普、卡玛、索提诺是比率。intervals 是另一张固定窗口表，不是所选区间。需要投资页权限。不要用 ai_researcher_compare 代替。",
     inputSchema: obj({
       subjects: { type: "string", description: "产品名或备案号，逗号分隔，2 到 8 只" },
       period: { type: "string", description: "近一年（默认）、近一月、近三月、近六月、今年以来、成立以来、近两年、近三年，或某年如 2025年" },

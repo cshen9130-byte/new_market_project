@@ -38,7 +38,7 @@ import {
   type AccountTheme,
   type AccountWeeklyReportTemplate,
 } from "@/lib/ma/account-dashboard"
-import { AUTO_WEEKLY_TEMPLATE_OPTIONS } from "@/lib/ma/auto-weekly-templates"
+import { WEEKLY_DISPLAY_TEMPLATE_OPTIONS } from "@/lib/ma/auto-weekly-templates"
 import { cn } from "@/lib/utils"
 
 type SaveState = "idle" | "saving" | "saved" | "error"
@@ -60,7 +60,7 @@ const LANDING_OPTIONS: Array<{ id: AccountLanding; label: string }> = [
 ]
 
 const WEEKLY_REPORT_TEMPLATE_OPTIONS: Array<{ id: AccountWeeklyReportTemplate; label: string }> =
-  AUTO_WEEKLY_TEMPLATE_OPTIONS.map((item) => ({ id: item.id, label: item.shortName }))
+  WEEKLY_DISPLAY_TEMPLATE_OPTIONS.map((item) => ({ id: item.id, label: item.shortName }))
 
 const COLUMN_OPTIONS: AccountBoardColumns[] = [1, 2, 3, 4]
 

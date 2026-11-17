@@ -83,11 +83,12 @@ OAuth 发现地址（通常不必手填）：
 | `ma-tracking-managed.zip` | 跟踪池与在管产品 | MA 基金数据（需相应页面权限） |
 | `ma-ai-researcher.zip` | AI 研究员对比、相似/相反、路演扫描等 | MA 基金数据（需 AI 研究员权限） |
 | `ma-kb-qa.zip` | 知识库问答与原文核验 | MA 基金数据（需 AI 知识库权限） |
+| `ma-investment-notes.zip` | 网站投资笔记：按标题和正文搜索并打开笔记页 | MA 基金数据（需 AI 知识库权限） |
 | `ma-mom-accounts.zip` | MOM 账户、持仓、核算与风险指标 | MA MOM数据（需开通 MOM数据API） |
 | `ma-mom-underlying.zip` | MOM底层：产品与对比账户、单账户的关联表 | MA MOM数据（需开通 MOM数据API） |
 | `ma-mom-var.zip` | MOM 持仓 VaR、贡献占比、次日预测与历史走势 | MA MOM数据（需开通 MOM数据API） |
 | `ma-account-link.zip` | 产品与 MOM / 单账户的关联，以及账户对比收益 | MA 基金数据 |
-| `ma-fund-compare.zip` | 基金对比：区间收益、年化、波动、夏普、回撤 | MA 基金数据（需投资页权限） |
+| `ma-fund-compare.zip` | 基金对比：区间收益、年化、波动、夏普、回撤，并给出网站对比页链接 | MA 基金数据（需投资页权限） |
 | `ma-account-overview.zip` | 单账户总览：权益、当日盈亏、保证金、风险度 | MA MOM数据（需开通 MOM数据API） |
 | `ma-investment-review.zip` | FOF底层、周度回顾和外部业绩榜，并生成周报 Excel | MA 基金数据（需投资页或投资池权限） |
 
@@ -135,7 +136,7 @@ pe-fund-researcher/
 | 跟踪池、基金对比、周度回顾、外部业绩榜 | 可进入投资页 | 工具不出现在 tools/list，直接调用被拒绝 |
 | 在管产品、FOF底层 | 投资池权限 | 同上 |
 | AI 研究员 | AI 研究员权限 | 同上 |
-| 知识库问答 | AI 知识库权限 | 同上 |
+| 知识库问答、网站投资笔记 | AI 知识库权限 | 同上 |
 | MOM 账户 / 持仓 / 指标 | 开通「MOM数据API」 | 连接或调用返回 403 |
 | 单账户总览 | 开通「MOM数据API」 | 连接或调用返回 403 |
 | MOM底层关联表 | 开通「MOM数据API」 | 连接或调用返回 403 |

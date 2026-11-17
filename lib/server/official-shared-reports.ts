@@ -299,8 +299,14 @@ export function tryRegisterHoldingOfficialReport(
   result: { reportId: string; reportTitle: string; weekStart: string; weekEnd: string },
 ): OfficialSharedRecord | null {
   if ((input.report_kind || "weekly") !== "holding") return null
-  const variant = input.report_variant === "holdings" ? "holdings" : "curve"
-  const template = resolveAutoWeeklyTemplate(variant === "holdings" ? "weekly-track-holdings" : "weekly-track-curve")
+  const variant = input.report_variant === "longview"
+    ? "longview"
+    : input.report_variant === "holdings"
+      ? "holdings"
+      : "curve"
+  const template = variant === "longview"
+    ? { id: "weekly-track-longview", name: "跟踪产品（持仓版l）" }
+    : resolveAutoWeeklyTemplate(variant === "holdings" ? "weekly-track-holdings" : "weekly-track-curve")
   const tmpDir = fofWeeklyTmpDir(reportId)
   const owner = readOfficialReportOwnerHint(tmpDir)
   return tryRegisterOfficialSharedReport({

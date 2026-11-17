@@ -95,11 +95,11 @@ Goal: each Friday after the last stored NAV, so the list and product page stay o
 
 9. **Do not write vendor history we already have.** `ON CONFLICT (beian_hao, price_date) DO NOTHING` (or skip before the call). Do not touch `mom_*` or 单账户 tables.
 
-## Friday afternoon (previous Friday, cheaper)
+## Thursday run (previous Friday, cheaper)
 
-On Friday afternoon 火富牛 usually still shows **last** Friday, not today. Do **not** FundMultiPrice this Friday then.
+On Thursday afternoon the latest published 火富牛 week is still **last** Friday. Do **not** FundMultiPrice the Friday that has not happened yet.
 
-The PM2 background worker runs this **every Friday 16:00 Asia/Shanghai**. It still runs if **this** Friday is a CN holiday (so last week can be fetched). A holiday Friday is never requested. The job uses the last open day of that week, and a NAV already stored on any open day of the week counts. Example: 2026-10-02 → 2026-09-30 (09-28 and 09-29 also count); 2026-09-25 → 2026-09-24. It skips only when that whole Monday–Friday has no trading day. If the preferred day comes back empty, it tries the previous open day in the same week. Set `FOF99_FRIDAY_ETL_DISABLED=1` to pause. Manual:
+The PM2 background worker runs this **every Thursday 16:00 Asia/Shanghai**. It still runs if **this** Thursday is a CN holiday (so last week can be fetched). A holiday Friday is never requested. The job uses the last open day of that week, and a NAV already stored on any open day of the week counts. Example: 2026-10-02 → 2026-09-30 (09-28 and 09-29 also count); 2026-09-25 → 2026-09-24. It skips only when that whole Monday–Friday has no trading day. If the preferred day comes back empty, it tries the previous open day in the same week. Set `FOF99_FRIDAY_ETL_DISABLED=1` to pause. Manual:
 
 ```text
 python scripts/ma/fof99_friday_afternoon_fetch.py --dry-run
@@ -119,7 +119,7 @@ Previous Friday = last completed trading Friday **strictly before today** (Frida
 
 Early catch for tracking-pool products whose ops best update channel is fof99
 (~1,198). Runs **Tue-Thu 14:00 Asia/Shanghai** on the PM2 worker (distinct from
-Friday 16:00). Uses only `/fund/advancedlist` newest-first, default **2 pages =
+Thursday 16:00). Uses only `/fund/advancedlist` newest-first, default **2 pages =
 2 credits**. No FundMultiPrice, no universe maintain, no skip-revival, no
 FundPrice history.
 

@@ -23,6 +23,7 @@ author: MA
 - 只要原文片段、不要结论：`kb_search`
 - 读全文：`kb_read`（路径来自 `hits[].path` 或 citations，不要编造路径）
 - 看有哪些文件：`kb_list`
+- 用户点名网站「投资笔记」：改用 `investment_note_search`，按技能 `ma-investment-notes`。本技能的 `kb_search` 只搜知识库同步稿。
 
 ## 执行步骤
 

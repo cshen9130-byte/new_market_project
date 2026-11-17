@@ -91,6 +91,7 @@ type SortKey =
   | "companyName"
   | "accountNo"
   | "pm"
+  | "tradeDate"
   | "nav"
   | "equity"
   | "margin"
@@ -110,6 +111,11 @@ type TableRow = {
   pm: string
   accountLabel: string
   selectKey: string
+  /** Latest imported trade date behind this row. A range when a group mixes dates. */
+  tradeDate: string
+  /** ISO date used for sorting. The latest date when the label is a range. */
+  sortTradeDate: string
+  tradeDateTitle?: string
   nav: number[]
   equity: number | null
   margin: number | null
@@ -173,10 +179,24 @@ function labelMany(names: string[], unit: string): string {
   return `${unique[0]}等${unique.length}${unit}`
 }
 
+function tradeDateOf(members: OverviewRow[]): { label: string; sort: string; title?: string } {
+  const dates = [...new Set(members.map((row) => row.tradeDate).filter(Boolean))].sort()
+  if (dates.length === 0) return { label: "", sort: "" }
+  const latest = dates[dates.length - 1]
+  if (dates.length === 1) return { label: latest, sort: latest }
+  const earliest = dates[0]
+  return {
+    label: `${earliest} ~ ${latest}`,
+    sort: latest,
+    title: `组内各账户最新交易日不同，最早 ${earliest}，最晚 ${latest}`,
+  }
+}
+
 function toTableRow(members: OverviewRow[], groupBy: GroupBy, key: string): TableRow {
   const equity = sumOf(members, "equity")
   const margin = sumOf(members, "margin")
   const single = groupBy === "none" && members.length === 1 ? members[0] : null
+  const dated = tradeDateOf(members)
   return {
     key,
     fundName: groupBy === "company" || groupBy === "pm" ? labelMany(members.map((row) => row.fundName), "个") : (single ? single.fundName : key),
@@ -184,6 +204,9 @@ function toTableRow(members: OverviewRow[], groupBy: GroupBy, key: string): Tabl
     pm: groupBy === "pm" ? (key || "—") : (single ? (single.pm || "—") : labelMany(members.map((row) => row.pm || ""), "人")),
     accountLabel: single ? (single.accountNo || "—") : `${members.length}个账号`,
     selectKey: single ? (single.selectKey || single.accountNo) : "",
+    tradeDate: dated.label,
+    sortTradeDate: dated.sort,
+    tradeDateTitle: dated.title,
     nav: single?.nav ?? [],
     equity,
     margin,
@@ -216,10 +239,19 @@ function groupRows(rows: OverviewRow[], groupBy: GroupBy): TableRow[] {
 function sortValue(row: TableRow, key: SortKey): string | number | null {
   if (key === "accountNo") return row.sortAccount
   if (key === "nav") return row.sortNav
+  if (key === "tradeDate") return row.sortTradeDate
   return row[key]
 }
 
-function AccountCells({ row, onSelectAccount }: { row: TableRow; onSelectAccount?: (selectKey: string) => void }) {
+function AccountCells({
+  row,
+  onSelectAccount,
+  latestDate,
+}: {
+  row: TableRow
+  onSelectAccount?: (selectKey: string) => void
+  latestDate?: string
+}) {
   const openAccount = onSelectAccount && row.selectKey && row.accountLabel !== "—" ? onSelectAccount : null
   return (
     <>
@@ -238,6 +270,12 @@ function AccountCells({ row, onSelectAccount }: { row: TableRow; onSelectAccount
         ) : (
           row.accountLabel || "—"
         )}
+      </td>
+      <td
+        className={`whitespace-nowrap px-2 py-1.5 tabular-nums ${row.sortTradeDate && latestDate && row.sortTradeDate < latestDate ? "text-amber-600" : ""}`}
+        title={row.tradeDateTitle || (row.tradeDate ? "该行金额对应的最新已导入交易日" : undefined)}
+      >
+        {row.tradeDate || "—"}
       </td>
       <td className="whitespace-nowrap px-2 py-1.5">{row.pm || "—"}</td>
       <td className="px-2 py-1 text-center">
@@ -338,6 +376,7 @@ const COLUMNS: { key: SortKey; label: string; align: "left" | "right" | "center"
   { key: "fundName", label: "私募基金", align: "left", filter: "fundName" },
   { key: "companyName", label: "期货公司", align: "left", filter: "companyName" },
   { key: "accountNo", label: "账号", align: "left" },
+  { key: "tradeDate", label: "数据日期", align: "left", title: "该行金额对应的最新已导入交易日。早于表内最新日时标出。分组日期不同时显示区间。" },
   { key: "pm", label: "PM", align: "left", title: "投资经理缩写，按资金账号对应", filter: "pm" },
   { key: "nav", label: "净值曲线", align: "center", title: "按累计收益率排序。分组与合计不画曲线。" },
   { key: "equity", label: "动态权益", align: "right" },
@@ -490,14 +529,17 @@ export function AccountOverviewTable({ onSelectAccount }: { onSelectAccount?: (s
                     </tr>
                   ) : tableRows.map((row) => (
                     <tr key={row.key} className="border-b">
-                      <AccountCells row={row} onSelectAccount={onSelectAccount} />
+                      <AccountCells row={row} onSelectAccount={onSelectAccount} latestDate={asOf} />
                     </tr>
                   ))}
                 </tbody>
                 {totalRow && (
                   <tfoot>
                     <tr className="border-t bg-muted/40 font-medium">
-                      <AccountCells row={{ ...totalRow, fundName: "合计", companyName: "—", pm: "—", selectKey: "" }} />
+                      <AccountCells
+                        row={{ ...totalRow, fundName: "合计", companyName: "—", pm: "—", selectKey: "", tradeDate: "", sortTradeDate: "", tradeDateTitle: undefined }}
+                        latestDate={asOf}
+                      />
                     </tr>
                   </tfoot>
                 )}

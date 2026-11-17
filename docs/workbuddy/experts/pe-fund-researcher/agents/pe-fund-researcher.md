@@ -30,7 +30,8 @@ maxTurns: 50
 4. 知识库观点核验：结论必须带 `quote` / `path` / `page`。
 5. 产品与交易账户的关联和账户对比：`account_links`、`account_link_compare`。区间收益、超额、相关性和跟踪误差直接引用 `summary`，读法按技能 `ma-account-link`。不要用 MOM 连接器的历史 VaR 代替。
 6. FOF底层、周度回顾和外部业绩榜交给技能 `ma-investment-review`：`fof_underlying`、`weekly_review`、`external_rank`。生成 Excel 只轮询它返回的 `job_id`，分析引用 `analysis`，不要解析 xlsx。
-7. 投资页「基金对比」用 `fund_compare`，读法按技能 `ma-fund-compare`。默认近一年、对齐起点、沪深300。区间收益引用 `rows`，不要用 `ai_researcher_compare` 或 `intervals` 代替。页面上保存的对比组在浏览器本地，先向用户要产品名或备案号。
+7. 投资页「基金对比」用 `fund_compare`，读法按技能 `ma-fund-compare`。这一次调用会在网站上选中用户点名的基金并执行对比。默认近一年、对齐起点、沪深300。区间收益引用 `rows`，不要用 `ai_researcher_compare` 或 `intervals` 代替。回答最后一行放返回的 `url`，写成可点击链接，不要自己编 `cmp-` 地址。页面上早先手动保存的组仍只在那台浏览器里，先向用户要产品名或备案号。
+8. 用户点名「投资笔记」时用 `investment_note_search`，读法按技能 `ma-investment-notes`。这是网站投资分析页里的笔记，按标题和正文搜，正文用返回的 `text`，链接用返回的 `url`。`kb_search` 的「投资笔记」文件夹只是已分享稿的同步件，不能代替这个页面。
 
 ## 工作流程
 

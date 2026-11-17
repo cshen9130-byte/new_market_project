@@ -1,12 +1,12 @@
 import { normalizeAccountShortcuts, type AccountShortcut } from "./account-shortcuts"
-import { isAutoWeeklyTemplateId, type AutoWeeklyTemplateId } from "./auto-weekly-templates"
+import { isWeeklyDisplayTemplateId, type WeeklyDisplayTemplateId } from "./auto-weekly-templates"
 
 export const ACCOUNT_PROFILE_EVENT = "ma-account-profile"
 
 export type AccountTheme = "system" | "light" | "dark"
 export type AccountDensity = "comfortable" | "compact"
 export type AccountLanding = "overview" | "account"
-export type AccountWeeklyReportTemplate = AutoWeeklyTemplateId
+export type AccountWeeklyReportTemplate = WeeklyDisplayTemplateId
 export type AccountDashboardIdentity = {
   name?: string | null
   email?: string | null
@@ -1385,10 +1385,9 @@ export function normalizeAccountDashboardPrefs(
       })
   const projected = projectBoard(holders)
   const shortcuts = normalizeAccountShortcuts(obj.shortcuts)
-  const weeklyReportTemplate: AccountWeeklyReportTemplate = isAutoWeeklyTemplateId(
-    typeof obj.weeklyReportTemplate === "string" ? obj.weeklyReportTemplate : null,
-  )
-    ? obj.weeklyReportTemplate
+  const rawWeeklyTemplate = typeof obj.weeklyReportTemplate === "string" ? obj.weeklyReportTemplate : null
+  const weeklyReportTemplate: AccountWeeklyReportTemplate = isWeeklyDisplayTemplateId(rawWeeklyTemplate)
+    ? rawWeeklyTemplate
     : defaultWeeklyReportTemplate(identity)
   return { title, theme, density, landing, columns, charts: projected.charts, layout: projected.layout, holders, shortcuts, weeklyReportTemplate }
 }

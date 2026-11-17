@@ -12,12 +12,14 @@ const EXAMPLE_FILES: Record<string, string> = {
   // Hook for 新建报告 产品月报 · 持仓版:
   // /ma/api/reports/fof-monthly/example?variant=holdings&kind=monthly
   holdings: "低波稳健FOF 1号月报_持仓饼图版_20260626.png",
+  longview: "低波稳健FOF 1号月报_持仓版l_范例.png",
 }
 
 function resolveLayout(req: Request): keyof typeof EXAMPLE_FILES {
   const { searchParams } = new URL(req.url)
   const variant = (searchParams.get("variant") || "").trim().toLowerCase()
   const layout = (searchParams.get("layout") || "").trim().toLowerCase()
+  if (variant === "longview" || layout === "longview") return "longview"
   if (variant === "holdings" || layout === "holdings") return "holdings"
   if (layout === "curve") return "curve"
   return "review"

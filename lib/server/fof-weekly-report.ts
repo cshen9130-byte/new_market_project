@@ -68,7 +68,7 @@ export const FOF_WEEKLY_NAV_FREQUENCY_OPTIONS: Array<{ value: FofWeeklyNavFreque
   { value: "monthly", label: "月频" },
 ]
 
-export type FofWeeklyReportVariant = "curve" | "holdings"
+export type FofWeeklyReportVariant = "curve" | "holdings" | "longview"
 export type FofWeeklyReportKind = "weekly" | "holding" | "monthly"
 
 
@@ -86,7 +86,7 @@ export type FofWeeklyReportRequest = {
   product_tagline?: string
   benchmark_key?: string
   nav_frequency?: FofWeeklyNavFrequency
-  /** curve = 超额版. holdings = 持仓版. */
+  /** curve = 超额版. holdings = 持仓版. longview = 长观点版. */
   report_variant?: FofWeeklyReportVariant
   /** weekly = 产品周报 (default). holding = 持有期报告. monthly = 产品月报. */
   report_kind?: FofWeeklyReportKind
@@ -113,7 +113,9 @@ function normalizeNavFrequency(value: string | undefined): FofWeeklyNavFrequency
 }
 
 function normalizeReportVariant(value: string | undefined): FofWeeklyReportVariant {
-  return (value ?? "").trim().toLowerCase() === "holdings" ? "holdings" : "curve"
+  const variant = (value ?? "").trim().toLowerCase()
+  if (variant === "holdings" || variant === "longview") return variant
+  return "curve"
 }
 
 function normalizeReportKind(value: string | undefined): FofWeeklyReportKind {
@@ -122,8 +124,12 @@ function normalizeReportKind(value: string | undefined): FofWeeklyReportKind {
   return "weekly"
 }
 
-function clipManagerView(value: string | undefined): string {
-  return (value ?? "").replace(/\u0000/g, "").trim().slice(0, 800)
+function managerViewLimit(variant: FofWeeklyReportVariant): number {
+  return variant === "longview" ? 2400 : 800
+}
+
+function clipManagerView(value: string | undefined, variant: FofWeeklyReportVariant): string {
+  return (value ?? "").replace(/\u0000/g, "").trim().slice(0, managerViewLimit(variant))
 }
 
 type PieHolding = {
@@ -1177,8 +1183,9 @@ export async function generateFofWeeklyReport(
     input.product_tagline,
   )
   const reportVariant = normalizeReportVariant(input.report_variant)
+  const usesManagerView = reportVariant === "holdings" || reportVariant === "longview"
   let variantFile: string | null = null
-  if (reportVariant === "holdings") {
+  if (usesManagerView) {
     let slices: FofWeeklyStrategySlice[] = []
     let valuationDate: string | null = null
     if (beian_hao) {
@@ -1195,7 +1202,7 @@ export async function generateFofWeeklyReport(
     await writeFile(
       variantFile,
       JSON.stringify({
-        manager_view: clipManagerView(input.manager_view),
+        manager_view: clipManagerView(input.manager_view, reportVariant),
         valuation_date: valuationDate,
         slices,
       }),
@@ -1236,13 +1243,13 @@ export async function generateFofWeeklyReport(
     navFrequency,
     "--report-kind",
     reportKind,
-    // Holdings (incl. monthly) must stay on the portrait pie layout, not monthly review.
-    ...(reportVariant === "holdings" || reportKind === "monthly"
+    // Holdings and long-view (incl. monthly) stay on the portrait pie layout, not monthly review.
+    ...(usesManagerView || reportKind === "monthly"
       ? ["--report-layout", "curve"]
       : []),
     ...(productInception ? ["--inception-date", productInception] : []),
-    ...(reportVariant === "holdings" && variantFile
-      ? ["--report-variant", "holdings", "--variant-file", variantFile]
+    ...(usesManagerView && variantFile
+      ? ["--report-variant", reportVariant, "--variant-file", variantFile]
       : []),
   ]
 

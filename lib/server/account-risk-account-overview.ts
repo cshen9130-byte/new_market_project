@@ -252,6 +252,14 @@ function matchesQuery(row: AccountOverviewRow, q: string): boolean {
   return hay.includes(q)
 }
 
+function latestTradeDate(members: AccountOverviewRow[]): string | null {
+  let max = ""
+  for (const row of members) {
+    if (row.tradeDate > max) max = row.tradeDate
+  }
+  return max || null
+}
+
 function toApiRow(members: AccountOverviewRow[], group: AccountOverviewGroup, key: string): AccountOverviewApiRow {
   const equity = sumOf(members, "equity")
   const margin = sumOf(members, "margin")
@@ -266,7 +274,7 @@ function toApiRow(members: AccountOverviewRow[], group: AccountOverviewGroup, ke
       : (single ? single.companyName : key),
     account: single ? single.accountNo : `${members.length}个账号`,
     pm: group === "pm" ? key : (single ? single.pm : labelMany(members.map((row) => row.pm), "人")),
-    trade_date: single?.tradeDate ?? null,
+    trade_date: latestTradeDate(members),
     account_count: members.length,
     nav,
     latest_nav: nav.length ? round2(nav[nav.length - 1]) : null,

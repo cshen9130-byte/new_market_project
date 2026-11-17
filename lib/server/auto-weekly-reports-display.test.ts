@@ -40,6 +40,9 @@ describe("autoWeeklyReportDedupeKey", () => {
       autoWeeklyReportDedupeKey("抱朴聚融祥和一号", "S123", "2026-11-06", undefined),
       curve,
     )
+    const longview = autoWeeklyReportDedupeKey("抱朴聚融祥和一号", "S123", "2026-11-06", "weekly-track-longview")
+    assert.notEqual(longview, curve)
+    assert.notEqual(longview, pie)
   })
 })
 
@@ -49,6 +52,7 @@ describe("pickPreferredAutoWeeklyReports", () => {
     row("h1", "抱朴聚融祥和一号", "2026-11-06", "weekly-track-holdings"),
     row("c0", "抱朴聚融祥和一号", "2026-10-30", "weekly-track-curve"),
     row("h2", "另一产品", "2026-11-06", "weekly-track-holdings", "S999"),
+    row("l1", "抱朴聚融祥和一号", "2026-11-06", "weekly-track-longview"),
   ]
 
   it("shows only the holdings report when that template is selected", () => {
@@ -76,6 +80,14 @@ describe("pickPreferredAutoWeeklyReports", () => {
     assert.deepEqual(
       picked.map((item) => item.id),
       ["c1"],
+    )
+  })
+
+  it("shows only 持仓版l when that template is selected", () => {
+    const picked = pickPreferredAutoWeeklyReports(reports, () => "weekly-track-longview")
+    assert.deepEqual(
+      picked.map((item) => item.id),
+      ["l1"],
     )
   })
 })

@@ -620,6 +620,17 @@ export async function callAccountMcpTool(
       return kbSearch(args)
     case "kb_ask":
       return kbAsk(args)
+    case "investment_note_search": {
+      const q = str(args, "q") || str(args, "question") || str(args, "keyword")
+      const { searchWebsiteInvestmentNotes } = await import("@/lib/server/investment-note-query")
+      const notes = searchWebsiteInvestmentNotes(account.id, q, intArg(args, "limit", 8, 20))
+      return {
+        query: q,
+        count: notes.length,
+        notes,
+        note: "notes 是网站投资分析页「投资笔记」的搜索结果。url 打开该笔记。text 是正文，发给用户时引用 text，不要改写数字。知识库同步稿用 kb_search，不能代替这里的笔记。",
+      }
+    }
     case "external_rank_compare": {
       if (!canUseMcpArea(account, "knowledge")) {
         throw new Error(mcpAreaDeniedMessage("knowledge"))

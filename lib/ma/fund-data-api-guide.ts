@@ -347,6 +347,7 @@ ${FENCE}
 - \`funds.metrics\` 的收益是百分数：\`12.4\` 表示 12.4%。夏普、卡玛是比率。
 - \`share_class\` 为 \`C\` 且 \`nav_scope\` 为 \`parent\` 时，净值是母基金公布值，库里没有单独的 C 类序列。
 - 知识库「投资笔记」只包含已分享到团队的笔记。未分享的个人笔记不在这个文件夹里。
+- 网站「投资分析 → 投资笔记」页面用 MCP \`investment_note_search\`。它按标题和正文搜索笔记本身，并返回可打开的 \`url\`。用户点名投资笔记时先调它；\`kb_search\` 读的是知识库同步稿。
 
 ### 自己取数再对比：HTTP 净值 + 知识库笔记
 
@@ -1338,7 +1339,7 @@ ${FENCE}
 
 \`rows\` 是所选区间。\`period_return_pct\` 是区间收益，\`ann_return_pct\`、\`ann_vol_pct\`、\`downside_risk_pct\`、\`max_drawdown_pct\` 也是百分点。\`sharpe\`、\`calmar\`、\`sortino\` 是比率。\`intervals\` 是另一张固定窗口表（近一周到近一年），不要把它当成所选区间的收益。
 
-页面「团队对比」里保存的组存在浏览器本地，这个接口按名称重算，打不开那些组名。
+成功时 \`url\` 是网站上的基金对比页，形如 \`https://8.154.33.143/ma/dashboard/private-funds/fund-compare/cmp-…\`。打开后页面装入这几只基金并执行对比。把这个链接放在回答最后，不要另造编号。页面上早先手动保存的组仍只在那台浏览器里，不能按组名打开。
 
 ${FENCE}bash
 curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/fund/compare?subjects=SXXXXX,SYYYYY&period=近一年&benchmark=IF"

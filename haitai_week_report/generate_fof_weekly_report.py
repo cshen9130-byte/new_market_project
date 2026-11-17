@@ -27,6 +27,7 @@ matplotlib.use("Agg")
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FixedLocator
 import numpy as np
 import pandas as pd
 from matplotlib.font_manager import FontProperties, fontManager
@@ -1183,6 +1184,734 @@ def build_holdings_highlights(
     return base[:2] + view_lines + base[4:6]
 
 
+# Long-view essay: full-width commentary under a compact chart + pie row.
+_LONGVIEW_WRAP = 46
+_LONGVIEW_BODY_PT = 9.5
+_LONGVIEW_HEAD_PT = 11.5
+
+
+# A bare line this short is a section title. A longer bare line is a subtitle
+# that collects the 「名称：」 lines under it.
+_LONGVIEW_HEADING_UNITS = 12
+_LONGVIEW_MARKER_RE = re.compile(
+    r"^(?:"
+    r"[（(]\s*(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*[)）]\s*"
+    r"|\d{1,2}\s*[.．、)）](?!\d)\s*"
+    r"|(?:第\s*)?[一二三四五六七八九十]{1,3}\s*[、.．]\s*"
+    r"|[•·●▪\-—*]\s+"
+    r")"
+)
+_LONGVIEW_INLINE_MARKER_RE = re.compile(
+    r"(?<![\d（(])(?:"
+    r"[（(]\s*\d{1,2}\s*[)）]\s*"
+    r"|\d{1,2}\s*[.．、)）](?!\d)\s*"
+    r"|(?:第\s*)?[一二三四五六七八九十]{1,3}\s*[、.．]\s*"
+    r")(?=[\u4e00-\u9fffA-Za-z“「【])"
+)
+
+
+def _longview_units(text: str) -> int:
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def _split_lead_in(text: str) -> tuple[str, str]:
+    """Bold the short label before the first colon. The rest stays body text."""
+    matched = re.match(r"^([^：:]{2,16}[：:])\s*(.*)$", (text or "").strip())
+    if not matched:
+        return "", (text or "").strip()
+    return matched.group(1), matched.group(2).strip()
+
+
+def _is_longview_title_item(body: str) -> bool:
+    """A short numbered line with no colon is a subtitle, same red as a lead-in."""
+    body = (body or "").strip()
+    return bool(body) and len(body) <= 28 and "：" not in body and ":" not in body
+
+
+def _longview_heading_label(text: str) -> str | None:
+    """A short bare line, or 【标题】, is a section. A name plus a sentence is not."""
+    part = " ".join((text or "").split())
+    if not part:
+        return None
+    bracket = re.fullmatch(r"【([^】]+)】", part)
+    if bracket:
+        return bracket.group(1).strip()
+    if _split_lead_in(part)[0]:
+        return None
+    if re.search(r"[。！？；]$", part):
+        return None
+    if "：" in part or ":" in part:
+        return None
+    if _longview_units(part) <= _LONGVIEW_HEADING_UNITS:
+        return part
+    return None
+
+
+def _is_longview_subtitle(text: str) -> bool:
+    part = " ".join((text or "").split())
+    if not part or _split_lead_in(part)[0]:
+        return False
+    if re.search(r"[。！？；]$", part):
+        return False
+    units = _longview_units(part)
+    return _LONGVIEW_HEADING_UNITS < units <= 28
+
+
+def _strip_longview_marker(line: str) -> tuple[str, str]:
+    matched = _LONGVIEW_MARKER_RE.match(line)
+    if not matched:
+        return "", line.strip()
+    return matched.group(0).strip(), line[matched.end():].strip()
+
+
+def _is_longview_child_marker(marker: str) -> bool:
+    return bool(marker) and marker[:1] in "•·●▪-*—"
+
+
+def _explode_longview_lines(text: str) -> list[str]:
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = _VIEW_HEADING_RE.sub(lambda m: "\n" + m.group(1) + "\n", cleaned)
+    cleaned = _LONGVIEW_INLINE_MARKER_RE.sub(lambda m: "\n" + m.group(0), cleaned)
+    lines: list[str] = []
+    for raw in cleaned.split("\n"):
+        part = " ".join(raw.split())
+        if part:
+            lines.append(part)
+    return lines
+
+
+def _merge_hanging_labels(rows: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """「市场走势：」 on its own line joins the paragraph underneath."""
+    merged: list[tuple[str, str]] = []
+    index = 0
+    while index < len(rows):
+        marker, body = rows[index]
+        lead, rest = _split_lead_in(body)
+        if lead and not rest and index + 1 < len(rows):
+            next_marker, next_body = rows[index + 1]
+            next_lead, _next_rest = _split_lead_in(next_body)
+            if (
+                not next_marker
+                and not next_lead
+                and _longview_heading_label(next_body) is None
+                and not _is_longview_subtitle(next_body)
+            ):
+                merged.append((marker, lead + next_body))
+                index += 2
+                continue
+        merged.append((marker, body))
+        index += 1
+    return merged
+
+
+def _structure_longview_blocks(text: str) -> list[tuple[str, str]]:
+    """Turn loose notes into the report's sections, numbered points, and sub-points.
+
+    A line of up to 12 characters is a red section, whether it is bare, 【】,
+    or written as 一、 / 1. The same section's 「名称：正文」 lines become
+    1. 2. 3. even when the numbers were omitted, written as 1、 （1） or -.
+    A longer bare line, such as 「下一步 FOF 组合调仓与投资策略」, is a numbered
+    subtitle and the following unnamed 「名称：」 lines sit under it.
+    """
+    rows = _merge_hanging_labels([
+        _strip_longview_marker(line) for line in _explode_longview_lines(text)
+    ])
+    blocks: list[tuple[str, str]] = []
+    number = 0
+    subtitle_open = False
+
+    def add_point(body: str, as_title: bool) -> None:
+        nonlocal number, subtitle_open
+        number += 1
+        blocks.append(("item", f"{number}. {body}"))
+        subtitle_open = as_title
+
+    for marker, body in rows:
+        if not body:
+            continue
+        heading = _longview_heading_label(body)
+        if heading is not None and not _is_longview_subtitle(body):
+            blocks.append(("heading", heading))
+            number = 0
+            subtitle_open = False
+            continue
+        if _is_longview_subtitle(body):
+            add_point(body, True)
+            continue
+        if subtitle_open and (not marker or _is_longview_child_marker(marker)):
+            blocks.append(("body", body))
+            continue
+        add_point(body, False)
+    return blocks
+
+
+def _longview_runs(text: str, empty_label: str) -> list:
+    """Visual lines for the essay. Each line is (kind, payload)."""
+    blocks = _structure_longview_blocks(text)
+    if not blocks:
+        return [("line", "body", [("body", f"{empty_label}暂无。")])]
+
+    runs: list = []
+    indent_next = False
+    started = False
+    for kind, chunk in blocks:
+        if started:
+            runs.append(("gap", 0.11 if kind == "heading" else 0.055))
+        started = True
+        if kind == "heading":
+            runs.append(("head", chunk))
+            indent_next = False
+            continue
+        if kind == "item":
+            marker, _, body = chunk.partition(" ")
+            marker = (marker or "").strip()
+            body = body.strip()
+            marker_label = marker if marker.endswith(".") else f"{marker}."
+            if _is_longview_title_item(body):
+                inner = max(12, _LONGVIEW_WRAP - len(marker_label) - 1)
+                wrapped = wrap_cjk(body, inner) or [""]
+                for index, line in enumerate(wrapped):
+                    if index == 0:
+                        runs.append(("line", "item", [("marker", marker_label + " "), ("title", line)]))
+                    else:
+                        runs.append(("line", "item-cont", [("title", line)], marker_label + " "))
+                indent_next = True
+            else:
+                lead, rest = _split_lead_in(body)
+                inner = max(12, _LONGVIEW_WRAP - len(marker_label) - 1)
+                first_w = max(8, inner - len(lead))
+                wrapped = wrap_cjk(rest, inner, first_width=first_w) if rest else []
+                pieces: list[tuple[str, str]] = [("marker", marker_label + " ")]
+                if lead:
+                    pieces.append(("lead", lead))
+                if wrapped:
+                    pieces.append(("body", wrapped[0]))
+                runs.append(("line", "item", pieces))
+                for line in wrapped[1:]:
+                    runs.append(("line", "item-cont", [("body", line)], marker_label + " "))
+                indent_next = False
+            continue
+
+        lead, rest = _split_lead_in(chunk)
+        slot = "sub" if indent_next else "body"
+        inner = _LONGVIEW_WRAP - (3 if slot == "sub" else 0)
+        source = rest if lead else chunk
+        first_w = max(8, inner - len(lead)) if lead else inner
+        wrapped = wrap_cjk(source, inner, first_width=first_w) if source else []
+        if lead and not wrapped:
+            runs.append(("line", slot, [("lead", lead)]))
+        elif lead:
+            first_pieces: list[tuple[str, str]] = [("lead", lead)]
+            if wrapped:
+                first_pieces.append(("body", wrapped[0]))
+            runs.append(("line", slot, first_pieces))
+            for line in wrapped[1:]:
+                runs.append(("line", slot, [("body", line)]))
+        else:
+            for line in wrapped or [chunk]:
+                runs.append(("line", slot, [("body", line)]))
+    return runs
+
+
+def _longview_runs_height(runs: list) -> float:
+    height = 0.0
+    for run in runs:
+        if run[0] == "gap":
+            height += float(run[1])
+        elif run[0] == "head":
+            height += 0.28
+        else:
+            height += 0.205
+    return height
+
+
+def _longview_performance_blurb(metrics: dict, strategy_phrase: str, report_kind: str | None) -> str:
+    labels = REPORT_KIND_LABELS[normalize_report_kind(report_kind)]
+    period_name = labels["period_name"]
+    wr = float(metrics.get("week_return") or 0)
+    tr = float(metrics.get("total_return") or 0)
+    md = float(metrics.get("max_drawdown") or 0)
+    end_nav = float(metrics.get("end_nav") or 0)
+    week_high_nav = float(metrics.get("week_high_nav") or end_nav)
+    week_high_date = metrics.get("week_high_date")
+    kind = normalize_report_kind(report_kind)
+    day_label = ""
+    if week_high_date is not None:
+        ts = pd.Timestamp(week_high_date)
+        if kind == "weekly":
+            day_label = "周" + ["一", "二", "三", "四", "五", "六", "日"][ts.weekday()]
+        elif kind == "monthly":
+            day_label = f"{ts.day}日"
+        else:
+            day_label = f"{ts.month}月{ts.day}日"
+    direction = "上涨" if wr >= 0 else "下跌"
+    if metrics.get("is_week_all_time_high") and day_label:
+        high_bit = f"，{day_label}升至{week_high_nav:.4f}，创运作以来阶段新高"
+    else:
+        high_bit = f"，最新净值 {end_nav:.4f}"
+    phrase = (strategy_phrase or "策略").strip() or "策略"
+    return (
+        f"{period_name}净值累计{direction}{abs(wr) * 100:.2f}%{high_bit}。"
+        f"运作以来累计{tr * 100:+.2f}%，最大回撤 {md * 100:.2f}%，{phrase}持续稳健运作。"
+    )
+
+
+def _longview_file_suffix(kind: str) -> str:
+    return {
+        "monthly": "月报_持仓版l",
+        "holding": "持有期报告_持仓版l",
+        "weekly": "周报_持仓版l",
+    }.get(kind, "周报_持仓版l")
+
+
+class _InchPage:
+    def __init__(self, fig_w: float, fig_h: float):
+        self.w = fig_w
+        self.h = fig_h
+
+    def x(self, inches: float) -> float:
+        return inches / self.w
+
+    def y(self, inches: float) -> float:
+        return inches / self.h
+
+
+def _lv_text(ax, page: _InchPage, x_in: float, y_in: float, text: str, fp, size=12, color=C_TEXT, weight="normal", ha="left", va="center"):
+    draw_text(ax, page.x(x_in), page.y(y_in), text, fp, size=size, color=color, weight=weight, ha=ha, va=va)
+
+
+def _lv_card(ax, page: _InchPage, x: float, y: float, w: float, h: float):
+    ax.add_patch(FancyBboxPatch(
+        (page.x(x + 0.015), page.y(y - 0.015)), page.x(w), page.y(h),
+        boxstyle=f"round,pad=0,rounding_size={page.x(0.08)}",
+        facecolor="#000000", edgecolor="none", alpha=0.03,
+        transform=ax.transAxes, clip_on=False, zorder=1,
+    ))
+    ax.add_patch(FancyBboxPatch(
+        (page.x(x), page.y(y)), page.x(w), page.y(h),
+        boxstyle=f"round,pad=0,rounding_size={page.x(0.08)}",
+        facecolor=C_CARD, edgecolor=C_BORDER, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=2,
+    ))
+
+
+def _lv_section_title(ax, page: _InchPage, x: float, top: float, title: str, fp):
+    """Title sitting just inside the top of a card. `top` is the card's top edge, inches from the bottom."""
+    _lv_text(ax, page, x + 0.16, top - 0.22, title, fp, size=12, color=C_PRIMARY, weight="bold", va="center")
+    ax.add_patch(Rectangle(
+        (page.x(x + 0.08), page.y(top - 0.30)), page.x(0.045), page.y(0.15),
+        transform=ax.transAxes, color=C_PRIMARY, clip_on=False, zorder=3,
+    ))
+
+
+def _draw_longview_holdings(fig, ax, page: _InchPage, x: float, y: float, w: float, h: float, slices: list[dict], fp):
+    """Name and share beside each slice, with a leader line, same as 持仓版."""
+    if not slices:
+        _lv_text(ax, page, x + w / 2, y + h * 0.42, "暂无二级策略持仓", fp, size=10, color=C_TEXT_LIGHT, ha="center")
+        return
+    # Title and the valuation hint use the top of the card.
+    draw_strategy_donut(
+        fig,
+        [
+            page.x(x + 0.02),
+            page.y(y + 0.04),
+            page.x(w - 0.04),
+            page.y(max(0.4, h - 0.58)),
+        ],
+        slices,
+        fp,
+    )
+
+
+def _text_width_in(text: str, size: float) -> float:
+    units = 0.0
+    for ch in text:
+        if "\u4e00" <= ch <= "\u9fff" or ch in "，。；、！？：:“”''（）【】《》":
+            units += 1.0
+        elif ch == " ":
+            units += 0.33
+        else:
+            units += 0.55
+    return units * (size / 72.0) * 1.05
+
+
+def _draw_rich_line(ax, page: _InchPage, x_in: float, y_in: float, pieces: list[tuple[str, str]], fp, size: float):
+    cursor = x_in
+    for role, text in pieces:
+        if not text:
+            continue
+        if role == "marker":
+            color, weight = C_PRIMARY, "bold"
+        elif role == "lead":
+            color, weight = C_PRIMARY, "bold"
+        elif role == "title":
+            color, weight = C_PRIMARY, "bold"
+        else:
+            color, weight = C_TEXT, "normal"
+        _lv_text(ax, page, cursor, y_in, text, fp, size=size, color=color, weight=weight, ha="left", va="center")
+        cursor += _text_width_in(text, size)
+
+
+def _draw_longview_interval_table(ax, page: _InchPage, x: float, y: float, w: float, h: float, rows: list[dict], fp):
+    _lv_card(ax, page, x, y, w, h)
+    _lv_section_title(ax, page, x, y + h, "区间收益率", fp)
+    headers = ["年份"] + [f"{month}月" for month in range(1, 13)] + ["胜率", "全年"]
+    n_cols = len(headers)
+    body = list(rows) or [{"year": "—"}]
+    n_body = len(body)
+    top_pad = 0.40
+    bottom_pad = 0.08
+    side_pad = 0.08
+    table_h = max(0.2, h - top_pad - bottom_pad)
+    row_h = table_h / (n_body + 1)
+    table_x = x + side_pad
+    table_w = w - side_pad * 2
+    col_w = table_w / n_cols
+    header_bottom = y + bottom_pad + n_body * row_h
+
+    for index, header in enumerate(headers):
+        cell_x = table_x + index * col_w
+        ax.add_patch(Rectangle(
+            (page.x(cell_x), page.y(header_bottom)), page.x(col_w), page.y(row_h),
+            transform=ax.transAxes, facecolor=C_GRAY, edgecolor=C_BORDER,
+            linewidth=0.4, clip_on=False, zorder=3,
+        ))
+        _lv_text(
+            ax, page, cell_x + col_w / 2, header_bottom + row_h / 2, header, fp,
+            size=7, color=C_TEXT, weight="bold", ha="center",
+        )
+
+    for row_index, row in enumerate(body):
+        cell_bottom = header_bottom - (row_index + 1) * row_h
+        bg = C_CARD if row_index % 2 == 0 else C_GRAY
+        values: list[tuple[str, str]] = [(str(row.get("year", "—")), C_TEXT)]
+        for month in range(1, 13):
+            val = row.get(month)
+            if val is None:
+                values.append(("—", C_TEXT_LIGHT))
+            else:
+                values.append((f"{float(val) * 100:.2f}%", ret_color(float(val))))
+        win = row.get("win_rate")
+        values.append((f"{float(win) * 100:.2f}%" if win is not None else "—", C_TEXT))
+        annual = row.get("annual")
+        values.append((
+            f"{float(annual) * 100:.2f}%" if annual is not None else "—",
+            ret_color(float(annual)) if annual is not None else C_TEXT,
+        ))
+        for index in range(n_cols):
+            cell_x = table_x + index * col_w
+            ax.add_patch(Rectangle(
+                (page.x(cell_x), page.y(cell_bottom)), page.x(col_w), page.y(row_h),
+                transform=ax.transAxes, facecolor=bg, edgecolor=C_BORDER,
+                linewidth=0.3, clip_on=False, zorder=3,
+            ))
+        for index, (text, color) in enumerate(values):
+            weight = "bold" if index >= n_cols - 2 and text != "—" else "normal"
+            _lv_text(
+                ax, page, table_x + index * col_w + col_w / 2, cell_bottom + row_h / 2,
+                text, fp, size=6.5, color=color, weight=weight, ha="center",
+            )
+
+
+def _make_longview_report(
+    ctx: dict,
+    *,
+    output_dir: str,
+    product_name: str,
+    report_title: str,
+    product_tagline: str,
+    strategy_phrase: str = "FOF策略",
+    manager_view: str = "",
+    strategy_slices: list[dict] | None = None,
+    holdings_as_of: str | None = None,
+) -> tuple[str, str]:
+    """Holdings report with room for a long 基金经理观点.
+
+    Compact statistics sit on the left with the strategy pie beside them.
+    The cumulative curve is full width, and the commentary grows the page.
+    """
+    labels = REPORT_KIND_LABELS[ctx["kind"]]
+    plot_df = ctx["plot_df"]
+    interval_rows = ctx["interval_rows"]
+    metrics = ctx["metrics"]
+    fp, fp_bold = configure_cn_font()
+    if fp is None:
+        raise RuntimeError(
+            "未找到可用的中文字体。请在服务器执行: bash scripts/deploy/setup-haitai-week-report.sh"
+        )
+    title_fp = fp_bold or fp
+
+    fig_w = 7.5
+    margin = 0.28
+    content_w = fig_w - margin * 2
+    runs = _longview_runs(manager_view, labels["period_name"])
+    blurb = _longview_performance_blurb(metrics, strategy_phrase, ctx["kind"])
+    blurb_lines = wrap_cjk(blurb, 52) or [blurb]
+    blurb_h = 0.12 + len(blurb_lines) * 0.175 + 0.10
+    essay_h = 0.40 + blurb_h + 0.12 + _longview_runs_height(runs) + 0.16
+    n_body = max(len(interval_rows), 1)
+    table_h = 0.40 + 0.08 + (n_body + 1) * 0.205
+    header_h = 0.76
+    banner_h = 0.34
+    stats_pie_h = 3.45
+    chart_h = 3.55
+
+    cursor = 0.0
+    cursor += header_h + 0.10
+    banner_from_top = cursor
+    cursor += banner_h + 0.11
+    band_from_top = cursor
+    cursor += stats_pie_h + 0.12
+    chart_from_top = cursor
+    cursor += chart_h + 0.12
+    table_from_top = cursor
+    cursor += table_h + 0.12
+    essay_from_top = cursor
+    cursor += essay_h + 0.10
+    footer_h = 0.46
+    fig_h = cursor + footer_h
+
+    def from_top(inches: float) -> float:
+        return fig_h - inches
+
+    page = _InchPage(fig_w, fig_h)
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor=C_BG)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    for y_coord in np.linspace(0.08, 1.0, 42):
+        alpha = (y_coord - 0.08) / 0.92 * 0.035
+        ax.add_patch(Rectangle(
+            (0, y_coord), 1, 0.012, transform=ax.transAxes,
+            color="#94A3B8", alpha=alpha, zorder=0, clip_on=False,
+        ))
+
+    header_bottom = from_top(header_h)
+    ax.add_patch(Rectangle(
+        (0, page.y(header_bottom)), 1, page.y(header_h),
+        transform=ax.transAxes, color=C_PRIMARY, clip_on=False, zorder=2,
+    ))
+    ax.add_patch(Rectangle(
+        (0, page.y(header_bottom - 0.028)), 1, page.y(0.028),
+        transform=ax.transAxes, color=C_GOLD, clip_on=False, zorder=3,
+    ))
+    for offset in np.linspace(-0.15, 1.15, 18):
+        ax.plot(
+            [offset, offset + 0.10],
+            [page.y(header_bottom), 1.0],
+            transform=ax.transAxes, color="white", alpha=0.045, linewidth=0.8, clip_on=True, zorder=3,
+        )
+
+    week_range = (
+        f"{metrics['week_start'].strftime('%Y.%m.%d')}"
+        f" – {metrics['week_end'].strftime('%Y.%m.%d')}"
+    )
+    report_date = metrics["end_date"].strftime("%Y年%m月%d日")
+    _lv_text(ax, page, 0.36, header_bottom + 0.46, report_title, title_fp, size=20, color="white", weight="bold")
+    _lv_text(ax, page, 0.36, header_bottom + 0.18, labels["kind_name"], fp, size=12, color="#FFCDD2")
+    _lv_text(ax, page, fig_w - 0.36, header_bottom + 0.46, report_date, fp, size=11, color="white", ha="right")
+    _lv_text(
+        ax, page, fig_w - 0.36, header_bottom + 0.18,
+        f"数据截至 {metrics['end_date'].strftime('%Y-%m-%d')}",
+        fp, size=9, color="#FFCDD2", ha="right",
+    )
+
+    banner_top = from_top(banner_from_top)
+    banner_bottom = banner_top - banner_h
+    ax.add_patch(FancyBboxPatch(
+        (page.x(margin), page.y(banner_bottom)), page.x(content_w), page.y(banner_h),
+        boxstyle=f"round,pad=0,rounding_size={page.x(0.06)}",
+        facecolor="white", edgecolor=C_GOLD, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=3,
+    ))
+    ax.add_patch(Rectangle(
+        (page.x(margin), page.y(banner_bottom)), page.x(0.055), page.y(banner_h),
+        transform=ax.transAxes, color=C_PRIMARY, clip_on=False, zorder=4,
+    ))
+    _lv_text(
+        ax, page, margin + 0.16, banner_bottom + banner_h / 2,
+        f"{labels['period_broadcast']}（{week_range}）",
+        title_fp, size=10, color=C_PRIMARY, weight="bold",
+    )
+    _lv_text(
+        ax, page, fig_w - margin - 0.12, banner_bottom + banner_h / 2,
+        product_tagline, fp, size=9.5, color=C_TEXT_LIGHT, ha="right",
+    )
+
+    band_top = from_top(band_from_top)
+    band_bottom = band_top - stats_pie_h
+    pie_w = 3.40
+    gap_x = 0.08
+    stats_w = content_w - pie_w - 0.12
+    kpi_w = (stats_w - gap_x) / 2
+    kpi_row_h = (stats_pie_h - gap_x * 2) / 3
+    nav_card = ("最新净值", f"{metrics['end_nav']:.4f}", C_TEXT)
+    stat_items = [
+        (labels["period_return"], fmt_pct(metrics["week_return"]), ret_color(metrics["week_return"])),
+        ("今年以来", fmt_pct(metrics["ytd_return"]), ret_color(metrics["ytd_return"])),
+        ("运作以来", fmt_pct(metrics["total_return"]), ret_color(metrics["total_return"])),
+        nav_card,
+        ("年化波动", fmt_pct(metrics["volatility"], signed=False), C_TEXT),
+        ("最大回撤", fmt_pct(metrics["max_drawdown"]), C_DOWN if metrics["max_drawdown"] < 0 else C_TEXT),
+    ]
+    for index, (label, value, color) in enumerate(stat_items):
+        col = index % 2
+        row = index // 2
+        card_x = margin + col * (kpi_w + gap_x)
+        row_top = band_top - row * (kpi_row_h + gap_x)
+        row_bottom = row_top - kpi_row_h
+        _lv_card(ax, page, card_x, row_bottom, kpi_w, kpi_row_h)
+        _lv_text(ax, page, card_x + kpi_w / 2, row_bottom + kpi_row_h * 0.66, label, fp, size=8, color=C_TEXT_LIGHT, ha="center")
+        _lv_text(ax, page, card_x + kpi_w / 2, row_bottom + kpi_row_h * 0.32, value, title_fp, size=12, color=color, weight="bold", ha="center")
+
+    pie_x = margin + stats_w + 0.12
+    _lv_card(ax, page, pie_x, band_bottom, pie_w, stats_pie_h)
+    _lv_section_title(ax, page, pie_x, band_top, "持仓饼图", title_fp)
+    pie_hint = "二级策略 · 按持仓市值"
+    if holdings_as_of:
+        pie_hint = f"{pie_hint} · 估值日 {holdings_as_of}"
+    _lv_text(ax, page, pie_x + 0.14, band_top - 0.46, pie_hint, fp, size=7.5, color=C_TEXT_LIGHT)
+
+    chart_top = from_top(chart_from_top)
+    chart_card_bottom = chart_top - chart_h
+    _lv_card(ax, page, margin, chart_card_bottom, content_w, chart_h)
+    _lv_section_title(ax, page, margin, chart_top, "累计收益率走势", title_fp)
+    chart_left = margin + 0.48
+    chart_bottom = chart_card_bottom + 0.36
+    chart_width = content_w - 0.66
+    chart_height = chart_h - 0.82
+    chart_ax = fig.add_axes([
+        page.x(chart_left), page.y(chart_bottom), page.x(chart_width), page.y(chart_height),
+    ])
+    chart_ax.set_facecolor(C_CARD)
+    start_nav = float(plot_df["adj_nav"].iloc[0])
+    fund_cum = (plot_df.set_index("date")["adj_nav"] / start_nav - 1) * 100
+    chart_ax.plot(fund_cum.index, fund_cum.values, color=C_UP, linewidth=2.0, label=product_name, zorder=3)
+    chart_ax.fill_between(fund_cum.index, fund_cum.values, 0, color=C_UP, alpha=0.08, zorder=2)
+    chart_ax.axvspan(
+        metrics["week_start"], metrics["week_end"],
+        color=C_UP, alpha=0.12, label=labels["period_range_label"], zorder=0,
+    )
+    x_min, x_max = _history_x_limits(fund_cum.index)
+    chart_ax.set_xlim(x_min, x_max)
+    y_lo = min(0.0, float(fund_cum.min()))
+    y_hi = float(fund_cum.max())
+    y_span = max(y_hi - y_lo, 1.0)
+    chart_ax.set_ylim(y_lo - y_span * 0.03, y_hi + y_span * 0.18)
+    last_date = fund_cum.index[-1]
+    last_val = float(fund_cum.values[-1])
+    chart_ax.plot(last_date, last_val, marker="o", color=C_UP, markersize=4.5, zorder=5)
+    chart_ax.annotate(
+        f"{last_val:+.2f}%",
+        xy=(last_date, last_val),
+        xytext=(-8, 7),
+        textcoords="offset points",
+        fontsize=8,
+        fontproperties=fp,
+        color="white",
+        weight="bold",
+        ha="right",
+        va="bottom",
+        clip_on=False,
+        bbox=dict(boxstyle="round,pad=0.18", facecolor=C_UP, edgecolor="none", alpha=0.95),
+        zorder=6,
+    )
+    chart_ax.axhline(0, color=C_BORDER, linewidth=0.8)
+    chart_ax.grid(True, alpha=0.15, linestyle=":", color="#94A3B8")
+    date_locator, date_formatter = _history_date_ticks(fund_cum.index)
+    chart_ax.xaxis.set_major_locator(date_locator)
+    chart_ax.xaxis.set_major_formatter(date_formatter)
+    chart_ax.tick_params(axis="x", labelsize=7.5, colors=C_TEXT_LIGHT, pad=2)
+    chart_ax.tick_params(axis="y", labelsize=7.5, colors=C_TEXT_LIGHT)
+    for tick_label in list(chart_ax.get_xticklabels()) + list(chart_ax.get_yticklabels()):
+        tick_label.set_fontproperties(fp)
+    for spine_name in ("top", "right"):
+        chart_ax.spines[spine_name].set_visible(False)
+    chart_ax.spines["left"].set_color(C_BORDER)
+    chart_ax.spines["bottom"].set_color(C_BORDER)
+    ylabel_kwargs = dict(transform=chart_ax.transAxes, fontsize=8, color=C_TEXT_LIGHT, ha="left", va="top", zorder=10)
+    ylabel_kwargs["fontproperties"] = fp
+    chart_ax.text(0.02, 0.96, "收益率 (%)", **ylabel_kwargs)
+    legend_kwargs = dict(
+        loc="upper left", bbox_to_anchor=(0.16, 1.0), fontsize=8,
+        framealpha=0.95, facecolor="white", edgecolor=C_BORDER,
+    )
+    legend_kwargs["prop"] = fp
+    chart_ax.legend(**legend_kwargs)
+
+    pie_slices = strategy_slices or []
+    _draw_longview_holdings(fig, ax, page, pie_x, band_bottom, pie_w, stats_pie_h, pie_slices, fp)
+
+    table_top = from_top(table_from_top)
+    _draw_longview_interval_table(
+        ax, page, margin, table_top - table_h, content_w, table_h, interval_rows, fp,
+    )
+
+    essay_top = from_top(essay_from_top)
+    essay_bottom = essay_top - essay_h
+    _lv_card(ax, page, margin, essay_bottom, content_w, essay_h)
+    _lv_section_title(ax, page, margin, essay_top, "基金经理观点", title_fp)
+    blurb_top = essay_top - 0.42
+    blurb_bottom = blurb_top - blurb_h
+    ax.add_patch(FancyBboxPatch(
+        (page.x(margin + 0.12), page.y(blurb_bottom)), page.x(content_w - 0.24), page.y(blurb_h),
+        boxstyle=f"round,pad=0,rounding_size={page.x(0.05)}",
+        facecolor=C_GRAY, edgecolor="none",
+        transform=ax.transAxes, clip_on=False, zorder=3,
+    ))
+    for index, line in enumerate(blurb_lines):
+        _lv_text(
+            ax, page, margin + 0.26, blurb_top - 0.16 - index * 0.175,
+            line, fp, size=8.5, color=C_TEXT,
+        )
+
+    text_x = margin + 0.22
+    sub_indent = 0.20
+    y_cursor = blurb_bottom - 0.16
+    for run in runs:
+        kind = run[0]
+        if kind == "gap":
+            y_cursor -= float(run[1])
+            continue
+        if kind == "head":
+            y_cursor -= 0.14
+            ax.add_patch(Rectangle(
+                (page.x(text_x), page.y(y_cursor - 0.07)), page.x(0.045), page.y(0.14),
+                transform=ax.transAxes, color=C_PRIMARY, clip_on=False, zorder=3,
+            ))
+            _lv_text(ax, page, text_x + 0.10, y_cursor, run[1], title_fp, size=_LONGVIEW_HEAD_PT, color=C_PRIMARY, weight="bold")
+            y_cursor -= 0.14
+            continue
+        y_cursor -= 0.102
+        slot = run[1]
+        pieces = run[2]
+        line_x = text_x + (sub_indent if slot == "sub" else 0.0)
+        if slot == "item-cont":
+            line_x += _text_width_in(run[3], _LONGVIEW_BODY_PT)
+        _draw_rich_line(ax, page, line_x, y_cursor, pieces, fp, _LONGVIEW_BODY_PT)
+        y_cursor -= 0.103
+
+    footer_top = footer_h
+    ax.add_patch(Rectangle(
+        (0, 0), 1, page.y(footer_h),
+        transform=ax.transAxes, color=C_PRIMARY, clip_on=False, zorder=4,
+    ))
+    disclaimer = "本报告仅供合格投资者及合作渠道参考，不构成投资建议。过往业绩不代表未来表现，市场有风险，投资需谨慎。"
+    _lv_text(ax, page, fig_w / 2, footer_h / 2, disclaimer, fp, size=7.5, color="white", ha="center")
+
+    ax.add_patch(Rectangle(
+        (page.x(0.08), page.y(0.08)), page.x(fig_w - 0.16), page.y(fig_h - 0.16),
+        transform=ax.transAxes, facecolor="none", edgecolor=C_GOLD, linewidth=0.6,
+        clip_on=False, zorder=6,
+    ))
+
+    return _save_report_figure(
+        fig, output_dir, report_title, metrics["end_date"], _longview_file_suffix(ctx["kind"]),
+    )
+
+
 # Match the product-page 二级策略 pie: named colors win, otherwise palette by slice order.
 _STRATEGY_NAMED_COLORS = {
     "组合策略": "#1A73E8",
@@ -1621,15 +2350,43 @@ def _extract_recent_monthly_returns(interval_rows: list[dict], end_date: pd.Time
     return out
 
 
-def _history_date_ticks(dates: pd.Series | pd.DatetimeIndex):
-    """Pick x ticks that stay readable on a long cumulative chart.
+def _history_index(dates: pd.Series | pd.DatetimeIndex) -> pd.DatetimeIndex:
+    index = pd.DatetimeIndex(pd.to_datetime(pd.Series(dates))).dropna().sort_values().unique()
+    return pd.DatetimeIndex(index)
 
-    A fixed 3-month step turns a 2020–2026 series into ~24 labels and they
-    overwrite each other. Longer histories step out to half-years, then years.
-    """
-    start = pd.Timestamp(pd.Series(dates).min())
-    end = pd.Timestamp(pd.Series(dates).max())
+
+def _history_x_limits(dates: pd.Series | pd.DatetimeIndex) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Keep the line across the card. A fixed two-week pad leaves a blank tail on a new fund."""
+    index = _history_index(dates)
+    start = pd.Timestamp(index[0])
+    end = pd.Timestamp(index[-1])
     span_days = max(int((end - start).days), 1)
+    pad_days = max(2, min(12, int(round(span_days * 0.04))))
+    return start - pd.Timedelta(days=pad_days), end + pd.Timedelta(days=pad_days)
+
+
+def _history_date_ticks(dates: pd.Series | pd.DatetimeIndex):
+    """Pick x ticks that sit on the line and stay readable.
+
+    A new fund is only a few weeks long. A Monday grid plus empty margin puts
+    the labels off the points. Short histories use the observation dates.
+    Longer histories step out so a multi-year chart does not pile up labels.
+    """
+    index = _history_index(dates)
+    start = pd.Timestamp(index[0])
+    end = pd.Timestamp(index[-1])
+    span_days = max(int((end - start).days), 1)
+    if span_days < 100:
+        count = len(index)
+        step = 1 if count <= 8 else max(1, int(round(count / 6)))
+        chosen = list(index[::step])
+        if index[-1] not in chosen:
+            chosen.append(index[-1])
+        if len(chosen) >= 2:
+            gap_days = int((chosen[-1] - chosen[-2]).days)
+            if gap_days < max(3, span_days / 12) and len(chosen) > 3:
+                chosen.pop(-2)
+        return FixedLocator(mdates.date2num(pd.DatetimeIndex(chosen).to_pydatetime())), mdates.DateFormatter("%m/%d")
     if span_days >= 365 * 4:
         return mdates.YearLocator(), mdates.DateFormatter("%Y")
     if span_days >= 365 * 2:
@@ -1638,9 +2395,7 @@ def _history_date_ticks(dates: pd.Series | pd.DatetimeIndex):
         return mdates.MonthLocator(interval=4), mdates.DateFormatter("%Y/%m")
     if span_days >= 140:
         return mdates.MonthLocator(interval=2), mdates.DateFormatter("%Y/%m")
-    if span_days >= 70:
-        return mdates.MonthLocator(), mdates.DateFormatter("%m/%d")
-    return mdates.WeekdayLocator(byweekday=mdates.MO, interval=2), mdates.DateFormatter("%m/%d")
+    return mdates.MonthLocator(), mdates.DateFormatter("%m/%d")
 
 
 def _review_history_table_layout(n_years: int) -> dict:
@@ -2611,9 +3366,9 @@ def make_report(
     kind = normalize_report_kind(report_kind)
     layout = normalize_report_layout(report_layout, kind)
     variant = (report_variant or "curve").strip().lower()
-    if variant not in ("curve", "holdings"):
+    if variant not in ("curve", "holdings", "longview"):
         variant = "curve"
-    variant_payload = load_report_variant_file(variant_file) if variant == "holdings" else {
+    variant_payload = load_report_variant_file(variant_file) if variant in ("holdings", "longview") else {
         "manager_view": "",
         "slices": [],
         "valuation_date": "",
@@ -2644,7 +3399,19 @@ def make_report(
     elif tagline == PRODUCT_TAGLINE and strategy_phrase != "FOF策略":
         tagline = f"低波动 · 稳健运作 · {strategy_phrase}"
 
-    if kind == "monthly" and layout == "review" and variant != "holdings":
+    if variant == "longview":
+        png_path, pdf_path = _make_longview_report(
+            ctx,
+            output_dir=output_dir,
+            product_name=product_name,
+            report_title=report_title,
+            product_tagline=tagline,
+            strategy_phrase=strategy_phrase,
+            manager_view=str(variant_payload.get("manager_view") or ""),
+            strategy_slices=list(variant_payload.get("slices") or []),
+            holdings_as_of=str(variant_payload.get("valuation_date") or "") or None,
+        )
+    elif kind == "monthly" and layout == "review" and variant != "holdings":
         png_path, pdf_path = _make_monthly_report(
             ctx,
             output_dir=output_dir,
@@ -2744,8 +3511,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--report-variant",
         default="curve",
-        choices=["curve", "holdings"],
-        help="曲线/持仓版式：curve=曲线, holdings=持仓饼图（无基准、基金经理观点；周报/月报/持有期均可用）",
+        choices=["curve", "holdings", "longview"],
+        help="曲线/持仓版式：curve=曲线, holdings=持仓饼图, longview=长观点（无基准、长文基金经理观点；周报/月报/持有期均可用）",
     )
     parser.add_argument(
         "--variant-file",

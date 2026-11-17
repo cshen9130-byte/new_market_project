@@ -6,6 +6,7 @@ import { FundCompareDetailView } from "@/components/ma/fund-compare-detail-view"
 import { FundCompareSectionShell } from "@/components/ma/fund-compare-section-shell"
 import {
   adoptOpenedFundCompare,
+  saveFundCompare,
   type SavedFundCompare,
 } from "@/lib/ma-fund-compare-storage"
 
@@ -17,25 +18,55 @@ export default function FundCompareDetailPage() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    function sync() {
+    let cancelled = false
+    async function sync() {
       const opened = adoptOpenedFundCompare({
         paramId: paramKey || undefined,
         pathname: window.location.pathname,
         hash: window.location.hash,
       })
-      if (opened.persisted && window.location.hash.includes("fc=")) {
-        window.history.replaceState(
-          window.history.state,
-          "",
-          `${window.location.pathname}${window.location.search}`,
-        )
+      if (opened.compare) {
+        if (opened.persisted && window.location.hash.includes("fc=")) {
+          window.history.replaceState(
+            window.history.state,
+            "",
+            `${window.location.pathname}${window.location.search}`,
+          )
+        }
+        if (!cancelled) {
+          setCompare(opened.compare)
+          setReady(true)
+        }
+        return
       }
-      setCompare(opened.compare)
-      setReady(true)
+      if (/^cmp-\d+$/.test(paramKey)) {
+        try {
+          const res = await fetch(`/ma/api/fund-compare/open?id=${encodeURIComponent(paramKey)}`, { cache: "no-store" })
+          const json = await res.json() as { compare?: SavedFundCompare }
+          if (!cancelled && json.compare?.id === paramKey) {
+            saveFundCompare(json.compare)
+            setCompare(json.compare)
+            setReady(true)
+            return
+          }
+        } catch {
+          // The page still shows the missing-group state below.
+        }
+      }
+      if (!cancelled) {
+        setCompare(null)
+        setReady(true)
+      }
     }
-    sync()
-    window.addEventListener("storage", sync)
-    return () => window.removeEventListener("storage", sync)
+    function onStorage() {
+      void sync()
+    }
+    void sync()
+    window.addEventListener("storage", onStorage)
+    return () => {
+      cancelled = true
+      window.removeEventListener("storage", onStorage)
+    }
   }, [paramKey])
 
   if (!ready) {
