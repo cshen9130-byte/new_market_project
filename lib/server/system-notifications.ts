@@ -330,9 +330,9 @@ export type WeeklyExcelNotifyResult = {
 let inflight: Promise<WeeklyExcelNotifyResult> | null = null
 
 /**
- * When this week's weekly-review NAV is in, tell every account (unless they
- * turned the rule off) that the strategy-comparison Excel can be generated.
- * The same week is sent once.
+ * When this week's weekly-review NAV coverage is over 80%, tell every account
+ * (unless they turned the rule off) that the strategy-comparison Excel can be
+ * generated. The same week is sent once.
  */
 export function notifyWeeklyStrategyExcelIfReady(source: string): Promise<WeeklyExcelNotifyResult> {
   if (inflight) return inflight

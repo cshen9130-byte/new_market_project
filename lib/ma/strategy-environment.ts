@@ -17,7 +17,21 @@ export type EnvStrategy = {
   name: string
   group: string
   asOf: string | null
+  /** Alpha environment, 10-day average of the daily score. The chart's red line. */
   score: number | null
+  /** Same number as `score`. Kept beside the total so the card can show both. */
+  alphaScore: number | null
+  /** Regression beta of the products' own return against 沪深300. */
+  marketBeta: number | null
+  /** Signed. Negative when a high beta meets a falling 沪深300. */
+  betaScore: number | null
+  /** 沪深300 return over the last 10 trading days, in percent. */
+  market10d: number | null
+  /** Alpha plus beta, clamped to 0–100. This is the number on the card. */
+  totalScore: number | null
+  totalDelta: number | null
+  /** 沪深300 10-day percent return on each history date. */
+  market10: Array<number | null>
   rating: string
   tone: EnvTone
   delta5: number | null
@@ -121,6 +135,124 @@ export function deltaPhrase(delta: number | null, compareDate: string | null): s
   return `比 5 个交易日前${direction} ${Math.abs(delta).toFixed(1)} 分${when}`
 }
 
+/** Cards and the chart's red line both judge the alpha environment on this window. */
+export const ENV_SCORE_WINDOW = 10
+/** One point of beta-driven return, in percent, moves the beta score by this many points. */
+export const MARKET_BETA_SCALE = 5
+
+/** Mean of the daily scores ending at `end`, same window the chart draws. */
+export function smoothedScoreAt(
+  history: Array<{ score: number }>,
+  end: number,
+  window = ENV_SCORE_WINDOW,
+): number | null {
+  if (end < 0 || end >= history.length) return null
+  const start = Math.max(0, end - window + 1)
+  let sum = 0
+  let count = 0
+  for (let i = start; i <= end; i++) {
+    const value = history[i]?.score
+    if (!Number.isFinite(value)) continue
+    sum += value
+    count += 1
+  }
+  if (!count) return null
+  return sum / count
+}
+
+function ratingForHeadline(key: string, score: number, fallback: string): string {
+  if (key === "cta" || key === "swing") return fallback
+  if (key === "arb") return score >= 58 ? "环境偏好" : score >= 48 ? "中性" : "机会偏少"
+  return bandRating(score)
+}
+
+export function betaPoints(beta: number | null | undefined, marketPct: number | null | undefined): number | null {
+  if (beta == null || marketPct == null || !Number.isFinite(beta) || !Number.isFinite(marketPct)) return null
+  return round1(beta * marketPct * MARKET_BETA_SCALE)
+}
+
+export function totalOf(alpha: number, betaScore: number | null): number {
+  if (betaScore == null) return alpha
+  return round1(clamp(alpha + betaScore))
+}
+
+/**
+ * The number on the card is the 10-day average of daily scores.
+ * Daily scores stay in `history` so the chart does not average them twice.
+ */
+export function headlineFromHistory(item: {
+  key: string
+  name: string
+  rating: string
+  history: Array<{ date: string; score: number }>
+  notes: string[]
+  marketBeta?: number | null
+  market10?: Array<number | null> | null
+}): {
+  score: number
+  alphaScore: number
+  betaScore: number | null
+  market10d: number | null
+  totalScore: number
+  totalDelta: number | null
+  delta5: number | null
+  compareDate: string | null
+  tone: EnvTone
+  rating: string
+  notes: string[]
+} | null {
+  const history = item.history
+  if (!history.length) return null
+  const end = history.length - 1
+  const raw = smoothedScoreAt(history, end)
+  if (raw == null) return null
+  const alpha = round1(raw)
+  const market10d = item.market10?.[end] ?? null
+  const betaScore = betaPoints(item.marketBeta, market10d)
+  const total = totalOf(alpha, betaScore)
+  const prevIndex = end - 5
+  const prevRaw = prevIndex >= 0 ? smoothedScoreAt(history, prevIndex) : null
+  const delta5 = prevRaw == null ? null : round1(raw - prevRaw)
+  const prevAlpha = prevRaw == null ? null : round1(prevRaw)
+  const prevBeta = prevIndex >= 0 ? betaPoints(item.marketBeta, item.market10?.[prevIndex] ?? null) : null
+  const totalDelta = prevAlpha == null ? null : round1(total - totalOf(prevAlpha, prevBeta))
+  const compareDate = prevIndex >= 0 ? history[prevIndex].date : null
+  const betaText = betaScore == null || item.marketBeta == null || market10d == null
+    ? ""
+    : `β ${betaScore > 0 ? "+" : ""}${betaScore.toFixed(1)}（贝塔 ${item.marketBeta.toFixed(2)} × 近 10 日沪深300 ${market10d > 0 ? "+" : ""}${market10d.toFixed(1)}%）。`
+  const lead = betaText
+    ? `${item.name} 合计 ${total.toFixed(1)}。α ${alpha.toFixed(1)}（10 日均），${betaText}合计 = α + β，限制在 0 到 100。${deltaPhrase(totalDelta, compareDate)}。`
+    : `${item.name} ${alpha.toFixed(1)} 分（10 日均），${deltaPhrase(delta5, compareDate)}。`
+  const rest = item.notes[0]?.startsWith(`${item.name} `) ? item.notes.slice(1) : item.notes
+  return {
+    score: alpha,
+    alphaScore: alpha,
+    betaScore,
+    market10d,
+    totalScore: total,
+    totalDelta,
+    delta5,
+    compareDate,
+    tone: toneOf(total),
+    rating: ratingForHeadline(item.key, total, item.rating),
+    notes: [lead, ...rest],
+  }
+}
+
+export function totalSpark(item: {
+  history: Array<{ score: number }>
+  marketBeta?: number | null
+  market10?: Array<number | null> | null
+}, count = 24): number[] {
+  const out: number[] = []
+  for (let i = 0; i < item.history.length; i++) {
+    const raw = smoothedScoreAt(item.history, i)
+    if (raw == null) continue
+    out.push(totalOf(round1(raw), betaPoints(item.marketBeta, item.market10?.[i] ?? null)))
+  }
+  return out.slice(-count)
+}
+
 export function emptyStrategy(key: string, name: string, group: string, why: string): EnvStrategy {
   return {
     key,
@@ -128,6 +260,13 @@ export function emptyStrategy(key: string, name: string, group: string, why: str
     group,
     asOf: null,
     score: null,
+    alphaScore: null,
+    marketBeta: null,
+    betaScore: null,
+    market10d: null,
+    totalScore: null,
+    totalDelta: null,
+    market10: [],
     rating: "暂无数据",
     tone: "empty",
     delta5: null,

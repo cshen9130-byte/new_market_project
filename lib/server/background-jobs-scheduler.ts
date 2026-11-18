@@ -240,7 +240,7 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
-  // Once the latest complete 周度回顾 week has NAV, tell every account.
+  // Once the latest complete 周度回顾 week is over 80% NAV coverage, tell every account.
   // Mon–Thu 16:30 covers the week the page is showing (last Friday), after the
   // Tue–Thu 14:00 火富牛 list. Thursday 16:00 fills that previous Friday.
   // Friday evening covers the same week again, because that Friday's own week
@@ -491,6 +491,19 @@ cron.schedule("30 18 * * 1-5", () => {
         runScheduledAutoWeeklyReportsEtl()
       } catch (e) {
         console.error("[auto-weekly-etl] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
+  // 06:10 Beijing: strategy-environment scoreboard. Market ETL has finished
+  // by then, and the page reads the snapshot instead of scoring on open.
+  cron.schedule("10 6 * * *", () => {
+    void (async () => {
+      try {
+        const { runScheduledStrategyEnvironment } = await import("./strategy-environment-daily")
+        runScheduledStrategyEnvironment()
+      } catch (e) {
+        console.error("[strategy-environment] scheduler error:", e)
       }
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })

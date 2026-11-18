@@ -201,6 +201,21 @@ export function StrategyEnvironmentMethodDialog({
               </div>
 
               <section className="mt-4">
+                <h4 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">这个策略是什么</h4>
+                <p className="mt-1 text-sm leading-6 text-zinc-600 dark:text-zinc-300">{writeup.about.meaning}</p>
+                <h4 className="mt-3 text-sm font-medium text-zinc-900 dark:text-zinc-100">对应的策略标签</h4>
+                <ul className="mt-1 space-y-1">
+                  {writeup.about.tags.map((tag) => (
+                    <li key={tag.where} className="text-sm leading-6 text-zinc-600 dark:text-zinc-300">
+                      <span className="font-medium text-zinc-800 dark:text-zinc-100">{tag.where}</span>
+                      ：{tag.names}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-sm leading-6 text-zinc-500">{writeup.about.note}</p>
+              </section>
+
+              <section className="mt-4">
                 <h4 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">为什么这样设计</h4>
                 <div className="mt-1 space-y-2">
                   {writeup.why.map((paragraph) => (

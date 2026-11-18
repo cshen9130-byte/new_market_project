@@ -99,24 +99,31 @@ test("managed weekly reports notify only when 已最新 is above 90 percent", ()
   assert.match(message.href, /side=rpt-weekly/)
 })
 
-test("weekly excel is ready when at least half of this week's products have a print", () => {
+test("weekly excel is ready only when this week's coverage is over 80 percent", () => {
   const ready = weeklyStrategyExcelCoverage({
+    weeks: [{ week_start: "2026-11-09", week_end: "2026-11-13" }],
+    categories: [{ total: 100, weeks: [{ missing: 19 }] }],
+  })
+  assert.equal(ready.covered, 81)
+  assert.equal(ready.total, 100)
+  assert.equal(ready.ready, true)
+
+  const exact = weeklyStrategyExcelCoverage({
+    weeks: [{ week_start: "2026-11-09", week_end: "2026-11-13" }],
+    categories: [{ total: 10, weeks: [{ missing: 2 }] }],
+  })
+  assert.equal(exact.covered, 8)
+  assert.equal(exact.ready, false)
+
+  const half = weeklyStrategyExcelCoverage({
     weeks: [{ week_start: "2026-11-09", week_end: "2026-11-13" }],
     categories: [
       { total: 10, weeks: [{ missing: 4 }] },
       { total: 10, weeks: [{ missing: 6 }] },
     ],
   })
-  assert.equal(ready.covered, 10)
-  assert.equal(ready.total, 20)
-  assert.equal(ready.ready, true)
-
-  const thin = weeklyStrategyExcelCoverage({
-    weeks: [{ week_start: "2026-11-09", week_end: "2026-11-13" }],
-    categories: [{ total: 10, weeks: [{ missing: 6 }] }],
-  })
-  assert.equal(thin.covered, 4)
-  assert.equal(thin.ready, false)
+  assert.equal(half.covered, 10)
+  assert.equal(half.ready, false)
 
   const empty = weeklyStrategyExcelCoverage({ weeks: [], categories: [] })
   assert.equal(empty.ready, false)

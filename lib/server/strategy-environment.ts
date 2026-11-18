@@ -12,11 +12,12 @@ import {
   bandRating,
   clamp,
   correlation,
-  deltaPhrase,
   emptyStrategy,
+  headlineFromHistory,
   mean,
   pctRank,
   round1,
+  smoothedScoreAt,
   tStatOfCorr,
   toneOf,
   variance,
@@ -27,6 +28,9 @@ import {
 } from "@/lib/ma/strategy-environment"
 import { UNDERLYING_CN_LABELS } from "@/lib/option-iv-labels"
 import { query, queryUnbounded } from "@/lib/db"
+import { loadQuantExtras, type QuantPrint } from "@/lib/server/strategy-environment-quant"
+import { loadPrivateFundBenchmarkSeries } from "@/lib/server/private-fund-benchmarks"
+import { readStrategySnapshot, writeStrategySnapshot } from "@/lib/server/strategy-environment-snapshot"
 
 /** A-share, crowding and CFFEX tables in this database start on 2025-01-02. */
 const LOOKBACK_DAYS = 800
@@ -82,6 +86,8 @@ type StockDay = {
   amount: number
   n: number
   xsVol: number
+  amp: number | null
+  breadth20: number | null
   sealedUp: number
   brokenUp: number
   sealedDown: number
@@ -89,7 +95,6 @@ type StockDay = {
   yesterdayUp: number
 }
 
-type CrowdingDay = { date: string; hhi: number | null }
 type IndexDay = { date: string; close: number; amount: number | null }
 type ContractRow = {
   date: string
@@ -130,6 +135,8 @@ async function loadStock(): Promise<StockDay[]> {
     amount: string | number | null
     n: string | number | null
     xs_vol: string | number | null
+    amp: string | number | null
+    breadth20: string | number | null
     sealed_up: string | number | null
     broken_up: string | number | null
     sealed_down: string | number | null
@@ -144,13 +151,14 @@ async function loadStock(): Promise<StockDay[]> {
               high::float8 AS high,
               low::float8 AS low,
               COALESCE(amount, 0)::float8 AS amount,
-              LAG(close::float8) OVER (PARTITION BY ts_code ORDER BY trade_date) AS prev
+              LAG(close::float8) OVER (PARTITION BY ts_code ORDER BY trade_date) AS prev,
+              LAG(close::float8, 20) OVER (PARTITION BY ts_code ORDER BY trade_date) AS p20
        FROM raw_ashare_daily
        WHERE trade_date >= CURRENT_DATE - $1::int
          AND close > 0
      ),
      flagged AS (
-       SELECT trade_date, ts_code, amount, close, high, low, prev,
+       SELECT trade_date, ts_code, amount, close, high, low, prev, p20,
               CASE
                 WHEN code ~ '^(300|301|688|689)' THEN 0.198
                 WHEN code ~ '^(8|43|83|87|92)' THEN 0.298
@@ -159,7 +167,7 @@ async function loadStock(): Promise<StockDay[]> {
        FROM px
      ),
      sealed AS (
-       SELECT trade_date, ts_code, amount, close, high, low, prev, lim,
+       SELECT trade_date, ts_code, amount, close, high, low, prev, p20, lim,
               CASE
                 WHEN prev > 0 AND high > 0 AND close / prev - 1 >= lim AND close >= high * 0.998 THEN 1
                 ELSE 0
@@ -167,7 +175,7 @@ async function loadStock(): Promise<StockDay[]> {
        FROM flagged
      ),
      marked AS (
-       SELECT trade_date, amount, close, high, low, prev, lim, is_sealed,
+       SELECT trade_date, amount, close, high, low, prev, p20, lim, is_sealed,
               LAG(is_sealed) OVER (PARTITION BY ts_code ORDER BY trade_date) AS prev_sealed
        FROM sealed
      )
@@ -175,6 +183,8 @@ async function loadStock(): Promise<StockDay[]> {
             SUM(amount)::float8 AS amount,
             COUNT(*)::int AS n,
             STDDEV_SAMP(close / prev - 1) FILTER (WHERE ABS(close / prev - 1) < 0.35)::float8 AS xs_vol,
+            AVG((high - low) / prev) FILTER (WHERE (high - low) / prev > 0 AND (high - low) / prev < 0.25)::float8 AS amp,
+            AVG((close / p20 - 1 > 0)::int) FILTER (WHERE p20 > 0 AND ABS(close / p20 - 1) < 1.2)::float8 AS breadth20,
             COUNT(*) FILTER (WHERE is_sealed = 1)::int AS sealed_up,
             COUNT(*) FILTER (WHERE prev > 0 AND high / prev - 1 >= lim AND close / prev - 1 < lim)::int AS broken_up,
             COUNT(*) FILTER (WHERE prev > 0 AND close / prev - 1 <= -lim AND close <= low * 1.002)::int AS sealed_down,
@@ -197,6 +207,8 @@ async function loadStock(): Promise<StockDay[]> {
       amount,
       n,
       xsVol,
+      amp: num(row.amp),
+      breadth20: num(row.breadth20),
       sealedUp: num(row.sealed_up) ?? 0,
       brokenUp: num(row.broken_up) ?? 0,
       sealedDown: num(row.sealed_down) ?? 0,
@@ -230,17 +242,6 @@ async function loadLimitUps(): Promise<Array<{ date: string; code: string }>> {
     [LOOKBACK_DAYS],
   )
   return rows.map((row) => ({ date: ymd(row.trade_date), code: row.code }))
-}
-
-async function loadCrowding(): Promise<CrowdingDay[]> {
-  const rows = await query<{ trade_date: string; hhi: string | number | null }>(
-    `SELECT trade_date::text AS trade_date, hhi::float8 AS hhi
-     FROM derived_ashare_crowding_daily
-     WHERE trade_date >= CURRENT_DATE - $1::int
-     ORDER BY trade_date`,
-    [LOOKBACK_DAYS],
-  )
-  return rows.map((row) => ({ date: ymd(row.trade_date), hhi: num(row.hhi) }))
 }
 
 async function loadIndexes(): Promise<Map<string, IndexDay[]>> {
@@ -413,10 +414,6 @@ function formatYi(amount: number): string {
   return `${amountYi(amount).toFixed(0)} 亿`
 }
 
-function mapByDate<T extends { date: string }>(rows: T[]): Map<string, T> {
-  return new Map(rows.map((row) => [row.date, row]))
-}
-
 function lastFinite(values: Array<number | null>, end: number, size: number): number[] {
   const out: number[] = []
   for (let i = end; i >= 0 && out.length < size; i--) {
@@ -424,6 +421,17 @@ function lastFinite(values: Array<number | null>, end: number, size: number): nu
     if (value != null && Number.isFinite(value)) out.push(value)
   }
   return out.reverse()
+}
+
+/** Published score faces the same way as 近20日超额. These sleeves were backwards. */
+function oppose(score: number): number {
+  return round1(100 - score)
+}
+
+function trailingAverage(values: Array<number | null>, index: number, window: number): number | null {
+  const sample = lastFinite(values, index, window)
+  if (sample.length < window) return null
+  return sample.reduce((sum, item) => sum + item, 0) / sample.length
 }
 
 type Scored<T> = T & { date: string; score: number }
@@ -443,22 +451,40 @@ function packStrategy<T extends { date: string; score: number }>(
   const last = points[points.length - 1]
   if (!last) return emptyStrategy(key, name, group, `${name}缺少足够行情，这一期先不打分。`)
   const prev = points.length > 5 ? points[points.length - 6] : null
-  const delta = prev ? round1(last.score - prev.score) : null
+  const history = points.map((point) => ({ date: point.date, score: point.score }))
+  const end = history.length - 1
+  const raw = smoothedScoreAt(history, end)
+  const prevRaw = end >= 5 ? smoothedScoreAt(history, end - 5) : null
+  const delta = raw == null || prevRaw == null ? null : round1(raw - prevRaw)
   const described = describe(last, prev, delta)
+  const headline = headlineFromHistory({
+    key,
+    name,
+    rating: described.rating,
+    history,
+    notes: described.notes,
+  })
   return {
     key,
     name,
     group,
     asOf: last.date,
-    score: last.score,
-    rating: described.rating,
-    tone: toneOf(last.score),
-    delta5: delta,
-    compareDate: prev?.date ?? null,
-    history: points.map((point) => ({ date: point.date, score: point.score })),
+    score: headline?.score ?? last.score,
+    alphaScore: headline?.alphaScore ?? headline?.score ?? last.score,
+    marketBeta: null,
+    betaScore: headline?.betaScore ?? null,
+    market10d: headline?.market10d ?? null,
+    totalScore: headline?.totalScore ?? headline?.score ?? last.score,
+    totalDelta: headline?.totalDelta ?? headline?.delta5 ?? delta,
+    market10: [],
+    rating: headline?.rating ?? described.rating,
+    tone: headline?.tone ?? toneOf(last.score),
+    delta5: headline?.delta5 ?? delta,
+    compareDate: headline?.compareDate ?? prev?.date ?? null,
+    history,
     headline: described.headline,
     factors: rescaleWeights(described.factors),
-    notes: [`${name} ${last.score.toFixed(1)} 分，${deltaPhrase(delta, prev?.date ?? null)}。`, ...described.notes],
+    notes: headline?.notes ?? described.notes,
   }
 }
 
@@ -502,91 +528,133 @@ function boardHeight(limitUps: Array<{ date: string; code: string }>, dates: str
   return height
 }
 
-function buildQuant(
-  stock: StockDay[],
-  crowding: CrowdingDay[],
-  indexes: Map<string, IndexDay[]>,
-): EnvStrategy {
-  const hhi = mapByDate(crowding)
-  const csi = new Map((indexes.get("000300.SH") ?? []).map((row) => [row.date, row.amount]))
+/** Last 5 trading days' average amount versus the 5 days before that. Not a score input. */
+function amountWeekChange(stock: StockDay[], index: number): number | null {
+  if (index < 9) return null
+  const recent = mean(stock.slice(index - 4, index + 1).map((day) => day.amount))
+  const prior = mean(stock.slice(index - 9, index - 4).map((day) => day.amount))
+  if (!(prior > 0)) return null
+  return recent / prior - 1
+}
+
+function amountWowPhrase(wow: number | null): string {
+  if (wow == null) return "周环比样本不够"
+  const pct = `${wow >= 0 ? "+" : ""}${(wow * 100).toFixed(1)}%`
+  const tone = Math.abs(wow) < 0.05 ? "基本平稳" : wow > 0 ? "较上周放量" : "较上周缩量"
+  return `5 日均额周环比 ${pct}，${tone}`
+}
+
+const QUANT_WEIGHT = { amp: 0.4, xs: 0.25, margin: 0.25, amt: 0.1 }
+const QUANT_AMP_SMOOTH = 5
+const QUANT_FAST_WINDOW = 40
+/** Exchange margin prints in this source lag the session. Keep the last print for two weeks. */
+const MARGIN_CARRY_DAYS = 15
+
+function carriedMargin(dates: string[], prints: QuantPrint[]): Array<number | null> {
+  const sorted = [...prints].sort((a, b) => (a.date < b.date ? -1 : 1))
+  let cursor = 0
+  let last: QuantPrint | null = null
+  return dates.map((date) => {
+    while (cursor < sorted.length && sorted[cursor].date <= date) {
+      last = sorted[cursor]
+      cursor += 1
+    }
+    if (!last) return null
+    const gap = (Date.parse(`${date}T00:00:00Z`) - Date.parse(`${last.date}T00:00:00Z`)) / 86_400_000
+    return gap <= MARGIN_CARRY_DAYS ? last.value : null
+  })
+}
+
+function buildQuant(stock: StockDay[], marginPrints: QuantPrint[]): EnvStrategy {
   const points: Scored<{
-    xs: number
-    xsPct: number
+    amp: number | null
+    ampPct: number | null
+    xs: number | null
+    xsPct: number | null
     amt: number
     amtPct: number
-    hhi: number | null
-    hhiPct: number | null
-    csiShare: number | null
-    csiPct: number | null
+    amtWow: number | null
+    margin: number | null
+    marginPct: number | null
   }>[] = []
-  const hhiSeries: Array<number | null> = stock.map((day) => hhi.get(day.date)?.hhi ?? null)
-  const csiSeries: Array<number | null> = stock.map((day) => {
-    const indexAmount = csi.get(day.date)
-    if (indexAmount == null || !(day.amount > 0)) return null
-    const ratio = indexAmount / day.amount
-    return ratio > 0.02 && ratio < 0.8 ? ratio * 100 : null
-  })
+  const marginSeries = carriedMargin(stock.map((day) => day.date), marginPrints)
+  const ampSeries: Array<number | null> = stock.map((day) => day.amp)
+  const ampSmooth = ampSeries.map((_, index) => trailingAverage(ampSeries, index, QUANT_AMP_SMOOTH))
+  const xsSeries: Array<number | null> = stock.map((day) => day.xsVol)
   for (let i = 0; i < stock.length; i++) {
     if (i < 20) continue
     const day = stock[i]
-    const xsWindow = stock.slice(Math.max(0, i - PCT_WINDOW + 1), i + 1).map((item) => item.xsVol)
     const amtWindow = stock.slice(Math.max(0, i - PCT_WINDOW + 1), i + 1).map((item) => item.amount)
-    const xsPct = pctRank(xsWindow, day.xsVol)
     const amtPct = pctRank(amtWindow, day.amount)
-    const hhiValue = hhiSeries[i]
-    const hhiWindow = lastFinite(hhiSeries, i, PCT_WINDOW)
-    const hhiPct = hhiValue == null || hhiWindow.length < 15 ? null : pctRank(hhiWindow, hhiValue)
-    const csiValue = csiSeries[i]
-    const csiWindow = lastFinite(csiSeries, i, PCT_WINDOW)
-    const csiPct = csiValue == null || csiWindow.length < 15 ? null : pctRank(csiWindow, csiValue)
+    const amtWow = amountWeekChange(stock, i)
+    const marginValue = marginSeries[i]
+    const marginWindow = lastFinite(marginSeries, i, PCT_WINDOW)
+    const marginPct = marginValue == null || marginWindow.length < 15 ? null : pctRank(marginWindow, marginValue)
+    const ampValue = ampSmooth[i]
+    const ampWindow = lastFinite(ampSmooth, i, QUANT_FAST_WINDOW)
+    const ampPct = ampValue == null || ampWindow.length < 15 ? null : pctRank(ampWindow, ampValue)
+    const xsValue = xsSeries[i]
+    const xsWindow = lastFinite(xsSeries, i, QUANT_FAST_WINDOW)
+    const xsPct = xsValue == null || xsWindow.length < 15 ? null : pctRank(xsWindow, xsValue)
     const score = weightedScore([
-      { score: xsPct, weight: 0.4 },
-      { score: amtPct, weight: 0.25 },
-      hhiPct == null ? null : { score: 100 - hhiPct, weight: 0.2 },
-      csiPct == null ? null : { score: 100 - csiPct, weight: 0.15 },
+      ampPct == null ? null : { score: 100 - ampPct, weight: QUANT_WEIGHT.amp },
+      xsPct == null ? null : { score: 100 - xsPct, weight: QUANT_WEIGHT.xs },
+      marginPct == null ? null : { score: 100 - marginPct, weight: QUANT_WEIGHT.margin },
+      { score: 100 - amtPct, weight: QUANT_WEIGHT.amt },
     ])
     if (score == null) continue
     points.push({
       date: day.date,
       score,
-      xs: day.xsVol * 100,
+      amp: ampValue,
+      ampPct,
+      xs: xsValue,
       xsPct,
       amt: day.amount,
       amtPct,
-      hhi: hhiValue,
-      hhiPct,
-      csiShare: csiValue,
-      csiPct,
+      amtWow,
+      margin: marginValue,
+      marginPct,
     })
   }
   return packStrategy("quant", "宽基量化", "股票", points, (last) => {
-    const liquidity = last.amtPct < 35 ? "偏薄" : last.amtPct > 70 ? "充裕" : "中性"
-    const dispersion = last.xsPct > 65 ? "离散度还在，个股之间有差可做" : last.xsPct < 35 ? "截面被压扁，alpha 难做" : "离散度中性"
-    const rating = last.amtPct < 30 && last.score < 68 ? "谨慎" : bandRating(last.score)
+    const tape = last.xsPct == null ? "截面波动样本不够" : last.xsPct < 40 ? "截面波动偏低，和近期超额更合拍" : last.xsPct > 70 ? "截面波动偏高" : "截面波动中性"
     return {
-      rating,
-      headline: `成交${liquidity}，截面波动分位 ${last.xsPct.toFixed(0)}`,
+      rating: bandRating(last.score),
+      headline: `振幅分位 ${last.ampPct == null ? "—" : last.ampPct.toFixed(0)}，截面波动分位 ${last.xsPct == null ? "—" : last.xsPct.toFixed(0)}，两融分位 ${last.marginPct == null ? "—" : last.marginPct.toFixed(0)}，成交分位 ${last.amtPct.toFixed(0)}`,
       factors: [
-        { key: "xs", label: "截面波动", score: round1(last.xsPct), weight: 0.4, detail: `日收益标准差 ${last.xs.toFixed(2)}%，60 日分位 ${last.xsPct.toFixed(0)}` },
-        { key: "amt", label: "成交活跃", score: round1(last.amtPct), weight: 0.25, detail: `全 A 成交额 ${formatYi(last.amt)}，60 日分位 ${last.amtPct.toFixed(0)}` },
-        last.hhiPct == null ? null : {
-          key: "hhi",
-          label: "成交分散",
-          score: round1(100 - last.hhiPct),
-          weight: 0.2,
-          detail: `成交额 HHI ${last.hhi == null ? "—" : last.hhi.toFixed(4)}，集中度分位 ${last.hhiPct.toFixed(0)}。越分散越好`,
+        last.ampPct == null ? null : {
+          key: "amp",
+          label: "日内振幅",
+          score: round1(100 - last.ampPct),
+          weight: QUANT_WEIGHT.amp,
+          detail: `近 5 日平均振幅 ${last.amp == null ? "—" : `${(last.amp * 100).toFixed(2)}%`}，40 日分位 ${last.ampPct.toFixed(0)}。分位越低，这一项越高`,
         },
-        last.csiPct == null ? null : {
-          key: "csi",
-          label: "沪深300占比",
-          score: round1(100 - last.csiPct),
-          weight: 0.15,
-          detail: `沪深300成交占全 A ${last.csiShare?.toFixed(1)}%，分位 ${last.csiPct.toFixed(0)}。占比越低，宽基以外的空间越大`,
+        last.xsPct == null ? null : {
+          key: "xs",
+          label: "截面波动",
+          score: round1(100 - last.xsPct),
+          weight: QUANT_WEIGHT.xs,
+          detail: `个股日收益标准差 ${(last.xs == null ? 0 : last.xs * 100).toFixed(2)}%，40 日分位 ${last.xsPct.toFixed(0)}。分位越低，这一项越高`,
+        },
+        last.marginPct == null ? null : {
+          key: "margin",
+          label: "两融余额",
+          score: round1(100 - last.marginPct),
+          weight: QUANT_WEIGHT.margin,
+          detail: `两融余额 ${formatYi(last.margin ?? 0)}，60 日分位 ${last.marginPct.toFixed(0)}。分位越低，这一项越高`,
+        },
+        {
+          key: "amt",
+          label: "成交热度",
+          score: round1(100 - last.amtPct),
+          weight: QUANT_WEIGHT.amt,
+          detail: `全 A 成交额 ${formatYi(last.amt)}，60 日分位 ${last.amtPct.toFixed(0)}。分位越低，这一项越高。${amountWowPhrase(last.amtWow)}`,
         },
       ].filter((factor): factor is EnvFactor => factor != null),
       notes: [
-        `全 A 成交额 ${formatYi(last.amt)}，近 60 日里处于 ${last.amtPct.toFixed(0)} 分位，流动性${liquidity}。截面波动率 ${last.xs.toFixed(2)}%，分位 ${last.xsPct.toFixed(0)}。`,
-        `${dispersion}。分数同时看成交有没有挤在少数股票上${last.csiShare == null ? "" : `，以及沪深300是否占了 ${last.csiShare.toFixed(1)}% 的成交`}。`,
+        `${tape}。振幅和截面波动低的时候，分数和近 20 日超额更合拍；两融和成交偏冷的时候，随后的超额更好。`,
+        `全 A 成交额 ${formatYi(last.amt)}，分位 ${last.amtPct.toFixed(0)}。${amountWowPhrase(last.amtWow)}。${last.margin == null ? "" : `两融余额 ${formatYi(last.margin)}，分位 ${last.marginPct?.toFixed(0) ?? "—"}。`}`,
       ],
     }
   })
@@ -632,7 +700,7 @@ function buildSentiment(stock: StockDay[], limitUps: Array<{ date: string; code:
     if (score == null) continue
     points.push({
       date: day.date,
-      score,
+      score: oppose(score),
       up,
       down,
       broken,
@@ -646,7 +714,7 @@ function buildSentiment(stock: StockDay[], limitUps: Array<{ date: string; code:
     })
   }
   return packStrategy("momentum", "强势股", "股票", points, (last) => {
-    const rating = last.score < 45 ? "情绪低迷" : last.score < 60 ? "情绪中性" : "情绪偏热"
+    const rating = bandRating(last.score)
     const ratio = last.down > 0 ? last.up / last.down : last.up
     const breakRate = last.up + last.broken > 0 ? (last.broken / (last.up + last.broken)) * 100 : 0
     return {
@@ -665,6 +733,7 @@ function buildSentiment(stock: StockDay[], limitUps: Array<{ date: string; code:
           ? "昨日涨停家数太少，晋级率这天不稳定。"
           : `晋级率 ${(last.promo * 100).toFixed(1)}%。${last.promo >= 0.35 ? "接力还在。" : "接力偏弱，情绪更多是低位，不是主升。"}`,
         "涨跌停按 10% / 20% / 30% 板块阈值近似，没有单独识别 ST 的 5% 板。",
+        "涨停生态越热，这五项目前加出来的分越高，但近 20 日超额越差。环境分用 100 减这个加权分。",
       ],
     }
   })
@@ -867,7 +936,7 @@ function buildCb(indexes: Map<string, IndexDay[]>): EnvStrategy {
       activityPct == null ? null : { score: activityPct, weight: 0.15 },
     ])
     if (score == null) continue
-    points.push({ date: rows[i].date, score, ret20: ret20 * 100, retPct, levelPct, volPct, activity, activityPct })
+    points.push({ date: rows[i].date, score: oppose(score), ret20: ret20 * 100, retPct, levelPct, volPct, activity, activityPct })
   }
   return packStrategy("cb", "转债指增", "债券", points, (last) => ({
     rating: bandRating(last.score),
@@ -888,6 +957,7 @@ function buildCb(indexes: Map<string, IndexDay[]>): EnvStrategy {
     ].filter((factor): factor is EnvFactor => factor != null),
     notes: [
       "这里用中证转债指数看环境，不是逐只转债的债底、转股溢价和 Delta。那些个券字段目前没有日频入库。",
+      "指数动量越高，原来的分数越高，但近 20 日超额越差。环境分用 100 减这个加权分。",
       `指数 20 日 ${last.ret20 >= 0 ? "上涨" : "下跌"} ${Math.abs(last.ret20).toFixed(2)}%，点位分位 ${last.levelPct.toFixed(0)}。指增要的是还有价差、同时成交没有枯掉。`,
     ],
   }))
@@ -1038,7 +1108,7 @@ function buildArb(books: Map<string, DomBar[]>, commodities: Map<string, Commodi
       volPct == null ? null : { score: volPct, weight: 0.15 },
     ])
     if (score == null || dispersionPct == null || volPct == null || dispersion == null) continue
-    points.push({ date, score, slope, slopePct, basis, basisPct, dispersion, dispersionPct, volPct })
+    points.push({ date, score: oppose(score), slope, slopePct, basis, basisPct, dispersion, dispersionPct, volPct })
   }
   return packStrategy("arb", "套利", "衍生品", points, (last) => {
     const rating = last.score >= 58 ? "环境偏好" : last.score >= 48 ? "中性" : "机会偏少"
@@ -1059,6 +1129,7 @@ function buildArb(books: Map<string, DomBar[]>, commodities: Map<string, Commodi
           ? "波动率这一维偏低，价差机会主要靠期限结构和品种之间的分化，不靠波动本身。"
           : "波动率还在给价差提供活动空间。",
         "期现和跨期只覆盖 IH / IF / IC / IM 的持仓量最大两档合约。到期不足两天的合约不参与，避免分母把年化基差放大失真。",
+        "价差和波动的分位越高，原来的分数越高，但近 20 日超额越差。环境分用 100 减这个加权分。",
       ],
     }
   })
@@ -1392,18 +1463,10 @@ function buildIntraday(books: Map<string, DomBar[]>): EnvStrategy {
       { score: erScore, weight: 0.3 },
     ])
     if (score == null) continue
-    points.push({ date, score, amp, ampPct, er, byProduct: bits.join("，") })
+    points.push({ date, score: oppose(score), amp, ampPct, er, byProduct: bits.join("，") })
   }
   return packStrategy("intraday", "股指多空日内", "衍生品", points, (last) => {
-    const rating = last.ampPct < 30 && last.er < 12
-      ? "偏静"
-      : last.score >= 64 && last.er >= 15
-        ? "良（可做）"
-        : last.score >= 64
-          ? "有振幅，方向弱"
-          : last.score < 45
-            ? "偏静"
-            : "中性"
+    const rating = bandRating(last.score)
     return {
       rating,
       headline: `近 5 日平均振幅 ${last.amp.toFixed(2)}%，实体占振幅 ${last.er.toFixed(0)}`,
@@ -1417,6 +1480,7 @@ function buildIntraday(books: Map<string, DomBar[]>): EnvStrategy {
           ? "振幅里的净位移很小，盘中有波动也容易来回扫，方向单不好拿。"
           : "盘中不是死水，价格能顺着一个方向拉开一段。",
         "这是主力合约日 K 的实体/振幅，不是 5 分钟路径，所以没有计算分钟级别的方差比。",
+        "振幅和实体效率越高，原来的分数越高，但近 20 日超额越差。环境分用 100 减这个加权分。",
       ],
     }
   })
@@ -1493,7 +1557,7 @@ function buildSwing(books: Map<string, DomBar[]>): EnvStrategy {
     if (score == null) continue
     points.push({
       date: bars[i].date,
-      score,
+      score: oppose(score),
       pathEff,
       vr4,
       ac1: lag,
@@ -1539,6 +1603,7 @@ function buildSwing(books: Map<string, DomBar[]>): EnvStrategy {
         `放到中证1000主力的日线上看，近 20 日净距离只占折腾路程的 ${last.pathEff.toFixed(1)}%，最长连续同向 ${last.run} 天。`,
         `方差比 VR4 = ${last.vr4.toFixed(2)}，日收益自相关 ${last.ac1.toFixed(3)}。${reverting ? "隔日容易走反，趋势单会被来回抹平。" : "还没有强到每天都反向，但也没有走出单边。"}`,
         `白天涨跌和下一跳隔夜：同向比例 ${last.contRate.toFixed(1)}%，${corrText}。换月当天的跳空不计入。`,
+        "振幅和结构越清楚，原来的分数越高，但近 20 日超额越差。环境分用 100 减这个加权分。",
       ],
     }
   })
@@ -1587,21 +1652,125 @@ function overnightLinks(bars: DomBar[], end: number, size: number): { share: num
   }
 }
 
+function lastOnOrBefore(dates: string[], date: string): number {
+  let lo = 0
+  let hi = dates.length - 1
+  let found = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (dates[mid] <= date) {
+      found = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  return found
+}
+
+function fitMarketBeta(
+  points: Array<{ date: string; total: number | null }>,
+  dates: string[],
+  closes: number[],
+): number | null {
+  const closeOf = (date: string) => {
+    const index = lastOnOrBefore(dates, date)
+    return index < 0 ? null : closes[index]
+  }
+  const xs: number[] = []
+  const ys: number[] = []
+  let prevDate: string | null = null
+  let prevTotal: number | null = null
+  for (const point of points) {
+    if (!(point.total != null && point.total > 0)) continue
+    if (prevDate != null && prevTotal != null && point.total !== prevTotal) {
+      const start = closeOf(prevDate)
+      const end = closeOf(point.date)
+      if (start != null && end != null && start > 0 && end > 0) {
+        xs.push(end / start - 1)
+        ys.push(point.total / prevTotal - 1)
+      }
+    }
+    if (point.total !== prevTotal) {
+      prevTotal = point.total
+      prevDate = point.date
+    }
+  }
+  if (xs.length < 40) return null
+  const mx = xs.reduce((sum, value) => sum + value, 0) / xs.length
+  const my = ys.reduce((sum, value) => sum + value, 0) / ys.length
+  let num = 0
+  let den = 0
+  for (let i = 0; i < xs.length; i++) {
+    num += (xs[i] - mx) * (ys[i] - my)
+    den += (xs[i] - mx) ** 2
+  }
+  if (den < 1e-18) return null
+  return num / den
+}
+
+async function attachMarketBeta(strategies: EnvStrategy[]): Promise<void> {
+  const dates = strategies.flatMap((item) => item.history.map((point) => point.date)).sort()
+  const from = dates[0]
+  const to = dates[dates.length - 1]
+  if (!from || !to) return
+  let series: { date: string; value: number }[]
+  try {
+    const loaded = await loadPrivateFundBenchmarkSeries("IF", shiftIso(from, -40), to)
+    series = loaded.data
+  } catch (err) {
+    console.error("[strategy-environment] 沪深300", err)
+    return
+  }
+  const closeDates = series.map((point) => point.date)
+  const closes = series.map((point) => point.value)
+  for (const strategy of strategies) {
+    const saved = await readStrategySnapshot<{ points?: Array<{ date: string; total: number | null }> }>(`compare:${strategy.key}`)
+    strategy.marketBeta = fitMarketBeta(saved?.body?.points ?? [], closeDates, closes)
+    strategy.market10 = strategy.history.map((point) => {
+      const end = lastOnOrBefore(closeDates, point.date)
+      const start = end - 10
+      if (end < 0 || start < 0) return null
+      const base = closes[start]
+      const last = closes[end]
+      if (!(base > 0) || !(last > 0)) return null
+      return (last / base - 1) * 100
+    })
+    const headline = headlineFromHistory(strategy)
+    if (!headline) continue
+    strategy.score = headline.score
+    strategy.alphaScore = headline.alphaScore
+    strategy.betaScore = headline.betaScore
+    strategy.market10d = headline.market10d
+    strategy.totalScore = headline.totalScore
+    strategy.totalDelta = headline.totalDelta
+    strategy.delta5 = headline.delta5
+    strategy.compareDate = headline.compareDate
+    strategy.tone = headline.tone
+    strategy.rating = headline.rating
+    strategy.notes = headline.notes
+  }
+}
+
+function shiftIso(iso: string, days: number): string {
+  const date = new Date(`${iso}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
 async function compute(): Promise<StrategyEnvironmentPayload> {
-  const [stock, limitUps, crowding, indexes, futures, spots, commodities, iv, commodityIv] = await Promise.all([
+  const [stock, limitUps, indexes, futures, spots, commodities, iv, commodityIv, extras] = await Promise.all([
     safe("stock", loadStock, [] as StockDay[]),
     safe("limit-up", loadLimitUps, [] as Array<{ date: string; code: string }>),
-    safe("crowding", loadCrowding, [] as CrowdingDay[]),
     safe("index", loadIndexes, new Map<string, IndexDay[]>()),
     safe("futures", loadFutures, [] as ContractRow[]),
     safe("spots", loadSpots, new Map<string, Map<string, number>>()),
     safe("commodities", loadCommodities, new Map<string, CommodityBar[]>()),
     safe("iv", loadIv, [] as IvPoint[]),
     safe("commodity-iv", loadCommodityIv, [] as IvPoint[]),
+    safe("quant-extras", loadQuantExtras, { style: new Map<string, number>(), margin: [] as QuantPrint[] }),
   ])
   const books = dominantBooks(futures, spots, indexes)
   const strategies = [
-    stock.length ? buildQuant(stock, crowding, indexes) : emptyStrategy("quant", "宽基量化", "股票", "A 股日行情不足，宽基环境先空着。"),
+    stock.length ? buildQuant(stock, extras.margin) : emptyStrategy("quant", "宽基量化", "股票", "A 股日行情不足，宽基环境先空着。"),
     stock.length ? buildSentiment(stock, limitUps) : emptyStrategy("momentum", "强势股", "股票", "A 股日行情不足，强势股环境先空着。"),
     buildCta(commodities),
     buildCb(indexes),
@@ -1610,15 +1779,35 @@ async function compute(): Promise<StrategyEnvironmentPayload> {
     buildIntraday(books),
     buildSwing(books),
   ]
+  await attachMarketBeta(strategies)
   const asOf = strategies.map((item) => item.asOf).filter((item): item is string => !!item).sort().at(-1) ?? null
   return { asOf, strategies }
 }
 
 export async function loadStrategyEnvironment(force = false): Promise<StrategyEnvironmentPayload> {
-  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.data
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) {
+    const stored = await readStrategySnapshot<StrategyEnvironmentPayload>("board")
+    if (stored?.body?.strategies?.length && stored.updatedAt > cache.at) {
+      cache = { at: Date.now(), data: stored.body }
+      return stored.body
+    }
+    return cache.data
+  }
+  if (!force) {
+    const stored = await readStrategySnapshot<StrategyEnvironmentPayload>("board")
+    if (stored?.body?.strategies?.length) {
+      cache = { at: Date.now(), data: stored.body }
+      return stored.body
+    }
+  }
   const started = Date.now()
   const data = await compute()
   console.info(`[strategy-environment] computed in ${Date.now() - started}ms asOf=${data.asOf ?? "none"}`)
   cache = { at: Date.now(), data }
+  try {
+    await writeStrategySnapshot("board", data)
+  } catch (err) {
+    console.error("[strategy-environment] snapshot write", err)
+  }
   return data
 }

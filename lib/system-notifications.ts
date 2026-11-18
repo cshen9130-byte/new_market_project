@@ -29,8 +29,8 @@ export const MOM_NOTIFICATION_RULES = [MOM_VAR_CONCENTRATION_RULE, MOM_DECISION_
 export const MOM_DECISION_ACTIONS = ["加码", "暂缓加码", "减码准备", "观望", "补风格", "控拥挤"] as const
 export const MOM_DECISION_DEFAULT_ACTIONS = ["加码"] as const
 
-/** Newest week is ready when at least half the strategy-comparison products have a print. */
-export const WEEKLY_STRATEGY_EXCEL_READY_RATIO = 0.5
+/** Newest week is ready only when NAV coverage is strictly above 80%. */
+export const WEEKLY_STRATEGY_EXCEL_READY_RATIO = 0.8
 
 /** 在管产品系统周报: 距下期缺日为已最新 must be strictly above this share. */
 export const MANAGED_SYSTEM_WEEKLY_CURRENT_RATIO = 0.9
@@ -51,7 +51,7 @@ export const NOTIFICATION_RULES: NotificationRuleDef[] = [
     key: WEEKLY_STRATEGY_EXCEL_RULE,
     kind: "periodic",
     title: "周五周度策略对比 Excel",
-    description: "每个周五，周报数据抓取完成、可以生成周度策略对比 Excel 时，通知本账户。",
+    description: "近一周净值覆盖超过 80% 时，通知本账户可以生成周度策略对比 Excel。同一周只发一次。",
     defaultEnabled: true,
   },
   {
@@ -250,7 +250,7 @@ function coverageAt(status: WeeklyCoverageInput, index: number): WeeklyCoverage 
     missing += category.weeks[index]?.missing ?? 0
   }
   const covered = Math.max(0, total - missing)
-  const ready = Boolean(weekEnd) && total > 0 && covered / total >= WEEKLY_STRATEGY_EXCEL_READY_RATIO
+  const ready = Boolean(weekEnd) && total > 0 && covered / total > WEEKLY_STRATEGY_EXCEL_READY_RATIO
   return { weekStart, weekEnd, total, covered, ready }
 }
 

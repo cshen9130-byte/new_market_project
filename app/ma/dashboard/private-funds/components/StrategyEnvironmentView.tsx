@@ -2,11 +2,16 @@
 
 import dynamic from "next/dynamic"
 import { useEffect, useState } from "react"
-import type { EnvStrategy, EnvTone, StrategyEnvironmentPayload } from "@/lib/ma/strategy-environment"
+import { headlineFromHistory, totalSpark, type EnvStrategy, type EnvTone, type StrategyEnvironmentPayload } from "@/lib/ma/strategy-environment"
 import { StrategyEnvironmentMethodDialog } from "./StrategyEnvironmentMethodDialog"
 
 const StrategyEnvironmentCompare = dynamic(
   () => import("./StrategyEnvironmentCompare").then((m) => m.StrategyEnvironmentCompare),
+  { ssr: false },
+)
+
+const StrategyAverageNavChart = dynamic(
+  () => import("./StrategyAverageNavChart").then((m) => m.StrategyAverageNavChart),
   { ssr: false },
 )
 
@@ -65,7 +70,7 @@ function Spark({ values, tone }: { values: number[]; tone: EnvTone }) {
 }
 
 function rankedLine(strategies: EnvStrategy[]): string {
-  const ranked = strategies.filter((item) => item.score != null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+  const ranked = strategies.filter((item) => item.totalScore != null).sort((a, b) => (b.totalScore ?? 0) - (a.totalScore ?? 0))
   if (ranked.length < 2) return ""
   const better = ranked.slice(0, 3).map((item) => item.name).join("、")
   const worse = ranked.slice(-2).map((item) => item.name).join("、")
@@ -99,7 +104,11 @@ export function StrategyEnvironmentView() {
     void load(false)
   }, [])
 
-  const active = data?.strategies.find((item) => item.key === selected) ?? data?.strategies[0] ?? null
+  const strategies = (data?.strategies ?? []).map((item) => {
+    const headline = headlineFromHistory(item)
+    return headline ? { ...item, ...headline } : item
+  })
+  const active = strategies.find((item) => item.key === selected) ?? strategies[0] ?? null
 
   return (
     <div className="flex w-full flex-col gap-3">
@@ -108,7 +117,7 @@ export function StrategyEnvironmentView() {
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">策略环境</h1>
           <p className="mt-1 text-sm text-zinc-500">
             {data?.asOf ? `行情截至 ${data.asOf}` : "按最近一个交易日"}
-            。分数高表示这个策略更好做，不是它已经赚了多少。红涨绿跌是近 5 个交易日的分数变化。
+            。大数字是合计。α 是近 10 日的超额环境分，β 是相对沪深300的贝塔乘近 10 日涨跌。市场下跌而贝塔高时 β 为负，合计会被拉低。红涨绿跌是合计比 5 个交易日前的变化。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -146,9 +155,35 @@ export function StrategyEnvironmentView() {
 
       {data && (
         <>
-          <p className="text-sm text-zinc-700 dark:text-zinc-300">{rankedLine(data.strategies)}</p>
+          <div className="sticky -top-5 z-30 -mx-5 border-b border-zinc-200 bg-background px-5 py-2 shadow-sm dark:border-zinc-800">
+            <div className="flex flex-wrap gap-1.5">
+              {strategies.map((item) => {
+                const on = item.key === active?.key
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setSelected(item.key)}
+                    aria-pressed={on}
+                    className={[
+                      "inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs transition-colors",
+                      on
+                        ? "border-red-400 bg-red-50 text-zinc-900 dark:border-red-700 dark:bg-red-950/40 dark:text-zinc-50"
+                        : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300",
+                    ].join(" ")}
+                  >
+                    <span>{item.name}</span>
+                    <span className={`tabular-nums ${on ? TONE_SCORE[item.tone] : "text-zinc-400"}`}>
+                      {item.totalScore == null ? "—" : item.totalScore.toFixed(0)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <p className="text-sm text-zinc-700 dark:text-zinc-300">{rankedLine(strategies)}</p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            {data.strategies.map((item) => {
+            {strategies.map((item) => {
               const on = item.key === active?.key
               return (
                 <button
@@ -172,14 +207,21 @@ export function StrategyEnvironmentView() {
                   <div className="flex items-end justify-between gap-2">
                     <div>
                       <div className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{item.name}</div>
+                      <div className="text-[11px] text-zinc-400">合计</div>
                       <div className={`text-2xl font-semibold tabular-nums leading-none ${TONE_SCORE[item.tone]}`}>
-                        {item.score == null ? "—" : item.score.toFixed(1)}
+                        {item.totalScore == null ? "—" : item.totalScore.toFixed(1)}
+                      </div>
+                      <div className="mt-1 flex gap-2 text-[11px] tabular-nums text-zinc-500">
+                        <span>α {item.alphaScore == null ? "—" : item.alphaScore.toFixed(1)}</span>
+                        <span className={item.betaScore == null ? "" : item.betaScore > 0 ? "text-red-500" : item.betaScore < 0 ? "text-green-600" : ""}>
+                          β {item.betaScore == null ? "—" : `${item.betaScore > 0 ? "+" : ""}${item.betaScore.toFixed(1)}`}
+                        </span>
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1">
-                      <Spark values={item.history.slice(-24).map((point) => point.score)} tone={item.tone} />
+                      <Spark values={totalSpark(item)} tone={item.tone} />
                       <span className="text-xs tabular-nums">
-                        <Delta value={item.delta5} />
+                        <Delta value={item.totalDelta} />
                       </span>
                     </div>
                   </div>
@@ -196,14 +238,25 @@ export function StrategyEnvironmentView() {
                   <div className="text-[11px] text-zinc-400">{active.group}{active.asOf ? ` · ${active.asOf}` : ""}</div>
                   <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
                     {active.name}
-                    <span className={`ml-2 text-2xl tabular-nums ${TONE_SCORE[active.tone]}`}>
-                      {active.score == null ? "—" : active.score.toFixed(1)}
+                    <span className="ml-2 text-xs font-normal text-zinc-400">合计</span>
+                    <span className={`ml-1 text-2xl tabular-nums ${TONE_SCORE[active.tone]}`}>
+                      {active.totalScore == null ? "—" : active.totalScore.toFixed(1)}
                     </span>
                   </h2>
+                  <p className="mt-1 text-xs tabular-nums text-zinc-500">
+                    α {active.alphaScore == null ? "—" : active.alphaScore.toFixed(1)}
+                    <span className="mx-2">·</span>
+                    β {active.betaScore == null ? "—" : `${active.betaScore > 0 ? "+" : ""}${active.betaScore.toFixed(1)}`}
+                    {active.marketBeta != null && active.market10d != null && (
+                      <span className="ml-2 text-zinc-400">
+                        贝塔 {active.marketBeta.toFixed(2)} × 近10日沪深300 {active.market10d > 0 ? "+" : ""}{active.market10d.toFixed(1)}%
+                      </span>
+                    )}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   <span className={`rounded px-2 py-0.5 text-xs ${TONE_PILL[active.tone]}`}>{active.rating}</span>
-                  <span className="tabular-nums"><Delta value={active.delta5} /></span>
+                  <span className="tabular-nums"><Delta value={active.totalDelta} /></span>
                 </div>
               </div>
 
@@ -250,10 +303,12 @@ export function StrategyEnvironmentView() {
 
           {active && <StrategyEnvironmentCompare strategyKey={active.key} strategyName={active.name} />}
 
+          <StrategyAverageNavChart activeKey={active?.key ?? selected} />
+
           <StrategyEnvironmentMethodDialog
             open={methodOpen}
             onOpenChange={setMethodOpen}
-            strategies={data.strategies}
+            strategies={strategies}
             activeKey={methodKey}
             onSelect={setMethodKey}
           />

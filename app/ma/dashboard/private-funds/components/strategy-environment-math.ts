@@ -7,7 +7,19 @@ export type FactorWriteup = {
   steps: MathStep[]
 }
 
+/** Official 运维团队策略 path, plus the level-3 tags this environment score is written for. */
+export type StrategyTagLine = { where: string; names: string }
+
+export type StrategyAbout = {
+  /** What the strategy does, before any talk of how the score is built. */
+  meaning: string
+  tags: StrategyTagLine[]
+  /** Tags that look related but are not this score, and how the peer sample is chosen. */
+  note: string
+}
+
 export type StrategyWriteup = {
+  about: StrategyAbout
   why: string[]
   shared: MathStep[]
   factors: Record<string, FactorWriteup>
@@ -50,47 +62,123 @@ const PCT_SYMBOLS = [
 
 export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
   quant: {
+    about: {
+      meaning: "宽基量化在沪深300、中证500、中证1000、中证A500 上做增强，或者做不押指数方向的量化选股。仓位跟着宽基走，赚的是股票之间的相对收益。",
+      tags: [
+        { where: "股票多头 / 指数增强", names: "300指增、500指增、1000指增、A500指增" },
+      ],
+      note: "2000指增、红利指增、小市值指增、北证50指增、空气指增、转债指增、主观多头、股票市场中性不归这一档。超额对比还多收观察分类「量化选股」：二级是量化选股、量化多头、量化精选，或产品名里带这些字。现行团队树上没有「量化选股」这个节点。",
+    },
     why: [
-      "宽基量化赚的是股票之间的差，不是指数本身的方向。所以环境分看三件事：同一天个股涨跌有没有拉开，全市场成交够不够做，成交有没有挤在少数股票或沪深300上。",
-      "绝对值会随行情换档，所以每一项都先放到近 60 个交易日里看分位。分位高才算「相对自己的近期历史偏高」。",
+      "分数同时看两件事：和近 20 日超额合不合拍，以及随后 20 日超额会不会更好。只追领先的话，分数会变成来回跳的变化，图上就看不出和超额的关系。",
+      "振幅先取近 5 日平均，再看 40 日分位，权重 0.40。截面波动用当天的 40 日分位，权重 0.25。两融和成交仍用 60 日分位，权重 0.25 和 0.10。图上的 10 日均线和近 20 日超额的相关大约 0.53，和随后 20 日超额大约 0.32。前半段这两边大约是 0.83 和 0.49，后半段大约是 0.46 和 0.29。",
+      "这四项都是分位越低，这一项越高。截面波动高、振幅高的日子，超额往往已经走弱。两融厚、成交热的日子，随后的超额更差。风格 HHI 和已经发生的超额有一点同向，但预测不了随后 20 日，所以不占权重。成交额周环比只写在读数里。",
     ],
     shared: [SHARED_Q, SHARED_CLAMP, SHARED_WEIGHT],
     factors: {
-      xs: {
-        why: "个股同一天的涨跌差得开，多头和空头才有可交易的相对收益。差被压扁时，选股空间一起变薄。",
+      breadth: {
+        why: "量化选股和宽基指增是多头。近 20 个交易日里上涨的股票越多，这些产品越容易做出收益，随后一段时间的超额也更好。所以上涨占比的分位越高，这一项越高。",
         steps: [
           {
-            lead: "先算每只股票相对前一交易日收盘的收益率。",
+            lead: "每只股票用今天的收盘除以 20 个交易日前的收盘，再减 1。涨跌绝对值达到或超过 120% 的不进入，复牌和异常价不代表可交易的广度。",
+            latex: String.raw`R_{i,t}^{(20)}=\dfrac{C_{i,t}}{C_{i,t-20}}-1`,
+          },
+          {
+            lead: "上涨占比是这些股票里收益为正的比例。当天至少要有 1000 只有行情的股票。",
+            latex: String.raw`B_t=\dfrac{\#\{\,i:\lvert R_{i,t}^{(20)}\rvert<1.2,\; R_{i,t}^{(20)}>0\,\}}{\#\{\,i:\lvert R_{i,t}^{(20)}\rvert<1.2\,\}}`,
+          },
+          {
+            lead: "分数是 B 的 60 日分位。设计权重 0.30，和其他项一起归一。",
+            latex: String.raw`s_{\text{广度}}=q\bigl(B_t;\,B_{t-n+1},\ldots,B_t\bigr)`,
+          },
+        ],
+      },
+      amp: {
+        why: "日内高低差很大时，宽基调仓的冲击更大，近 20 日超额也更差。单日振幅太跳，所以先取近 5 日平均，再看它在近 40 日里的分位。分位低的时候这一项高。",
+        steps: [
+          {
+            lead: "每只股票的振幅是最高价减去最低价，再除以前收盘。只保留 0 到 25% 之间的振幅，避免异常价把平均数拉飞。",
+            latex: String.raw`u_{i,t}=\dfrac{H_{i,t}-L_{i,t}}{C_{i,t-1}}`,
+          },
+          {
+            lead: "当天的振幅是这些股票的算术平均。",
+            latex: String.raw`U_t=\operatorname{mean}\{\,u_{i,t}:0<u_{i,t}<0.25\,\}`,
+          },
+          {
+            lead: "先取含今天的 5 个交易日振幅平均。不满 5 天时这一项不进入。",
+            latex: String.raw`\bar U_t=\operatorname{mean}(U_{t-4},\ldots,U_t)`,
+          },
+          {
+            lead: "分数是 100 减去这个平均振幅的 40 日分位。设计权重 0.40。",
+            latex: String.raw`s_{\text{振幅}}=100-q\bigl(\bar U_t\bigr)`,
+          },
+        ],
+      },
+      xs: {
+        why: "截面波动是当天个股日收益的离散程度。波动散开的时候，近 20 日超额通常更差，所以分位越低这一项越高。它和振幅一起，让红线跟得上黄线的起伏。",
+        steps: [
+          {
+            lead: "每只股票用今天的收盘除以前收盘，再减 1。涨跌绝对值达到或超过 35% 的不进入。",
             latex: String.raw`r_{i,t}=\dfrac{C_{i,t}}{C_{i,t-1}}-1`,
           },
           {
-            lead: "单日涨跌达到或超过 35% 的股票不进入这一天的标准差。复牌、异常价会把截面标准差拉飞，那些票不代表可交易的横截面。",
-            latex: String.raw`\mathcal{U}_t=\{\,i:\lvert r_{i,t}\rvert<0.35\,\}`,
+            lead: "截面波动是这些收益率的样本标准差。",
+            latex: String.raw`\sigma_t=\operatorname{stdev}\{\,r_{i,t}:\lvert r_{i,t}\rvert<0.35\,\}`,
           },
           {
-            lead: "截面波动用样本标准差，分母是家数减 1，与数据库的 STDDEV_SAMP 一致。当天至少要有 1000 只有前收盘的股票，这一天才进入计算。",
-            latex: String.raw`\sigma_t=\sqrt{\dfrac{1}{\lvert\mathcal{U}_t\rvert-1}\sum_{i\in\mathcal{U}_t}\bigl(r_{i,t}-\bar r_t\bigr)^2},\qquad \bar r_t=\dfrac{1}{\lvert\mathcal{U}_t\rvert}\sum_{i\in\mathcal{U}_t}r_{i,t}`,
-          },
-          {
-            lead: "把今天的 σ 放进含今天在内、最多 60 天的窗口，取分位。这一项的分数就是这个分位，权重 0.40。",
-            latex: String.raw`s_{\text{截面}}=q\bigl(\sigma_t;\,\sigma_{t-n+1},\ldots,\sigma_t\bigr)`,
+            lead: "分数是 100 减去 σ 的 40 日分位。设计权重 0.25。窗口比两融短，是为了跟上近 20 日超额的转折。",
+            latex: String.raw`s_{\text{截面}}=100-q\bigl(\sigma_t\bigr)`,
           },
         ],
       },
       amt: {
-        why: "成交变薄时，同样的调仓冲击更大，策略容量下降。所以成交额分位单独占一块权重，低分位会把环境分拉下来。",
+        why: "成交放得很大的时候，这些产品的收益更像指数，随后的超额更差。成交处在自己近 60 日低分位时，这一项高。周环比只是读数。",
         steps: [
           {
             lead: "当天全市场成交额是所有股票成交额之和。分位用这个原始合计，单位在比大小时会约掉。",
             latex: String.raw`A_t=\sum_i a_{i,t}`,
           },
           {
-            lead: "分数是 A 的 60 日分位，权重 0.25。",
-            latex: String.raw`s_{\text{成交}}=q\bigl(A_t;\,A_{t-n+1},\ldots,A_t\bigr)`,
+            lead: "分数是 100 减去 A 的 60 日分位。设计权重 0.10。周环比不进入这个分数。",
+            latex: String.raw`s_{\text{成交}}=100-q\bigl(A_t;\,A_{t-n+1},\ldots,A_t\bigr)`,
+          },
+          {
+            lead: "周环比用含今天的 5 个交易日成交额均值，除以再往前 5 个交易日的均值，再减 1。绝对值小于 5% 写成「基本平稳」，高于 5% 写成「较上周放量」，低于 −5% 写成「较上周缩量」。它不进入分数。",
+            latex: String.raw`W_t=\dfrac{\operatorname{mean}(A_{t-4},\ldots,A_t)}{\operatorname{mean}(A_{t-9},\ldots,A_{t-5})}-1`,
           },
           {
             lead: "页面上写成「亿」只是读数。原始数不小于 10^10 时除以 10^8，不小于 10^6 时除以 10^4。这个换算不进入分数。",
             latex: String.raw`A_t^{\text{展示}}=\begin{cases}A_t/10^{8}&A_t\ge 10^{10}\\ A_t/10^{4}&A_t\ge 10^{6}\\ A_t&\text{其余}\end{cases}`,
+          },
+        ],
+      },
+      style: {
+        why: "成交若堆在少数风格上，宽基选股能用的相对收益变窄。风格 HHI 低表示成交散在大中小盘、强弱两边，所以用 100 减分位。",
+        steps: [
+          {
+            lead: "流通市值用成交额除以换手率。换手率按百分数理解，只保留 0.05% 到 40% 之间的股票。按流通市值从小到大累加，切成各占约三分之一市值的小、中、大三档。",
+            latex: String.raw`\text{市值}_i=\dfrac{a_i}{\tau_i/100}`,
+          },
+          {
+            lead: "每一档再按近 20 日涨跌分成强弱两半。没有市净率日频，所以这一刀用的是涨跌，不是成长和价值的基本面划分。六格成交额占比的平方和就是风格 HHI。六格完全平均时等于 1/6，约 0.167。",
+            latex: String.raw`H^{\text{风格}}_t=\sum_{k=1}^{6}\left(\dfrac{A_{k,t}}{A_t}\right)^2`,
+          },
+          {
+            lead: "分数是 100 减去这个 H 的 60 日分位。设计权重 0.17。风格 HHI 算不出的日子，用个股成交额 HHI 顶上，权重不变。",
+            latex: String.raw`s_{\text{风格}}=100-q\bigl(H^{\text{风格}}_t\bigr)`,
+          },
+        ],
+      },
+      margin: {
+        why: "两融余额堆在高位时，杠杆资金和指数涨跌绑在一起，随后的超额更差。余额用的是水平，不是变化：余额偏低的时候，分数已经在超额起来之前抬高，相关峰大约在分数之后 5 个交易日。",
+        steps: [
+          {
+            lead: "余额是上交所和深交所融资融券余额之和，单位元。这个公布比行情慢，最新一笔若不超过 15 个自然日，就沿用到今天。",
+            latex: String.raw`M_t=M_t^{\text{沪}}+M_t^{\text{深}}`,
+          },
+          {
+            lead: "分数是 100 减去 M 的 60 日分位。设计权重 0.25。没有余额时这一项不进入，其余权重按比例放大。",
+            latex: String.raw`s_{\text{两融}}=100-q\bigl(M_t;\,M_{t-n+1},\ldots,M_t\bigr)`,
           },
         ],
       },
@@ -106,38 +194,34 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
             latex: String.raw`h_t=q\bigl(H_t;\,H_{t-n+1},\ldots,H_t\bigr)`,
           },
           {
-            lead: "分数是 100 减去集中度分位。权重 0.20。",
+            lead: "分数是 100 减去集中度分位。只在风格 HHI 缺失时使用，权重仍是 0.17。",
             latex: String.raw`s_{\text{分散}}=100-h_t`,
           },
         ],
       },
-      csi: {
-        why: "成交若主要发生在沪深300里，宽基以外的股票没有足够的对手盘。占比越低，这一项越高。两个成交额的单位对不上时，比值会掉出合理区间，这一项直接弃用，避免脏数据进总分。",
+      size: {
+        why: "这一档产品里 500、1000、A500 和量化选股对小盘更敏感。中证1000近 20 日强于沪深300时，同类净值通常也更好。它只占一小块权重：单独看，它几乎不预测之后 20 日。",
         steps: [
           {
-            lead: "占比用沪深300指数成交额除以全 A 成交额。只保留落在 2% 到 80% 之间的比值，再写成百分数。",
-            latex: String.raw`\pi_t=\dfrac{A_t^{300}}{A_t}\times 100,\qquad \text{仅当 }0.02<\dfrac{A_t^{300}}{A_t}<0.80`,
+            lead: "两边都是指数收盘价相对 20 个交易日前收盘的收益率。差是中证1000减去沪深300。",
+            latex: String.raw`D_t=\left(\dfrac{P_t^{1000}}{P_{t-20}^{1000}}-1\right)-\left(\dfrac{P_t^{300}}{P_{t-20}^{300}}-1\right)`,
           },
           {
-            lead: "有效历史少于 15 天，或今天的比值被丢弃时，这一项不进入环境分。其余权重按比例放大。",
-            latex: String.raw`c_t=q\bigl(\pi_t;\,\pi_{t-n+1},\ldots,\pi_t\bigr)`,
-          },
-          {
-            lead: "分数是 100 减去占比分位。设计权重 0.15。",
-            latex: String.raw`s_{\text{沪深300}}=100-c_t`,
+            lead: "分数是这个差的 60 日分位。设计权重 0.08。任一指数当天没有收盘价时，这一项不进入。",
+            latex: String.raw`s_{\text{小盘}}=q\bigl(D_t;\,D_{t-n+1},\ldots,D_t\bigr)`,
           },
         ],
       },
     },
     combine: [
       {
-        lead: "四项的设计权重是截面 0.40、成交 0.25、分散 0.20、沪深300占比 0.15。缺哪一项，就把剩下的权重除以它们的和。",
-        latex: String.raw`w_{\text{截面}}=0.40,\; w_{\text{成交}}=0.25,\; w_{\text{分散}}=0.20,\; w_{\text{沪深300}}=0.15`,
+        lead: "设计权重是日内振幅 0.40、截面波动 0.25、两融余额 0.25、成交热度 0.10。缺哪一项，就把剩下的权重除以它们的和。",
+        latex: String.raw`w_{\text{振幅}}=0.40,\; w_{\text{截面}}=0.25,\; w_{\text{两融}}=0.25,\; w_{\text{成交}}=0.10`,
       },
       SHARED_WEIGHT,
       {
-        lead: "成交额分位低于 30、同时环境分低于 68 时，状态写成「谨慎」。这条先于下面的分档。否则从上到下命中第一条就停。",
-        latex: String.raw`\text{状态}=\begin{cases}\text{谨慎}& q(A)<30\text{ 且 }S<68\\ \text{环境偏好}& S\ge 72\\ \text{良（可做）}& S\ge 64\\ \text{中性}& S\ge 56\\ \text{谨慎}& S\ge 45\\ \text{偏弱}& S<45\end{cases}`,
+        lead: "状态只看环境分，从上到下命中第一条就停。成交冷不再单独写成谨慎，因为这档分数里成交冷是随后超额更好的迹象。",
+        latex: String.raw`\text{状态}=\begin{cases}\text{环境偏好}& S\ge 72\\ \text{良（可做）}& S\ge 64\\ \text{中性}& S\ge 56\\ \text{谨慎}& S\ge 45\\ \text{偏弱}& S<45\end{cases}`,
       },
     ],
     rating: [],
@@ -145,25 +229,44 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
       ...PCT_SYMBOLS,
       { symbol: "i", meaning: "股票。下标 t 是交易日。" },
       { symbol: "C_{i,t}", meaning: "股票 i 在 t 日的收盘价。" },
-      { symbol: "r_{i,t}", meaning: "股票 i 在 t 日的收益率，收盘除以前收盘再减 1。" },
-      { symbol: "\\mathcal{U}_t", meaning: "t 日进入截面标准差的股票集合，单日涨跌绝对值小于 35%。" },
-      { symbol: "\\bar r_t", meaning: "集合 U_t 里收益率的算术平均。" },
-      { symbol: "\\sigma_t", meaning: "t 日截面波动，即 U_t 上收益率的样本标准差。" },
+      { symbol: "R_{i,t}^{(20)}", meaning: "股票 i 近 20 个交易日的收益率。" },
+      { symbol: "B_t", meaning: "近 20 日上涨股票的占比。涨跌绝对值达到 120% 的股票不进入。" },
+      { symbol: "H_{i,t}", meaning: "股票 i 在 t 日的最高价。" },
+      { symbol: "L_{i,t}", meaning: "股票 i 在 t 日的最低价。" },
+      { symbol: "u_{i,t}", meaning: "股票 i 的日内振幅，最高价减最低价，再除以前收盘。" },
+      { symbol: "U_t", meaning: "当天股票振幅的平均数，只保留 0 到 25%。" },
+      { symbol: "\\bar U_t", meaning: "含今天的 5 个交易日振幅平均。环境分用的是这个数的 40 日分位。" },
+      { symbol: "\\sigma_t", meaning: "当天个股日收益率的截面标准差。涨跌绝对值达到 35% 的股票不进入。" },
+      { symbol: "P_t^{1000}", meaning: "中证1000在 t 日的收盘价。" },
+      { symbol: "P_t^{300}", meaning: "沪深300在 t 日的收盘价。" },
+      { symbol: "D_t", meaning: "中证1000近 20 日收益率减去沪深300近 20 日收益率。" },
       { symbol: "a_{i,t}", meaning: "股票 i 在 t 日的成交额，使用库里的原始单位。" },
       { symbol: "A_t", meaning: "t 日全市场成交额合计。" },
+      { symbol: "W_t", meaning: "成交额周环比。含今天的 5 日均值，除以再往前 5 日的均值，再减 1。只展示，不进入环境分。" },
       { symbol: "A_t^{\\text{展示}}", meaning: "把 A_t 换成「亿」之后的读数，只用于显示。" },
-      { symbol: "A_t^{300}", meaning: "沪深300指数在 t 日的成交额。" },
-      { symbol: "H_t", meaning: "t 日成交额的赫芬达尔指数。" },
+      { symbol: "H_t", meaning: "t 日个股成交额的赫芬达尔指数。风格 HHI 缺失时才用来代替。" },
+      { symbol: "\\tau_i", meaning: "股票 i 的换手率，按百分数。1.7 表示 1.7%。" },
+      { symbol: "H^{\\text{风格}}_t", meaning: "六格风格成交额占比的平方和。六格是市值三档，再各按 20 日涨跌分成强弱。" },
+      { symbol: "M_t", meaning: "沪深两市融资融券余额之和，单位元。" },
+      { symbol: "s_{\\text{广度}}", meaning: "20 日上涨占比的分位。" },
+      { symbol: "s_{\\text{振幅}}", meaning: "100 减近 5 日平均振幅的 40 日分位。" },
+      { symbol: "s_{\\text{截面}}", meaning: "100 减截面波动的 40 日分位。" },
+      { symbol: "s_{\\text{风格}}", meaning: "100 减风格 HHI 的分位。" },
+      { symbol: "s_{\\text{两融}}", meaning: "100 减两融余额的 60 日分位。" },
+      { symbol: "s_{\\text{小盘}}", meaning: "中证1000相对沪深300的 20 日收益差的分位。" },
       { symbol: "h_t", meaning: "H_t 的 60 日分位。" },
-      { symbol: "\\pi_t", meaning: "沪深300成交额占全 A 的百分数。比值不在 2% 到 80% 时，当天不定义。" },
-      { symbol: "c_t", meaning: "π_t 的 60 日分位。" },
-      { symbol: "s_{\\text{截面}}", meaning: "截面波动因子分，等于 σ 的分位。" },
-      { symbol: "s_{\\text{成交}}", meaning: "成交活跃因子分，等于 A 的分位。" },
+      { symbol: "s_{\\text{成交}}", meaning: "100 减全 A 成交额的 60 日分位。设计权重 0.10。" },
       { symbol: "s_{\\text{分散}}", meaning: "成交分散因子分，等于 100 减 H 的分位。" },
-      { symbol: "s_{\\text{沪深300}}", meaning: "沪深300占比因子分，等于 100 减 π 的分位。" },
     ],
   },
   momentum: {
+    about: {
+      meaning: "强势股做涨停和连板接力。看的是当天的涨停生态，不是指数方向，也不是持有几个月的基本面。",
+      tags: [
+        { where: "股票对冲 / 打板", names: "强势股、盘前板、盘中板、排板、扫板、量化、主观" },
+      ],
+      note: "打板下面这 7 个三级都归这一档。同类对比按产品名或策略里出现「强势股」「打板」来收。",
+    },
     why: [
       "强势股能不能做，看的是涨停生态还活不活：涨停相对跌停、封得住、昨天的涨停今天还能继续封、连板高度还在、涨停家数不处在自己的低位。",
       "五项都按「差的一天接近 0 分、好的一天接近 100 分」线性拉开，再截断到 0 到 100。这样某一项极端时不会把总分推出 0 到 100。",
@@ -251,12 +354,12 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     },
     combine: [
       {
-        lead: "五项设计权重加总为 1：涨跌停 0.28，封板 0.22，晋级 0.18，连板高度 0.12，涨停家数 0.20。",
+        lead: "五项设计权重加总为 1：涨跌停 0.28，封板 0.22，晋级 0.18，连板高度 0.12，涨停家数 0.20。这个加权分越高，涨停生态越热。",
         latex: String.raw`S=\operatorname{round}_{1}\!\left(0.28\,s_{\text{涨跌停}}+0.22\,s_{\text{封板}}+0.18\,s_{\text{晋级}}+0.12\,s_{\text{高度}}+0.20\,s_{\text{家数}}\right)`,
       },
       {
-        lead: "状态只看环境分，从上到下命中第一条。",
-        latex: String.raw`\text{状态}=\begin{cases}\text{情绪低迷}& S<45\\ \text{情绪中性}& S<60\\ \text{情绪偏热}& S\ge 60\end{cases}`,
+        lead: "热度分和近 20 日超额反着走，公布的环境分用 100 减热度分。状态按公布分，从上到下命中第一条。",
+        latex: String.raw`S_{\text{公布}}=\operatorname{round}_{1}(100-S),\qquad \text{状态}=\begin{cases}\text{环境偏好}& S_{\text{公布}}\ge 72\\ \text{良（可做）}& S_{\text{公布}}\ge 64\\ \text{中性}& S_{\text{公布}}\ge 56\\ \text{谨慎}& S_{\text{公布}}\ge 45\\ \text{偏弱}& S_{\text{公布}}<45\end{cases}`,
       },
     ],
     rating: [],
@@ -281,6 +384,13 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     ],
   },
   cta: {
+    about: {
+      meaning: "商品 CTA 在商品期货上做趋势。要有一批品种走出方向，波动处在拿得住的区间，成交也没有枯掉。",
+      tags: [
+        { where: "期货策略 / 量化期货", names: "时序、截面、混合、中高频、低频、基本面、机器学习、量价、商品、大厂" },
+      ],
+      note: "主观期货不归这一档。量化期货下面的「股指」做的是股指期货，这一页的行情不含股指和国债。同类对比仍按整个「量化期货」二级来取，所以标了「股指」的产品也会进样本。",
+    },
     why: [
       "商品 CTA 需要一批合约真的走出方向，同时波动处在能持有的区间，成交也没有枯掉。三项里趋势覆盖占 70%，因为没有方向时，波动和放量都帮不上趋势策略。",
       "换月跳空会把连续合约的一天涨跌变成假趋势，所以单日涨跌超过 8% 的日子从路径里拿掉，不记成 0，而是整日不参与求和。",
@@ -376,6 +486,14 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     ],
   },
   cb: {
+    about: {
+      meaning: "转债指增做可转债多头里跟着转债指数的那一部分，赚个券相对指数的差。环境用中证转债指数，不看单券的债底、溢价和 Delta。",
+      tags: [
+        { where: "股票多头 / 可转债多头", names: "量化、主观" },
+        { where: "股票多头 / 指数增强", names: "转债指增" },
+      ],
+      note: "可转债套利（套利策略 / 可转债套利）和债券混合里的可转债不归这一档。同类对比按「可转债多头」来取。",
+    },
     why: [
       "转债指增的环境用中证转债指数能稳定看到的四件事：20 日涨跌处于自己的什么位置、点位低不低、波动离舒适区多远、成交有没有缩掉。",
       "个券的债底、转股溢价和 Delta 没有日频数据，所以不编进分数。点位越低分数越高，因为低位时债性保护通常更厚。",
@@ -437,7 +555,7 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     },
     combine: [
       {
-        lead: "四项都在时，权重是动量 0.40、位置 0.25、波动 0.20、活跃 0.15。缺活跃时前三项按 0.40:0.25:0.20 归一。状态用宽基那一套分档。",
+        lead: "四项都在时，权重是动量 0.40、位置 0.25、波动 0.20、活跃 0.15。缺活跃时前三项按 0.40:0.25:0.20 归一。这个加权分和近 20 日超额反着走，公布的环境分用 100 减它，状态按公布分用宽基那一套分档。",
         latex: String.raw`\text{状态}=\begin{cases}\text{环境偏好}& S\ge 72\\ \text{良（可做）}& S\ge 64\\ \text{中性}& S\ge 56\\ \text{谨慎}& S\ge 45\\ \text{偏弱}& S<45\end{cases}`,
       },
     ],
@@ -459,6 +577,13 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     ],
   },
   arb: {
+    about: {
+      meaning: "套利赚的是价差收回来，不赌单边方向。这一页看股指远近月、股指期现、商品之间谁涨谁跌，以及股指自己的波动。",
+      tags: [
+        { where: "套利策略 / 期货套利", names: "股指套利、跨期套利、月差、期现套利、商品套利、跨品种套利" },
+      ],
+      note: "跨市场套利、高频套利、锁仓也挂在期货套利下面，但这几项因子主要回答期限和跨品种还有没有价差。股票套利、可转债套利、债券套利、ETF套利、期权套利不按这张分理解。同类对比目前按整个「套利策略」一级来取。",
+    },
     why: [
       "套利环境看四处还有没有价差：股指远近月的年化基差差、股指主力相对现货的年化基差、商品之间 20 日涨跌的分散、以及股指自身的波动。四处都用分位，分位高表示价差或波动相对近期更宽。",
       "到期不足 2 天的合约不参与。年化时要除以剩余天数，分母太小会把基差放大失真。超过 220 天的远月也不进，避免非主力合约的报价噪声。",
@@ -524,8 +649,8 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     },
     combine: [
       {
-        lead: "四项权重 0.30、0.25、0.30、0.15。状态按环境分两档切开。",
-        latex: String.raw`\text{状态}=\begin{cases}\text{环境偏好}& S\ge 58\\ \text{中性}& S\ge 48\\ \text{机会偏少}& S<48\end{cases}`,
+        lead: "四项权重 0.30、0.25、0.30、0.15。价差分位越高这个加权分越高，但近 20 日超额越差，公布的环境分用 100 减它。状态按公布分切开。",
+        latex: String.raw`S_{\text{公布}}=\operatorname{round}_{1}(100-S),\qquad \text{状态}=\begin{cases}\text{环境偏好}& S_{\text{公布}}\ge 58\\ \text{中性}& S_{\text{公布}}\ge 48\\ \text{机会偏少}& S_{\text{公布}}<48\end{cases}`,
       },
     ],
     rating: [],
@@ -551,6 +676,13 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     ],
   },
   "option-sell": {
+    about: {
+      meaning: "期权卖权收的是权利金。一个品种的隐含波动率相对自己的历史越贵，同样的卖方仓位权利金越厚。股指和商品放在同一张表里。",
+      tags: [
+        { where: "期权策略 / 场内期权", names: "金融卖波、商品波动率" },
+      ],
+      note: "场内期权里的「期权套利」，以及场外的雪球、其他场外期权，不按这张分理解。这一页用的是场内平值隐波。同类对比按整个「期权策略」一级来取。",
+    },
     why: [
       "卖权收到的是隐含波动率。一个品种相对自己的历史越贵，同样的卖方仓位权利金越厚。环境分是全部有序列的品种等权平均，股指和商品放在同一张表里，不让四个股指期权代表整个市场。",
       "股指用 50ETF、300ETF、500ETF、中证1000、创业板、科创50。商品用库里每个有平值隐波、且样本不少于 60 天的品种。商品这段历史从 2026 年中才有，分位是这段样本里的位置，窗口最多仍写到 252 天。",
@@ -629,6 +761,13 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     ],
   },
   intraday: {
+    about: {
+      meaning: "股指多空日内是当天开、当天平的股指期货方向单。要白天有波幅，而且价格从开盘走到收盘，不是冲高回落。",
+      tags: [
+        { where: "股票对冲 / 股票多空", names: "场内券、场外券、量化" },
+      ],
+      note: "团队标签里没有单独的「日内」。量化期货的「股指」、主观期货的「股指期货」分不出日内还是日间，不归到这一档。同类对比按股票多空来取，并排除名称或策略里带指增、FOF、中性的产品。",
+    },
     why: [
       "日内多空要的是白天有波幅，而且这段波幅里价格真的从开盘走到了收盘，而不是在最高最低之间来回锯。",
       "数据是 IH、IF、IC、IM 主力的日 K。没有 5 分钟路径，所以不做分钟级别的方差比。四个品种先各自看近 5 日，再平均，避免只被一个品种带着走。",
@@ -672,12 +811,8 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     },
     combine: [
       {
-        lead: "环境分是振幅分位的 70% 加实体效率分的 30%。状态按下面顺序命中第一条。",
-        latex: String.raw`S=\operatorname{round}_{1}(0.70\,s_{\text{振幅}}+0.30\,s_{\text{实体}})`,
-      },
-      {
-        lead: "偏静有两条入口：振幅分位低于 30 且实体效率低于 12，或者环境分低于 45。分数高但实体效率不足 15 时，写成有振幅、方向弱。",
-        latex: String.raw`\text{状态}=\begin{cases}\text{偏静}& q(\bar a)<30\text{ 且 }\bar e<12\\ \text{良（可做）}& S\ge 64\text{ 且 }\bar e\ge 15\\ \text{有振幅，方向弱}& S\ge 64\\ \text{偏静}& S<45\\ \text{中性}& \text{其余}\end{cases}`,
+        lead: "振幅分位占 70%，实体效率占 30%。振幅越大这个加权分越高，但近 20 日超额越差，公布的环境分用 100 减它。状态按公布分用宽基那一套分档。",
+        latex: String.raw`S=\operatorname{round}_{1}(0.70\,s_{\text{振幅}}+0.30\,s_{\text{实体}}),\qquad S_{\text{公布}}=\operatorname{round}_{1}(100-S)`,
       },
     ],
     rating: [],
@@ -695,6 +830,13 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
     ],
   },
   swing: {
+    about: {
+      meaning: "股指多空日间持有超过一个交易日。一段顺势，或者一段清楚的来回，都可以做；缠在中间时两边都难拿。",
+      tags: [
+        { where: "股票对冲 / 股票多空", names: "场内券、场外券、量化" },
+      ],
+      note: "团队标签里没有单独的「日间」，和日内共用上面这一组。两张环境分看的结构不同，标签目前分不开。同类对比的收法与日内相同。",
+    },
     why: [
       "日间多空在两种结构里都能做：一段顺势，或者一段清楚的来回。缠在中间、效率不高也不反转时，两边都难拿。所以路径效率分和反转结构分先取较高的一个，这个结构分再占环境分的一半。",
       "计算用中证1000主力。换月当天的收益率整日剔除，不记成 0，否则跳空会变成假趋势或假反转。",
@@ -771,12 +913,12 @@ export const STRATEGY_MATH: Record<string, StrategyWriteup> = {
         latex: String.raw`s_{\text{结构}}=\max(s_{\text{路径}},s_{\text{反转}})`,
       },
       {
-        lead: "环境分三项的设计权重是振幅 0.35、结构 0.50、隔夜 0.15。路径分和反转分没有自己的权重，所以这里不做第二次归一。",
-        latex: String.raw`S=\operatorname{round}_{1}\!\left(0.35\,s_{\text{振幅}}+0.50\,s_{\text{结构}}+0.15\,s_{\text{隔夜}}\right)`,
+        lead: "三项的设计权重是振幅 0.35、结构 0.50、隔夜 0.15。结构越清楚这个加权分越高，但近 20 日超额越差，公布的环境分用 100 减它。",
+        latex: String.raw`S=\operatorname{round}_{1}\!\left(0.35\,s_{\text{振幅}}+0.50\,s_{\text{结构}}+0.15\,s_{\text{隔夜}}\right),\qquad S_{\text{公布}}=\operatorname{round}_{1}(100-S)`,
       },
       {
-        lead: "状态先看结构，再看分数。路径效率的单位是百分数。偏反转还要求自相关小于 −0.1，或方差比小于 0.85；只有效率低、相关和方差比都普通时，写成来回磨。",
-        latex: String.raw`\text{状态}=\begin{cases}\text{趋势段}& \eta\ge 30\text{ 且 }s_{\text{路径}}\ge s_{\text{反转}}\\ \text{来回磨，偏反转}& \eta<28\text{ 且 }(\rho_1<-0.1\text{ 或 }VR_4<0.85)\\ \text{来回磨}& \eta<28\\ \text{良（可做）}& S\ge 64\\ \text{中性}& S\ge 50\\ \text{谨慎}& S<50\end{cases}`,
+        lead: "状态先看结构，再看公布分。路径效率的单位是百分数。偏反转还要求自相关小于 −0.1，或方差比小于 0.85；只有效率低、相关和方差比都普通时，写成来回磨。",
+        latex: String.raw`\text{状态}=\begin{cases}\text{趋势段}& \eta\ge 30\text{ 且 }s_{\text{路径}}\ge s_{\text{反转}}\\ \text{来回磨，偏反转}& \eta<28\text{ 且 }(\rho_1<-0.1\text{ 或 }VR_4<0.85)\\ \text{来回磨}& \eta<28\\ \text{良（可做）}& S_{\text{公布}}\ge 64\\ \text{中性}& S_{\text{公布}}\ge 50\\ \text{谨慎}& S_{\text{公布}}<50\end{cases}`,
       },
     ],
     rating: [],
