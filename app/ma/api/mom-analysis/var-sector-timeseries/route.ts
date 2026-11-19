@@ -39,10 +39,14 @@ async function _GET(req: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("does not exist")) {
-      return NextResponse.json({ ok: true, dates: [], catData: {}, sectorData: {}, subSectorData: {} })
+      return NextResponse.json({
+        ok: true, dates: [], catData: {}, sectorData: {}, subSectorData: {},
+        corrNetCat: {}, corrNetSector: {}, corrNetSub: {},
+        avgCorrCat: {}, avgCorrSector: {}, avgCorrSub: {},
+      })
     }
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
 
-export const GET = withMomCache("var-sector-timeseries", _GET)
+export const GET = withMomCache("var-sector-timeseries-avgcorr", _GET)

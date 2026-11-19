@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
-import { ArrowLeftRight, Columns2, RefreshCw } from "lucide-react"
+import { ArrowLeftRight, Columns2, RefreshCw, Table2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { QUANT_STRATEGY_ACCOUNTS, quantStrategyLabel } from "@/lib/ma/quant-accounts"
@@ -19,6 +19,7 @@ import type { LinearKind, LinearScatterChart, LinearScatterReport } from "@/lib/
 import type { BookStyle, BookStyleKind } from "@/lib/ma/quant-book-style"
 import type { AlphaBeta, BookRisk, BookRiskSector, FreqSector, SectorVolSeries, TradeFrequency } from "@/lib/ma/quant-feature-stability"
 import { QuantTraderExposureCharts } from "@/components/ma/quant-trader-exposure-charts"
+import { QuantPositionExposure } from "@/components/ma/quant-position-exposure"
 
 const UP = "#ef4444"
 const DOWN = "#10b981"
@@ -1572,6 +1573,10 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareError, setCompareError] = useState<string | null>(null)
   const [compareBounds, setCompareBounds] = useState<{ from: string; to: string } | null>(null)
+  const [positionMode, setPositionMode] = useState(false)
+  const [positionReload, setPositionReload] = useState(0)
+  const [positionLoading, setPositionLoading] = useState(false)
+  const onPositionLoading = useCallback((loading: boolean) => setPositionLoading(loading), [])
   const loadSeq = useRef(0)
   const compareSeq = useRef(0)
   const shownRef = useRef<ApiData | null>(null)
@@ -1750,7 +1755,8 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
   }
 
   const toggleCompare = () => {
-    if (compareMode && !pairPick) {
+    if (positionMode) setPositionMode(false)
+    if (!positionMode && compareMode && !pairPick) {
       setCompareMode(false)
       return
     }
@@ -1762,7 +1768,8 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
   }
 
   const togglePairMode = () => {
-    if (compareMode && pairPick) {
+    if (positionMode) setPositionMode(false)
+    if (!positionMode && compareMode && pairPick) {
       setCompareMode(false)
       setPairPick(false)
       return
@@ -2337,23 +2344,25 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm text-muted-foreground">
-            {pairPick
+            {positionMode
+              ? "最近一个交易日，各量化账户按板块的持仓。可在净暴露和敞口占比之间切换。"
+              : pairPick
               ? "先点「左」或「右」选定要换的一侧，再点账户。两侧都可以换。"
               : compareMode
                 ? "同一区间下横向对照各量化账户的策略画像、绩效与权益曲线。点击账户进入单账户详情。"
                 : "选择量化账户，用成交、平仓与日核算倒推策略画像：适合什么市、怎么管风险、盈亏偏好、是否对冲、日盘还是夜盘、盈亏单持仓多久。"}
           </p>
-          {!compareMode && data?.account && (
+          {!positionMode && !compareMode && data?.account && (
             <p className="text-xs text-muted-foreground mt-1">
               {data.account} · {data.from} 至 {data.to} · {k?.tradingDays ?? 0} 个交易日 · {k?.nCloses ?? 0} 笔平仓
             </p>
           )}
-          {compareMode && !pairPick && (compareRows[0]?.from || from) && (
+          {!positionMode && compareMode && !pairPick && (compareRows[0]?.from || from) && (
             <p className="text-xs text-muted-foreground mt-1">
               {compareRows[0]?.from ?? from} 至 {compareRows[0]?.to ?? to} · {compareRows.length} 个量化账户
             </p>
           )}
-          {pairPick && (
+          {!positionMode && pairPick && (
             <p className="text-xs text-muted-foreground mt-1">
               {pairIds.length === 2
                 ? `${compareRows[0]?.from ?? from} 至 ${compareRows[0]?.to ?? to} · ${quantStrategyLabel(pairIds[0])} 与 ${quantStrategyLabel(pairIds[1])} · 正在选${pairSlot === 0 ? "左侧" : "右侧"}`
@@ -2366,32 +2375,43 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant={compareMode && !pairPick ? "default" : "outline"} onClick={toggleCompare} disabled={compareLoading}>
+          {!part && (
+            <Button size="sm" variant={positionMode ? "default" : "outline"} onClick={() => setPositionMode((v) => !v)}>
+              <Table2 className="h-3.5 w-3.5 mr-1.5" />
+              {positionMode ? "退出持仓" : "当日持仓"}
+            </Button>
+          )}
+          <Button size="sm" variant={compareMode && !pairPick && !positionMode ? "default" : "outline"} onClick={toggleCompare} disabled={compareLoading}>
             <Columns2 className="h-3.5 w-3.5 mr-1.5" />
-            {compareMode && !pairPick ? "退出对比" : "横向对比"}
+            {compareMode && !pairPick && !positionMode ? "退出对比" : "横向对比"}
           </Button>
-          <Button size="sm" variant={pairPick ? "default" : "outline"} onClick={togglePairMode} disabled={compareLoading}>
+          <Button size="sm" variant={pairPick && !positionMode ? "default" : "outline"} onClick={togglePairMode} disabled={compareLoading}>
             <ArrowLeftRight className="h-3.5 w-3.5 mr-1.5" />
-            {pairPick ? "退出双账户" : "双账户对比"}
+            {pairPick && !positionMode ? "退出双账户" : "双账户对比"}
           </Button>
           <Button
             size="sm"
             variant="outline"
             onClick={() => {
+              if (positionMode) {
+                setPositionReload((n) => n + 1)
+                return
+              }
               if (pairPick) {
                 if (pairIds.length === 2) void loadCompare(from, to, pairIds)
                 return
               }
               void (compareMode ? loadCompare() : load(accountId, from, to))
             }}
-            disabled={pairPick ? pairIds.length !== 2 || compareLoading : compareMode ? compareLoading : loading}
+            disabled={positionMode ? positionLoading : pairPick ? pairIds.length !== 2 || compareLoading : compareMode ? compareLoading : loading}
           >
-            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${(compareMode ? compareLoading : loading) ? "animate-spin" : ""}`} />
-            {(pairPick ? compareLoading && pairIds.length === 2 : compareMode ? compareLoading : loading) ? "加载中" : "刷新"}
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${(positionMode ? positionLoading : compareMode ? compareLoading : loading) ? "animate-spin" : ""}`} />
+            {(positionMode ? positionLoading : pairPick ? compareLoading && pairIds.length === 2 : compareMode ? compareLoading : loading) ? "加载中" : "刷新"}
           </Button>
         </div>
       </div>
 
+      {!positionMode && <>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground mr-1">账户</span>
         {ids.map((spec) => {
@@ -2467,7 +2487,11 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
         <p className={`text-sm ${compareRows.length ? "text-muted-foreground" : "text-destructive"}`}>{compareError}</p>
       )}
       {data?.notYetRun && !compareMode && <p className="text-sm text-muted-foreground">核算表尚未导入。</p>}
+      </>}
 
+      {positionMode ? (
+        <QuantPositionExposure reloadToken={positionReload} onLoadingChange={onPositionLoading} />
+      ) : (
       <PeriodCtx.Provider value={periodText}>
       {compareMode && pairPick && pairIds.length < 2 ? (
         <p className="text-sm text-muted-foreground py-8 text-center">
@@ -3091,6 +3115,7 @@ export default function QuantStrategyCharts({ part }: { part?: QuantStrategyPart
       </div>
       )}
       </PeriodCtx.Provider>
+      )}
     </div>
     </StrategyPartCtx.Provider>
   )

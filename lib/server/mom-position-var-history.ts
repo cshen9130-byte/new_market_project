@@ -2,6 +2,8 @@ import { query as defaultQuery } from "@/lib/db"
 import { getPrefix } from "@/lib/server/prod-utils"
 import {
   assemblePositionVarDay,
+  averagePairCorrelationByGroup,
+  correlationExposureByGroup,
   floorIndex,
   pearsonCorr,
   stdDev,
@@ -50,6 +52,19 @@ export type MomPositionVarShares = {
   catData: Record<string, number[]>
   sectorData: Record<string, number[]>
   subSectorData: Record<string, number[]>
+  /** Signed √(MV′ R MV) by group. Null on a date the group had no priced holding. */
+  corrNetCat: Record<string, Array<number | null>>
+  corrNetSector: Record<string, Array<number | null>>
+  corrNetSub: Record<string, Array<number | null>>
+  /** |MV|-weighted mean of pairwise correlations inside the group. Null when the group has fewer than two priced products. */
+  avgCorrCat: Record<string, Array<number | null>>
+  avgCorrSector: Record<string, Array<number | null>>
+  avgCorrSub: Record<string, Array<number | null>>
+}
+
+const EMPTY_CORR = {
+  corrNetCat: {}, corrNetSector: {}, corrNetSub: {},
+  avgCorrCat: {}, avgCorrSector: {}, avgCorrSub: {},
 }
 
 const EMPTY_SHARES: MomPositionVarShares = {
@@ -57,6 +72,7 @@ const EMPTY_SHARES: MomPositionVarShares = {
   catData: {},
   sectorData: {},
   subSectorData: {},
+  ...EMPTY_CORR,
 }
 
 function sharesFrom(days: PositionVarDay[]): MomPositionVarShares {
@@ -75,7 +91,38 @@ function sharesFrom(days: PositionVarDay[]): MomPositionVarShares {
     catData,
     sectorData,
     subSectorData,
+    ...EMPTY_CORR,
   }
+}
+
+function groupSeries(
+  days: { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> }[],
+): { cat: Record<string, Array<number | null>>; sector: Record<string, Array<number | null>>; sub: Record<string, Array<number | null>> } {
+  const pack = (pick: (day: (typeof days)[number]) => Record<string, number>) => {
+    const names = new Set(days.flatMap((day) => Object.keys(pick(day))))
+    const out: Record<string, Array<number | null>> = {}
+    for (const name of names) out[name] = days.map((day) => pick(day)[name] ?? null)
+    return out
+  }
+  return {
+    cat: pack((day) => day.category),
+    sector: pack((day) => day.sector),
+    sub: pack((day) => day.sub),
+  }
+}
+
+function corrSeries(
+  days: { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> }[],
+): Pick<MomPositionVarShares, "corrNetCat" | "corrNetSector" | "corrNetSub"> {
+  const packed = groupSeries(days)
+  return { corrNetCat: packed.cat, corrNetSector: packed.sector, corrNetSub: packed.sub }
+}
+
+function avgCorrSeries(
+  days: { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> }[],
+): Pick<MomPositionVarShares, "avgCorrCat" | "avgCorrSector" | "avgCorrSub"> {
+  const packed = groupSeries(days)
+  return { avgCorrCat: packed.cat, avgCorrSector: packed.sector, avgCorrSub: packed.sub }
 }
 
 /**
@@ -168,6 +215,8 @@ export async function computeMomPositionVarHistory(opts: {
   }
 
   const days: PositionVarDay[] = []
+  const corrGroups: { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> }[] = []
+  const avgCorrGroups: { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> }[] = []
   for (const date of tradingDates) {
     if (fromDate && date < fromDate) continue
     const mktIdx = floorIndex(allMktDates, date)
@@ -205,6 +254,8 @@ export async function computeMomPositionVarHistory(opts: {
       }
     }
 
+    const grouped = correlationExposureByGroup(prodMvs, corrMat)
+    const avgCorr = averagePairCorrelationByGroup(prodMvs, corrMat)
     const day = assemblePositionVarDay({
       date,
       products: prodMvs.map((product, index) => ({
@@ -216,8 +267,12 @@ export async function computeMomPositionVarHistory(opts: {
       corr: corrMat,
       zScore: opts.zScore,
     })
-    if (day) days.push(day)
+    if (day) {
+      days.push(day)
+      corrGroups.push(grouped)
+      avgCorrGroups.push(avgCorr)
+    }
   }
 
-  return { shares: sharesFrom(days), days }
+  return { shares: { ...sharesFrom(days), ...corrSeries(corrGroups), ...avgCorrSeries(avgCorrGroups) }, days }
 }

@@ -117,6 +117,111 @@ export function zeroRolloverSpikes(rets: number[]): number[] {
   return out
 }
 
+/**
+ * 多空相关轧差市值.
+ * Magnitude is √(MV′ R MV) on the selected products. Same-product longs and shorts
+ * are already netted in MV. ρ = 1 for every pair collapses this to the direct net.
+ * The sign follows the direct net, so the column still shows long versus short.
+ * A zero direct net keeps a positive magnitude: the hedge is not a zero exposure.
+ */
+export function signedCorrelationExposure(mvs: number[], corr: number[][], indices?: number[]): number {
+  const idx = indices ?? mvs.map((_, i) => i)
+  let quad = 0
+  let net = 0
+  for (const i of idx) {
+    net += mvs[i] ?? 0
+    const row = corr[i]
+    for (const j of idx) quad += (mvs[i] ?? 0) * (mvs[j] ?? 0) * (row?.[j] ?? 0)
+  }
+  const mag = Math.sqrt(Math.max(0, quad))
+  if (!Number.isFinite(mag)) return 0
+  return Math.round(net < 0 ? -mag : mag)
+}
+
+/**
+ * Average pairwise correlation inside one group.
+ * Each pair is weighted by the product of the two absolute market values, so a
+ * large holding counts more than a small one. The diagonal is left out.
+ * One product has no pair, so the result is null.
+ */
+export function averagePairCorrelation(mvs: number[], corr: number[][], indices?: number[]): number | null {
+  const idx = (indices ?? mvs.map((_, i) => i)).filter((i) => Math.abs(mvs[i] ?? 0) > 0)
+  if (idx.length < 2) return null
+  let weighted = 0
+  let weight = 0
+  for (let a = 0; a < idx.length; a++) {
+    const i = idx[a]
+    const wi = Math.abs(mvs[i] ?? 0)
+    const row = corr[i]
+    for (let b = a + 1; b < idx.length; b++) {
+      const j = idx[b]
+      const pair = wi * Math.abs(mvs[j] ?? 0)
+      weighted += pair * (row?.[j] ?? 0)
+      weight += pair
+    }
+  }
+  if (!(weight > 0)) return null
+  const value = weighted / weight
+  return Number.isFinite(value) ? value : null
+}
+
+export function averagePairCorrelationByGroup(
+  products: { prod: string; mv: number }[],
+  corr: number[][],
+): { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> } {
+  const category = new Map<string, number[]>()
+  const sector = new Map<string, number[]>()
+  const sub = new Map<string, number[]>()
+  products.forEach((product, index) => {
+    const labels = classify(product.prod)
+    const push = (map: Map<string, number[]>, key: string) => {
+      const list = map.get(key)
+      if (list) list.push(index)
+      else map.set(key, [index])
+    }
+    push(category, labels.category)
+    push(sector, labels.sector)
+    push(sub, labels.subSector)
+  })
+  const mvs = products.map((product) => product.mv)
+  const pack = (map: Map<string, number[]>) => {
+    const out: Record<string, number> = {}
+    for (const [name, indices] of map) {
+      const value = averagePairCorrelation(mvs, corr, indices)
+      if (value != null) out[name] = value
+    }
+    return out
+  }
+  return { category: pack(category), sector: pack(sector), sub: pack(sub) }
+}
+
+export function correlationExposureByGroup(
+  products: { prod: string; mv: number }[],
+  corr: number[][],
+): { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> } {
+  const category = new Map<string, number[]>()
+  const sector = new Map<string, number[]>()
+  const sub = new Map<string, number[]>()
+  products.forEach((product, index) => {
+    const labels = classify(product.prod)
+    const push = (map: Map<string, number[]>, key: string) => {
+      const list = map.get(key)
+      if (list) list.push(index)
+      else map.set(key, [index])
+    }
+    push(category, labels.category)
+    push(sector, labels.sector)
+    push(sub, labels.subSector)
+  })
+  const mvs = products.map((product) => product.mv)
+  const pack = (map: Map<string, number[]>) => {
+    const out: Record<string, number> = {}
+    for (const [name, indices] of map) out[name] = signedCorrelationExposure(mvs, corr, indices)
+    return out
+  }
+  return { category: pack(category), sector: pack(sector), sub: pack(sub) }
+}
+
 export function pearsonCorr(x: number[], y: number[]): number {
   const n = x.length
   if (n < 3) return 0

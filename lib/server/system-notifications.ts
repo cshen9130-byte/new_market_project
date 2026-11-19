@@ -735,21 +735,43 @@ function ivBarDate(time: number): string {
   return `${date.getUTCFullYear()}-${month}-${day}`
 }
 
-/** Daily 平值 IV, the same series as the quotes chart. One message per product per spike day. */
+/** Last 平值 print of each session in the tape. Later minutes replace earlier ones. */
+function sessionCloses(bars: Array<{ time: number; close: number }>): Map<string, number> {
+  const closes = new Map<string, number>()
+  for (const bar of bars) {
+    if (!(bar.close > 0)) continue
+    closes.set(ivBarDate(bar.time), bar.close)
+  }
+  return closes
+}
+
+/**
+ * Daily 平值 IV, the same series as the quotes chart. One message per product per spike day.
+ * Index products whose daily file is a synthetic fill use the stored minute tape when that
+ * session was recorded, so a bad daily close cannot outvote the plotted 平值 IV.
+ */
 export async function notifyIndexAtmIvSpikes(source: string): Promise<IndexAtmIvSpikeNotifyResult> {
-  const { atmIvSpikeMessage, atmIvSpikes } = await import("@/lib/index-atm-iv-spike")
+  const { INDEX_ATM_IV_SPIKE_DAYS, atmIvSpikeMessage, atmIvSpikes, barsWithSessionCloses } = await import("@/lib/index-atm-iv-spike")
   const { INDEX_FUTURES } = await import("@/lib/client/ctp-market")
+  const { INDEX_IV } = await import("@/lib/client/realtime-overlay")
   const { getQvixDailyBars } = await import("@/lib/server/qvix-realtime")
+  const { readArchivedIv } = await import("@/lib/server/option-minute-archive")
   await ensureTables()
   let sent = 0
   let pending = 0
   const products: string[] = []
   for (const item of INDEX_FUTURES) {
     const bars = await getQvixDailyBars(item.product)
+    let points = bars.map((bar) => ({ date: ivBarDate(bar.time), value: bar.close }))
+    const key = INDEX_IV[item.product].key
+    if (key.endsWith("index")) {
+      const archived = await readArchivedIv({ key, days: INDEX_ATM_IV_SPIKE_DAYS + 3 })
+      if (archived?.bars.length) points = barsWithSessionCloses(points, sessionCloses(archived.bars))
+    }
     const spike = atmIvSpikes({
       product: item.product,
       name: item.name,
-      bars: bars.map((bar) => ({ date: ivBarDate(bar.time), value: bar.close })),
+      bars: points,
     })
     if (!spike) continue
     products.push(item.product)

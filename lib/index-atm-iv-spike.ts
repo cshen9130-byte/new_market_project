@@ -19,6 +19,19 @@ export type AtmIvSpike = {
   base: number
 }
 
+/**
+ * The quotes chart's 平值 series is the stored minute tape. A synthetic daily
+ * close can print a one-day spike the tape never traded (66% against a 36% high).
+ * Where the tape has that session, its last print replaces the daily close.
+ */
+export function barsWithSessionCloses(bars: AtmIvBar[], closes: Map<string, number>): AtmIvBar[] {
+  if (closes.size === 0) return bars
+  return bars.map((bar) => {
+    const close = closes.get(bar.date)
+    return close != null && close > 0 ? { date: bar.date, value: close } : bar
+  })
+}
+
 export function atmIvSpikes(input: {
   product: string
   name: string

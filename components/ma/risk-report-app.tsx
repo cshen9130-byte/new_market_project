@@ -8,6 +8,7 @@ import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, Alert
 import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { getActiveCfmmcAccount, getActiveMomSubAccount, setActiveMomSubAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
 import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, IDLE_MOM_SUB_SCOPE, MomSubAccountSwitcher, useCfmmcAccountScope, useMomSubAccountScope, type CfmmcAccountScope, type MomSubAccountScope } from "@/components/ma/account-risk-account-switcher"
 import { AccountRiskProfileButton } from "@/components/ma/account-risk-profile-button"
@@ -4620,6 +4621,7 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
   const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">(defaultGroupMode)
   const [weightCalcMode, setWeightCalcMode] = useState<"gross" | "net">("net")
   const [sectorBarSort, setSectorBarSort] = useState<{ col: "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"; dir: "asc" | "desc" } | null>({ col: "longMv", dir: "desc" })
+  const [sectorNetMode, setSectorNetMode] = useState<"direct" | "corr">("direct")
   const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">(defaultGroupMode)
   const [sectorBarDate, setSectorBarDate] = useState<string>("")
   const [scatterDim, setScatterDim] = useState<"大类" | "板块" | "细分">("大类")
@@ -4648,6 +4650,9 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
   const [varSectorCatData, setVarSectorCatData]           = useState<Record<string, number[]>>({})
   const [varSectorSectorData, setVarSectorSectorData]     = useState<Record<string, number[]>>({})
   const [varSectorSubData, setVarSectorSubData]           = useState<Record<string, number[]>>({})
+  const [corrNetCatData, setCorrNetCatData]               = useState<Record<string, Array<number | null>>>({})
+  const [corrNetSectorData, setCorrNetSectorData]         = useState<Record<string, Array<number | null>>>({})
+  const [corrNetSubData, setCorrNetSubData]               = useState<Record<string, Array<number | null>>>({})
   const [varSectorLoading, setVarSectorLoading]           = useState(true)
 
   useEffect(() => {
@@ -4657,6 +4662,9 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
         setVarSectorCatData(j.catData ?? {})
         setVarSectorSectorData(j.sectorData ?? {})
         setVarSectorSubData(j.subSectorData ?? {})
+        setCorrNetCatData(j.corrNetCat ?? {})
+        setCorrNetSectorData(j.corrNetSector ?? {})
+        setCorrNetSubData(j.corrNetSub ?? {})
       }
     }).catch(() => {}).finally(() => setVarSectorLoading(false))
   }, [])
@@ -5337,19 +5345,13 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
     ],
   }), [series, dates, visibleCfg2, filteredNetRatio, catFilter, sectorFilter, subSectorFilter, prodFilter, ratioBarValue])
 
-  const sectorBarRows = useMemo(() => {
+  const { sectorBarRows, sectorBarScale } = useMemo(() => {
     let row: ExposureRow | undefined
     if (sectorBarDate) {
       row = series.find(r => r.date === sectorBarDate)
     }
     if (!row) row = series[series.length - 1]
-    if (!row) return []
-    let capital = 0
-    const rowIdx = series.indexOf(row)
-    for (let i = rowIdx; i >= 0; i--) {
-      const c = capitalMap.get(series[i].date)
-      if (c && c > 0) { capital = c; break }
-    }
+    if (!row) return { sectorBarRows: [], sectorBarScale: 0 }
     const groups: readonly string[] =
       sectorBarMode === "大类" ? CAT_WEIGHT_GROUPS
       : sectorBarMode === "板块" ? EXPOSURE_SECTORS.slice(1)
@@ -5371,16 +5373,59 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
       return {
         sector: g,
         longMv: lv,
-        longPct: capital > 0 ? lv / capital * 100 : 0,
         shortMv: absShort,
-        shortPct: capital > 0 ? absShort / capital * 100 : 0,
         netMv: net,
-        netPctNorm: 0, // filled in second pass
       }
     })
-    const totalAbsNet = raw.reduce((s, r) => s + Math.abs(r.netMv), 0)
-    return raw.map(r => ({ ...r, netPctNorm: totalAbsNet > 0 ? Math.abs(r.netMv) / totalAbsNet * 100 : 0 }))
+    let scale = 0
+    const rowIdx = series.indexOf(row)
+    for (let i = rowIdx; i >= 0; i--) {
+      const cap = capitalMap.get(series[i].date) ?? 0
+      if (cap > 0) { scale = cap; break }
+    }
+    const ofScale = (mv: number) => scale > 0 ? mv / scale * 100 : 0
+    return {
+      sectorBarRows: raw.map(r => ({
+        ...r,
+        longPct: ofScale(r.longMv),
+        shortPct: ofScale(r.shortMv),
+        netPctNorm: ofScale(Math.abs(r.netMv)),
+      })),
+      sectorBarScale: scale,
+    }
   }, [series, capitalMap, sectorBarMode, sectorBarDate])
+
+  const sectorCorrMap = useMemo(() => {
+    const dates = varSectorDates
+    const rd = sectorBarMode === "大类" ? corrNetCatData : sectorBarMode === "板块" ? corrNetSectorData : corrNetSubData
+    const target = sectorBarDate || series[series.length - 1]?.date || ""
+    let idx = target ? dates.indexOf(target) : dates.length - 1
+    if (idx < 0 && target) {
+      idx = -1
+      for (let i = 0; i < dates.length; i++) if (dates[i] <= target) idx = i
+    }
+    const result: Record<string, number | null> = {}
+    if (idx < 0) return result
+    for (const [name, vals] of Object.entries(rd)) {
+      const candidate = vals[idx]
+      result[name] = candidate != null && Number.isFinite(candidate) ? candidate : null
+    }
+    return result
+  }, [sectorBarMode, sectorBarDate, series, varSectorDates, corrNetCatData, corrNetSectorData, corrNetSubData])
+
+  const sectorBarViewRows = useMemo(() => {
+    if (sectorNetMode === "direct") return sectorBarRows
+    return sectorBarRows.map(row => {
+      const corr = sectorCorrMap[row.sector]
+      if (corr == null || !Number.isFinite(corr)) return { ...row, corrMissing: true as boolean }
+      return {
+        ...row,
+        netMv: corr,
+        netPctNorm: sectorBarScale > 0 ? Math.abs(corr) / sectorBarScale * 100 : 0,
+        corrMissing: false as boolean,
+      }
+    })
+  }, [sectorBarRows, sectorNetMode, sectorCorrMap, sectorBarScale])
 
   const sectorBarOption = useMemo(() => {
     if (sectorBarRows.length === 0) return {}
@@ -6097,7 +6142,7 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
-              <CardTitle className="text-sm">期货市值占比（市值/净资本）</CardTitle>
+              <CardTitle className="text-sm">期货市值占比（市值/总规模）</CardTitle>
               <div className="flex items-center gap-1">
                 <button
                   className="text-xs border rounded px-1.5 py-0.5 bg-background hover:bg-muted disabled:opacity-30"
@@ -6161,30 +6206,63 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
         <div className="w-1/2 flex flex-col" style={{ height: barLeftHeight }}>
         <Card className="overflow-hidden flex flex-col h-full">
           <CardContent className="p-0 overflow-y-auto flex-1 min-h-0">
+            <div className="px-3 py-1 flex items-center gap-2 border-b">
+              <div className="flex text-[11px] border rounded overflow-hidden">
+                {([["direct", "直接轧差"], ["corr", "相关轧差"]] as const).map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => setSectorNetMode(val)}
+                    className={`px-2 py-0.5 transition-colors ${
+                      sectorNetMode === val ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                    }`}
+                  >{label}</button>
+                ))}
+              </div>
+              {sectorBarScale > 0 && (
+                <span className="ml-auto text-[11px] text-muted-foreground tabular-nums whitespace-nowrap">
+                  总规模 {Math.round(sectorBarScale).toLocaleString("zh-CN")}
+                </span>
+              )}
+            </div>
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-card z-10">
                 <tr className="border-b bg-muted/40">
                   {(["sector","longMv","longPct","shortMv","shortPct","netMv","netPctNorm"] as const).map((col, ci) => {
-                    const labels: Record<string, string> = { sector:"板块", longMv:"多头市值(元)", longPct:"多头占比", shortMv:"空头市值(元)", shortPct:"空头占比", netMv:"轧差市值(元)", netPctNorm:"轧差市值占比(归一)" }
+                    const labels: Record<string, string> = { sector:"板块", longMv:"多头市值(元)", longPct:"多头占比", shortMv:"空头市值(元)", shortPct:"空头占比" }
                     const active = sectorBarSort?.col === col
                     const dir = active ? sectorBarSort!.dir : null
+                    const isNet = col === "netMv" || col === "netPctNorm"
+                    const formula = col === "netMv"
+                      ? (sectorNetMode === "corr" ? SECTOR_BAR_CORR_NET : SECTOR_BAR_FORMULAS.netMv)
+                      : col === "netPctNorm"
+                        ? (sectorNetMode === "corr" ? SECTOR_BAR_CORR_PCT : SECTOR_BAR_FORMULAS.netPctNorm)
+                        : SECTOR_BAR_FORMULAS[col]
                     return (
-                      <th key={col} className={`${ci === 0 ? "text-left" : "text-right"} px-3 py-2 font-medium cursor-pointer select-none hover:bg-muted/60 whitespace-nowrap`}
-                        onClick={() => setSectorBarSort(prev =>
-                          prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
-                        )}
-                      >
-                        <span className="inline-flex items-center gap-0.5">
-                          {labels[col]}
-                          <span className="text-muted-foreground text-[10px]">{dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}</span>
-                        </span>
-                      </th>
+                      <Tooltip key={col}>
+                        <TooltipTrigger asChild>
+                          <th tabIndex={0} className={`${ci === 0 ? "text-left" : "text-right"} px-2 py-1.5 font-medium cursor-pointer select-none hover:bg-muted/60 ${isNet ? "leading-tight whitespace-normal" : "whitespace-nowrap"}`}
+                            onClick={() => setSectorBarSort(prev =>
+                              prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
+                            )}
+                          >
+                            <span className="inline-flex items-center justify-end gap-0.5">
+                              {isNet ? (
+                                <span className="leading-tight">{sectorNetMode === "corr" ? "多空相关" : "多空直接"}<br />{col === "netMv" ? "轧差市值" : "轧差占比"}</span>
+                              ) : labels[col]}
+                              <span className="text-muted-foreground text-[10px]">{dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}</span>
+                            </span>
+                          </th>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" className="max-w-64 px-2.5 py-1.5 text-left leading-snug">
+                          {formula}
+                        </TooltipContent>
+                      </Tooltip>
                     )
                   })}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {[...sectorBarRows].sort((a, b) => {
+                {[...sectorBarViewRows].sort((a, b) => {
                   if (!sectorBarSort) return 0
                   const { col, dir } = sectorBarSort
                   const va = a[col], vb = b[col]
@@ -6197,21 +6275,23 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
                     <td className="px-3 py-1.5 text-right">{row.longPct.toFixed(1)}%</td>
                     <td className="px-3 py-1.5 text-right">{Math.round(row.shortMv).toLocaleString("zh-CN")}</td>
                     <td className="px-3 py-1.5 text-right">{row.shortPct.toFixed(1)}%</td>
-                    <td className={`px-3 py-1.5 text-right ${row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                      {Math.round(row.netMv).toLocaleString("zh-CN")}
+                    <td className={`px-3 py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                      {row.corrMissing ? "—" : Math.round(row.netMv).toLocaleString("zh-CN")}
                     </td>
-                    <td className={`px-3 py-1.5 text-right ${row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                      {row.netPctNorm.toFixed(1)}%
+                    <td className={`px-3 py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                      {row.corrMissing ? "—" : `${row.netPctNorm.toFixed(1)}%`}
                     </td>
                   </tr>
                 ))}
-                {sectorBarRows.length > 0 && (() => {
-                  const totalLong = sectorBarRows.reduce((s, r) => s + r.longMv, 0)
-                  const totalShort = sectorBarRows.reduce((s, r) => s + r.shortMv, 0)
-                  const totalLongPct = sectorBarRows.reduce((s, r) => s + r.longPct, 0)
-                  const totalShortPct = sectorBarRows.reduce((s, r) => s + r.shortPct, 0)
-                  const totalNet = sectorBarRows.reduce((s, r) => s + r.netMv, 0)
-                  const totalNetPctNorm = sectorBarRows.reduce((s, r) => s + r.netPctNorm, 0)
+                {sectorBarViewRows.length > 0 && (() => {
+                  const counted = sectorBarViewRows.filter(r => !r.corrMissing)
+                  const totalLong = sectorBarViewRows.reduce((s, r) => s + r.longMv, 0)
+                  const totalShort = sectorBarViewRows.reduce((s, r) => s + r.shortMv, 0)
+                  const totalLongPct = sectorBarViewRows.reduce((s, r) => s + r.longPct, 0)
+                  const totalShortPct = sectorBarViewRows.reduce((s, r) => s + r.shortPct, 0)
+                  const totalNet = counted.reduce((s, r) => s + Math.abs(r.netMv), 0)
+                  const totalNetPctNorm = counted.reduce((s, r) => s + r.netPctNorm, 0)
+                  const netPending = sectorNetMode === "corr" && counted.length === 0
                   return (
                     <tr className="border-t-2 font-semibold bg-muted/40">
                       <td className="px-3 py-1.5">合计</td>
@@ -6219,11 +6299,11 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing, hideAc
                       <td className="px-3 py-1.5 text-right">{totalLongPct.toFixed(1)}%</td>
                       <td className="px-3 py-1.5 text-right">{Math.round(totalShort).toLocaleString("zh-CN")}</td>
                       <td className="px-3 py-1.5 text-right">{totalShortPct.toFixed(1)}%</td>
-                      <td className={`px-3 py-1.5 text-right ${totalNet < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                        {Math.round(totalNet).toLocaleString("zh-CN")}
+                      <td className="px-3 py-1.5 text-right">
+                        {netPending ? "—" : Math.round(totalNet).toLocaleString("zh-CN")}
                       </td>
-                      <td className={`px-3 py-1.5 text-right ${totalNetPctNorm < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                        {totalNetPctNorm.toFixed(1)}%
+                      <td className="px-3 py-1.5 text-right">
+                        {netPending ? "—" : `${totalNetPctNorm.toFixed(1)}%`}
                       </td>
                     </tr>
                   )
@@ -7329,6 +7409,19 @@ export function RiskReportApp({ variant, embedBriefing = false }: { variant: Ris
   if (variant === "account") return <RiskReportAppAccount embedBriefing={embedBriefing} />
   return <RiskReportAppCore variant="mom" cfmmcScope={IDLE_CFMMC_SCOPE} momScope={IDLE_MOM_SUB_SCOPE} forceEmbed={embedBriefing} />
 }
+
+const SECTOR_BAR_FORMULAS: Record<string, string> = {
+  sector: "分组 = 当前选择的大类、板块或细分板块",
+  longMv: "多头市值 = 该组买持仓市值",
+  longPct: "多头占比 = 多头市值 ÷ 总规模",
+  shortMv: "空头市值 = 该组卖持仓市值",
+  shortPct: "空头占比 = 空头市值 ÷ 总规模",
+  netMv: "多空直接轧差市值 = 多头市值 − 空头市值。合计 = 各行 |多空直接轧差市值| 之和",
+  netPctNorm: "多空直接轧差占比 = |多空直接轧差市值| ÷ 总规模",
+}
+
+const SECTOR_BAR_CORR_NET = "多空相关轧差市值 = 符号(各品种净市值之和) × √(Σᵢ Σⱼ 净市值ᵢ × 净市值ⱼ × ρᵢⱼ)。同一品种的多空先轧掉。ρ 用最近 252 个交易日收益率。ρ 全为 1 时等于直接轧差。合计 = 各行绝对值之和，板块之间不再轧一次。"
+const SECTOR_BAR_CORR_PCT = "多空相关轧差占比 = |多空相关轧差市值| ÷ 总规模"
 
 function RiskReportAppAccount({ embedBriefing = false }: { embedBriefing?: boolean }) {
   const cfmmcScope = useCfmmcAccountScope()

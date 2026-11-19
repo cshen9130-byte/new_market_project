@@ -5720,6 +5720,28 @@ def step_quant_strategy_cache(force: bool = False) -> int:
     return ok + cached + skipped
 
 
+def step_quant_positions_cache() -> int:
+    """Write 量化策略分析 → 当日持仓 into today's file cache.
+
+    The page reads the file and does not scan holdings on open.
+    A MOM settlement import rebuilds the same file from the data-import job.
+    """
+    log.info("quant_positions_cache: rebuilding 当日持仓 …")
+    result = run_node_script(
+        "precompute_quant_positions.ts",
+        timeout=600,
+    )
+    if not result:
+        raise RuntimeError("quant_positions_cache: no result from precompute_quant_positions.ts")
+    if int(result.get("ok") or 0) < 1:
+        raise RuntimeError(f"quant_positions_cache: {result.get('error') or 'failed'}")
+    log.info(
+        "quant_positions_cache: date=%s accounts=%s in %.1fs",
+        result.get("date"), result.get("accounts"), (result.get("ms") or 0) / 1000,
+    )
+    return int(result.get("accounts") or 0)
+
+
 def step_warm_mom_cache() -> int:
     """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
     import urllib.request
@@ -5894,6 +5916,7 @@ ORDERED_STEPS = [
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
     "warm_mom_cache",                # warm MOM dashboard API caches
     "quant_strategy_cache",          # 量化策略分析 payloads (page reads the file cache)
+    "quant_positions_cache",         # 当日持仓 snapshot (page reads the file cache)
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
 ]
 
@@ -6054,6 +6077,7 @@ def main():
         "valuation_cache":                 lambda: step_valuation_cache(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
         "quant_strategy_cache":            lambda: step_quant_strategy_cache(force=force),
+        "quant_positions_cache":           lambda: step_quant_positions_cache(),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }
 

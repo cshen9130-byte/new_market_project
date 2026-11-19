@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { Bell, Settings2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { openAccountShortcutTab } from "@/lib/ma/account-shortcuts"
 
 const NOTIFICATION_SETTINGS_HREF = "/ma/dashboard/account?tab=account&section=notifications"
 
@@ -86,10 +87,10 @@ export function SystemNotificationBell({ userId }: { userId: string }) {
     }))
   }
 
-  async function openItem(item: NotificationItem) {
-    if (!item.read_at) await markRead(item.id)
+  function openItem(item: NotificationItem) {
+    if (item.href) openAccountShortcutTab(item.href)
     setOpen(false)
-    if (item.href) router.push(item.href)
+    if (!item.read_at) void markRead(item.id)
   }
 
   const badge = unread > 99 ? "99+" : String(unread)

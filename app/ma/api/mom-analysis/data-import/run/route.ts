@@ -206,6 +206,21 @@ export async function POST(request: Request) {
 
           try {
             const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs")
+            const positionScript = path.join(process.cwd(), "scripts", "ma", "precompute_quant_positions.ts")
+            const child = spawn(process.execPath, [tsxCli, positionScript], {
+              cwd: process.cwd(),
+              detached: true,
+              stdio: "ignore",
+              windowsHide: true,
+            })
+            child.unref()
+            send("[quant-positions] 已在后台重算当日持仓，页面会直接读缓存")
+          } catch (e) {
+            send(`[quant-positions] 后台重算未启动 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+          }
+
+          try {
+            const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs")
             const varScript = path.join(process.cwd(), "scripts", "ma", "persist_mom_position_var.ts")
             const child = spawn(process.execPath, [tsxCli, varScript], {
               cwd: process.cwd(),

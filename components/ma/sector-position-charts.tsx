@@ -1,8 +1,10 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, type ReactNode } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { SectorColumnHelpButton } from "@/components/ma/sector-position-column-help"
 
 // ── constants (mirror of page.tsx) ──────────────────────────────────────────
 const CAT_WEIGHT_GROUPS = ["商品", "股指", "国债"] as const
@@ -25,6 +27,8 @@ const SUB_SECTOR_COLORS: Record<string, string> = {
 
 type BarMode = "大类" | "板块" | "细分"
 type SleeveMode = "all" | "quant" | "subjective"
+type NetMode = "direct" | "corr"
+type MktColMode = "vol" | "avgCorr"
 type SortCol = "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"
 type Sort = { col: SortCol; dir: "asc" | "desc" } | null
 
@@ -36,15 +40,18 @@ interface SectorBarRow {
   longMv: number; longPct: number
   shortMv: number; shortPct: number
   netMv: number; netPctNorm: number
+  corrMissing?: boolean
 }
 
 export default function SectorPositionCharts({ height = 300, capturing = false, enableSleeveFilter = true }: { height?: number; capturing?: boolean; enableSleeveFilter?: boolean }) {
   const [series,     setSeries]     = useState<ExposureRow[]>([])
-  const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
+  const [scaleByDate, setScaleByDate] = useState<Map<string, number>>(new Map())
   const [loading,    setLoading]    = useState(true)
 
   const [sleeve,  setSleeve]  = useState<SleeveMode>("all")
   const [mode,    setMode]    = useState<BarMode>("板块")
+  const [netMode, setNetMode] = useState<NetMode>("direct")
+  const [mktColMode, setMktColMode] = useState<MktColMode>("vol")
   const [date,    setDate]    = useState<string>("")
   const [sort,    setSort]    = useState<Sort>({ col: "longMv", dir: "desc" })
 
@@ -59,25 +66,35 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
       .then(j => {
         if (cancelled) return
         if (j.ok) {
-          const expSeries: ExposureRow[] = j.series ?? []
-          setSeries(expSeries)
-          const map = new Map<string, number>()
-          for (const d of expSeries) {
-            const eq = Number((d as Record<string, unknown>).equity ?? 0)
-            if (Number.isFinite(eq) && eq > 0) map.set(d.date, eq)
-          }
-          setCapitalMap(map)
+          setSeries(j.series ?? [])
         } else {
           setSeries([])
-          setCapitalMap(new Map())
         }
       })
       .catch(() => {
-        if (!cancelled) { setSeries([]); setCapitalMap(new Map()) }
+        if (!cancelled) setSeries([])
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [sleeve, enableSleeveFilter])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/ma/api/mom-analysis/product-nav")
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled || !j.ok) return
+        const map = new Map<string, number>()
+        for (const point of j.data ?? []) {
+          const cap = Number(point.cumCapital)
+          const day = String(point.date ?? "").slice(0, 10)
+          if (day && Number.isFinite(cap) && cap > 0) map.set(day, cap)
+        }
+        setScaleByDate(map)
+      })
+      .catch(() => { if (!cancelled) setScaleByDate(new Map()) })
+    return () => { cancelled = true }
+  }, [])
 
   // ── VaR timeseries ──────────────────────────────────────────────────────
   const [varMode,      setVarMode]      = useState<BarMode>("板块")
@@ -88,13 +105,27 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
   const [varCatData,   setVarCatData]   = useState<Record<string, number[]>>({})
   const [varSecData,   setVarSecData]   = useState<Record<string, number[]>>({})
   const [varSubData,   setVarSubData]   = useState<Record<string, number[]>>({})
+  const [corrCatData,  setCorrCatData]  = useState<Record<string, Array<number | null>>>({})
+  const [corrSecData,  setCorrSecData]  = useState<Record<string, Array<number | null>>>({})
+  const [corrSubData,  setCorrSubData]  = useState<Record<string, Array<number | null>>>({})
+  const [avgCorrCatData, setAvgCorrCatData] = useState<Record<string, Array<number | null>>>({})
+  const [avgCorrSecData, setAvgCorrSecData] = useState<Record<string, Array<number | null>>>({})
+  const [avgCorrSubData, setAvgCorrSubData] = useState<Record<string, Array<number | null>>>({})
   const [varLoading,   setVarLoading]   = useState(true)
 
   const [mvDates,      setMvDates]      = useState<string[]>([])
   const [mvCatData,    setMvCatData]    = useState<Record<string, number[]>>({})
   const [mvSecData,    setMvSecData]    = useState<Record<string, number[]>>({})
   const [mvSubData,    setMvSubData]    = useState<Record<string, number[]>>({})
+  const [holdCatData,  setHoldCatData]  = useState<Record<string, Array<number | null>>>({})
+  const [holdSecData,  setHoldSecData]  = useState<Record<string, Array<number | null>>>({})
+  const [holdSubData,  setHoldSubData]  = useState<Record<string, Array<number | null>>>({})
   const [mvLoading,    setMvLoading]    = useState(true)
+
+  const [mktDates, setMktDates] = useState<string[]>([])
+  const [mktCatData, setMktCatData] = useState<Record<string, Array<number | null>>>({})
+  const [mktSecData, setMktSecData] = useState<Record<string, Array<number | null>>>({})
+  const [mktSubData, setMktSubData] = useState<Record<string, Array<number | null>>>({})
 
   const [cvarDates,    setCvarDates]    = useState<string[]>([])
   const [cvarCatData,  setCvarCatData]  = useState<Record<string, number[]>>({})
@@ -111,11 +142,29 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
       .then(r => r.json())
       .then(j => {
         if (cancelled) return
-        if (j.ok) { setVarDates(j.dates ?? []); setVarCatData(j.catData ?? {}); setVarSecData(j.sectorData ?? {}); setVarSubData(j.subSectorData ?? {}) }
-        else { setVarDates([]); setVarCatData({}); setVarSecData({}); setVarSubData({}) }
+        if (j.ok) {
+          setVarDates(j.dates ?? [])
+          setVarCatData(j.catData ?? {})
+          setVarSecData(j.sectorData ?? {})
+          setVarSubData(j.subSectorData ?? {})
+          setCorrCatData(j.corrNetCat ?? {})
+          setCorrSecData(j.corrNetSector ?? {})
+          setCorrSubData(j.corrNetSub ?? {})
+          setAvgCorrCatData(j.avgCorrCat ?? {})
+          setAvgCorrSecData(j.avgCorrSector ?? {})
+          setAvgCorrSubData(j.avgCorrSub ?? {})
+        } else {
+          setVarDates([]); setVarCatData({}); setVarSecData({}); setVarSubData({})
+          setCorrCatData({}); setCorrSecData({}); setCorrSubData({})
+          setAvgCorrCatData({}); setAvgCorrSecData({}); setAvgCorrSubData({})
+        }
       })
       .catch(() => {
-        if (!cancelled) { setVarDates([]); setVarCatData({}); setVarSecData({}); setVarSubData({}) }
+        if (!cancelled) {
+          setVarDates([]); setVarCatData({}); setVarSecData({}); setVarSubData({})
+          setCorrCatData({}); setCorrSecData({}); setCorrSubData({})
+          setAvgCorrCatData({}); setAvgCorrSecData({}); setAvgCorrSubData({})
+        }
       })
       .finally(() => { if (!cancelled) setVarLoading(false) })
     return () => { cancelled = true }
@@ -131,15 +180,43 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
       .then(r => r.json())
       .then(j => {
         if (cancelled) return
-        if (j.ok) { setMvDates(j.dates ?? []); setMvCatData(j.catData ?? {}); setMvSecData(j.sectorData ?? {}); setMvSubData(j.subSectorData ?? {}) }
-        else { setMvDates([]); setMvCatData({}); setMvSecData({}); setMvSubData({}) }
+        if (j.ok) {
+          setMvDates(j.dates ?? [])
+          setMvCatData(j.catData ?? {})
+          setMvSecData(j.sectorData ?? {})
+          setMvSubData(j.subSectorData ?? {})
+          setHoldCatData(j.catVol ?? {})
+          setHoldSecData(j.sectorVol ?? {})
+          setHoldSubData(j.subSectorVol ?? {})
+        } else {
+          setMvDates([]); setMvCatData({}); setMvSecData({}); setMvSubData({})
+          setHoldCatData({}); setHoldSecData({}); setHoldSubData({})
+        }
       })
       .catch(() => {
-        if (!cancelled) { setMvDates([]); setMvCatData({}); setMvSecData({}); setMvSubData({}) }
+        if (!cancelled) {
+          setMvDates([]); setMvCatData({}); setMvSecData({}); setMvSubData({})
+          setHoldCatData({}); setHoldSecData({}); setHoldSubData({})
+        }
       })
       .finally(() => { if (!cancelled) setMvLoading(false) })
     return () => { cancelled = true }
   }, [sleeve, enableSleeveFilter])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch("/ma/api/futures/sector-market-vol")
+      .then(r => r.json())
+      .then(j => {
+        if (cancelled || !j.ok) return
+        setMktDates(j.dates ?? [])
+        setMktCatData(j.category ?? {})
+        setMktSecData(j.sector ?? {})
+        setMktSubData(j.sub ?? {})
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     fetch("/ma/api/mom-analysis/cvar-sector-timeseries")
@@ -284,27 +361,67 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
     return result
   }, [mode, date, varDates, varCatData, varSecData, varSubData])
 
-  const mvLatestMap = useMemo<Record<string, number>>(() => {
-    const rd = mode === "大类" ? mvCatData : mode === "板块" ? mvSecData : mvSubData
+  const corrLatestMap = useMemo<Record<string, number | null>>(() => {
+    const rd = mode === "大类" ? corrCatData : mode === "板块" ? corrSecData : corrSubData
+    const idx = pickDateIdx(varDates)
+    if (idx < 0) return {}
+    const result: Record<string, number | null> = {}
+    for (const [sector, vals] of Object.entries(rd)) {
+      const candidate = vals[idx]
+      result[sector] = candidate != null && Number.isFinite(candidate) ? candidate : null
+    }
+    return result
+  }, [mode, date, varDates, corrCatData, corrSecData, corrSubData])
+
+  const avgCorrLatestMap = useMemo<Record<string, number | null>>(() => {
+    const rd = mode === "大类" ? avgCorrCatData : mode === "板块" ? avgCorrSecData : avgCorrSubData
+    const idx = pickDateIdx(varDates)
+    if (idx < 0) return {}
+    const result: Record<string, number | null> = {}
+    for (const [sector, vals] of Object.entries(rd)) {
+      const candidate = vals[idx]
+      result[sector] = candidate != null && Number.isFinite(candidate) ? candidate : null
+    }
+    return result
+  }, [mode, date, varDates, avgCorrCatData, avgCorrSecData, avgCorrSubData])
+
+  const mktLatestMap = useMemo<Record<string, number | null>>(() => {
+    const rd = mode === "大类" ? mktCatData : mode === "板块" ? mktSecData : mktSubData
+    const idx = pickDateIdx(mktDates)
+    if (idx < 0) return {}
+    const result: Record<string, number | null> = {}
+    for (const [sector, vals] of Object.entries(rd)) {
+      let value: number | null = null
+      for (let i = Math.min(idx, vals.length - 1); i >= 0; i--) {
+        const candidate = vals[i]
+        if (candidate != null && Number.isFinite(candidate)) { value = candidate; break }
+      }
+      result[sector] = value
+    }
+    return result
+  }, [mode, date, mktDates, mktCatData, mktSecData, mktSubData])
+
+  const holdLatestMap = useMemo<Record<string, number | null>>(() => {
+    const rd = mode === "大类" ? holdCatData : mode === "板块" ? holdSecData : holdSubData
     const idx = pickDateIdx(mvDates)
     if (idx < 0) return {}
-    const result: Record<string, number> = {}
-    for (const [sector, vals] of Object.entries(rd)) result[sector] = vals[idx] ?? 0
+    const result: Record<string, number | null> = {}
+    for (const [sector, vals] of Object.entries(rd)) {
+      let value: number | null = null
+      for (let i = Math.min(idx, vals.length - 1); i >= 0; i--) {
+        const candidate = vals[i]
+        if (candidate != null && Number.isFinite(candidate)) { value = candidate; break }
+      }
+      result[sector] = value
+    }
     return result
-  }, [mode, date, mvDates, mvCatData, mvSecData, mvSubData])
+  }, [mode, date, mvDates, holdCatData, holdSecData, holdSubData])
 
-  const rows = useMemo<SectorBarRow[]>(() => {
+  const { rows, tableScale } = useMemo(() => {
     let row: ExposureRow | undefined
     if (date) row = series.find(r => r.date === date)
     if (!row) row = series[series.length - 1]
-    if (!row) return []
-
-    let capital = 0
-    const rowIdx = series.indexOf(row)
-    for (let i = rowIdx; i >= 0; i--) {
-      const c = capitalMap.get(series[i].date)
-      if (c && c > 0) { capital = c; break }
-    }
+    if (!row) return { rows: [] as SectorBarRow[], tableScale: 0 }
 
     const groups: readonly string[] =
       mode === "大类" ? CAT_WEIGHT_GROUPS
@@ -328,25 +445,51 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
       return {
         sector: g,
         longMv: lv,
-        longPct: capital > 0 ? lv / capital * 100 : 0,
         shortMv: absShort,
-        shortPct: capital > 0 ? absShort / capital * 100 : 0,
         netMv: net,
-        netPctNorm: 0,
       }
     })
-    const totalAbsNet = raw.reduce((s, r) => s + Math.abs(r.netMv), 0)
-    return raw.map(r => ({ ...r, netPctNorm: totalAbsNet > 0 ? Math.abs(r.netMv) / totalAbsNet * 100 : 0 }))
-  }, [series, capitalMap, mode, date])
+    const scaleDates = [...scaleByDate.keys()].sort()
+    let scale = scaleByDate.get(row.date) ?? 0
+    if (!(scale > 0)) {
+      for (let i = scaleDates.length - 1; i >= 0; i--) {
+        if (scaleDates[i] <= row.date) { scale = scaleByDate.get(scaleDates[i]) ?? 0; break }
+      }
+    }
+    const ofScale = (mv: number) => scale > 0 ? mv / scale * 100 : 0
+    return {
+      rows: raw.map(r => ({
+        ...r,
+        longPct: ofScale(r.longMv),
+        shortPct: ofScale(r.shortMv),
+        netPctNorm: ofScale(Math.abs(r.netMv)),
+      })),
+      tableScale: scale,
+    }
+  }, [series, scaleByDate, mode, date])
+
+  const viewRows = useMemo(() => {
+    if (netMode === "direct") return rows
+    return rows.map(row => {
+      const corr = corrLatestMap[row.sector]
+      if (corr == null || !Number.isFinite(corr)) return { ...row, corrMissing: true }
+      return {
+        ...row,
+        netMv: corr,
+        netPctNorm: tableScale > 0 ? Math.abs(corr) / tableScale * 100 : 0,
+        corrMissing: false,
+      }
+    })
+  }, [rows, netMode, corrLatestMap, tableScale])
 
   const sorted = useMemo(() => {
-    if (!sort) return rows
-    return [...rows].sort((a, b) => {
+    if (!sort) return viewRows
+    return [...viewRows].sort((a, b) => {
       const va = a[sort.col], vb = b[sort.col]
       const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number)
       return sort.dir === "asc" ? cmp : -cmp
     })
-  }, [rows, sort])
+  }, [viewRows, sort])
 
   const chartOption = useMemo(() => {
     if (sorted.length === 0) return {}
@@ -374,25 +517,63 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
   }, [sorted])
 
   const totals = useMemo(() => {
-    if (rows.length === 0) return null
+    if (viewRows.length === 0) return null
+    const counted = viewRows.filter(r => !r.corrMissing)
     return {
-      longMv:     rows.reduce((s, r) => s + r.longMv, 0),
-      longPct:    rows.reduce((s, r) => s + r.longPct, 0),
-      shortMv:    rows.reduce((s, r) => s + r.shortMv, 0),
-      shortPct:   rows.reduce((s, r) => s + r.shortPct, 0),
-      netMv:      rows.reduce((s, r) => s + r.netMv, 0),
-      netPctNorm: rows.reduce((s, r) => s + r.netPctNorm, 0),
+      longMv:     viewRows.reduce((s, r) => s + r.longMv, 0),
+      longPct:    viewRows.reduce((s, r) => s + r.longPct, 0),
+      shortMv:    viewRows.reduce((s, r) => s + r.shortMv, 0),
+      shortPct:   viewRows.reduce((s, r) => s + r.shortPct, 0),
+      netMv:      counted.reduce((s, r) => s + Math.abs(r.netMv), 0),
+      netPctNorm: counted.reduce((s, r) => s + r.netPctNorm, 0),
+      netPending: netMode === "corr" && counted.length === 0,
     }
-  }, [rows])
+  }, [viewRows, netMode])
 
-  const COL_LABELS: Record<SortCol, string> = {
-    sector: "板块", longMv: "多头市值", longPct: "多头占比",
-    shortMv: "空头市值", shortPct: "空头占比", netMv: "轧差市值", netPctNorm: "轧差占比",
-  }
+const COL_LABELS: Record<Exclude<SortCol, "netMv" | "netPctNorm">, string> = {
+  sector: "板块", longMv: "多头市值", longPct: "多头占比",
+  shortMv: "空头市值", shortPct: "空头占比",
+}
+
+const DIRECT_NET_FORMULA = "多空直接轧差市值 = 多头市值 − 空头市值。合计 = 各行 |多空直接轧差市值| 之和"
+const DIRECT_PCT_FORMULA = "多空直接轧差占比 = |多空直接轧差市值| ÷ 总规模"
+const CORR_NET_FORMULA = "多空相关轧差市值 = 符号(各品种净市值之和) × √(Σᵢ Σⱼ 净市值ᵢ × 净市值ⱼ × ρᵢⱼ)。同一品种的多空先轧掉。ρ 用最近 252 个交易日收益率。ρ 全为 1 时等于直接轧差。合计 = 各行绝对值之和，板块之间不再轧一次。"
+const CORR_PCT_FORMULA = "多空相关轧差占比 = |多空相关轧差市值| ÷ 总规模"
+const AVG_CORR_FORMULA = "板块内品种平均相关 = Σᵢ<ⱼ |市值ᵢ| × |市值ⱼ| × ρᵢⱼ ÷ Σᵢ<ⱼ |市值ᵢ| × |市值ⱼ|。同一品种的多空先合成净市值。ρ 用最近 252 个交易日。只有一个品种时没有配对，显示 —。"
+
+const COL_FORMULAS: Record<Exclude<SortCol, "netMv" | "netPctNorm"> | "mktVol" | "holdVol" | "margVol", string> = {
+  sector: "分组 = 当前选择的大类、板块或细分板块",
+  longMv: "多头市值 = 该组买持仓市值",
+  longPct: "多头占比 = 多头市值 ÷ 总规模",
+  shortMv: "空头市值 = 该组卖持仓市值",
+  shortPct: "空头占比 = 空头市值 ÷ 总规模",
+  mktVol: "板块市场波动 = 最近20日收益率标准差 × √252。农产、能化、黑色、贵金属、新能源、有色和商品用南华指数，其余用主力合约等权。",
+  holdVol: "板块持仓波动 = 该组持仓品种按市值加权的最近20日收益率标准差 × √252",
+  margVol: "风险贡献占比 = 该组边际方差贡献 ÷ 组合边际方差合计",
+}
+
+function ColumnHeader({ formula, className, onClick, children }: {
+  formula: string
+  className: string
+  onClick?: () => void
+  children: ReactNode
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <th className={className} tabIndex={0} onClick={onClick}>{children}</th>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-64 px-2.5 py-1.5 text-left leading-snug">
+        {formula}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
 
   return (
     <div className="space-y-3">
       {/* ── header controls ── */}
+      <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-1">
           <button
@@ -449,6 +630,39 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
             ))}
           </div>
         )}
+        <span className="ml-auto inline-flex items-center gap-2">
+          {!capturing && <SectorColumnHelpButton />}
+          {tableScale > 0 && (
+            <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+              总规模 {Math.round(tableScale).toLocaleString("zh-CN")}
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="flex items-center justify-end gap-2 flex-wrap">
+        <div className="flex text-xs border border-red-200 rounded overflow-hidden">
+          {([["direct", "直接轧差"], ["corr", "相关轧差"]] as const).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => setNetMode(val)}
+              className={`px-2.5 py-0.5 transition-colors ${
+                netMode === val ? "bg-red-100 text-red-700" : "bg-background text-muted-foreground hover:bg-red-50"
+              }`}
+            >{label}</button>
+          ))}
+        </div>
+        <div className="flex text-xs border border-red-200 rounded overflow-hidden">
+          {([["vol", "市场波动"], ["avgCorr", "平均相关"]] as const).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => setMktColMode(val)}
+              className={`px-2.5 py-0.5 transition-colors ${
+                mktColMode === val ? "bg-red-100 text-red-700" : "bg-background text-muted-foreground hover:bg-red-50"
+              }`}
+            >{label}</button>
+          ))}
+        </div>
+      </div>
       </div>
 
       {loading ? (
@@ -459,7 +673,7 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
         <div className="flex flex-col gap-3">
           {/* Table */}
           <div className="w-full">
-            <Card className="overflow-hidden">
+            <Card className="overflow-x-auto">
               <CardContent className="p-0">
                 <table className="w-full text-xs table-auto">
                   <thead className="sticky top-0 bg-card z-10">
@@ -467,23 +681,35 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
                       {(["sector","longMv","longPct","shortMv","shortPct","netMv","netPctNorm"] as const).map((col, ci) => {
                         const active = sort?.col === col
                         const dir = active ? sort!.dir : null
+                        const isNet = col === "netMv" || col === "netPctNorm"
+                        const formula = col === "netMv"
+                          ? (netMode === "corr" ? CORR_NET_FORMULA : DIRECT_NET_FORMULA)
+                          : col === "netPctNorm"
+                            ? (netMode === "corr" ? CORR_PCT_FORMULA : DIRECT_PCT_FORMULA)
+                            : COL_FORMULAS[col]
                         return (
-                          <th
+                          <ColumnHeader
                             key={col}
-                            className={`${ci === 0 ? "text-left" : "text-right"} px-1.5 py-2 font-medium cursor-pointer select-none hover:bg-muted/60 whitespace-nowrap`}
+                            formula={formula}
+                            className={`${ci === 0 ? "text-left" : "text-right"} px-1 py-1.5 font-medium cursor-pointer select-none hover:bg-muted/60 ${isNet ? "leading-tight whitespace-normal" : "whitespace-nowrap"}`}
                             onClick={() => setSort(prev =>
                               prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
                             )}
                           >
-                            <span className="inline-flex items-center gap-0.5">
-                              {COL_LABELS[col]}
+                            <span className="inline-flex items-center justify-end gap-0.5">
+                              {isNet ? (
+                                <span className="leading-tight">{netMode === "corr" ? "多空相关" : "多空直接"}<br />{col === "netMv" ? "轧差市值" : "轧差占比"}</span>
+                              ) : COL_LABELS[col]}
                               <span className="text-muted-foreground text-[10px]">{dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}</span>
                             </span>
-                          </th>
+                          </ColumnHeader>
                         )
                       })}
-                      <th className="text-right px-1.5 py-2 font-medium whitespace-nowrap">加权波动率%</th>
-                      <th className="text-right px-1.5 py-2 font-medium whitespace-nowrap">边际波动率%</th>
+                      <ColumnHeader formula={mktColMode === "avgCorr" ? AVG_CORR_FORMULA : COL_FORMULAS.mktVol} className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal">
+                        {mktColMode === "avgCorr" ? <>板块内品种<br />平均相关</> : <>板块市场<br />波动</>}
+                      </ColumnHeader>
+                      <ColumnHeader formula={COL_FORMULAS.holdVol} className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal">板块持仓<br />波动</ColumnHeader>
+                      <ColumnHeader formula={COL_FORMULAS.margVol} className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal">风险贡献<br />占比</ColumnHeader>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -494,15 +720,20 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
                         <td className="px-1.5 py-1.5 text-right">{row.longPct.toFixed(1)}%</td>
                         <td className="px-1.5 py-1.5 text-right">{Math.round(row.shortMv).toLocaleString("zh-CN")}</td>
                         <td className="px-1.5 py-1.5 text-right">{row.shortPct.toFixed(1)}%</td>
-                        <td className={`px-1.5 py-1.5 text-right ${row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                          {Math.round(row.netMv).toLocaleString("zh-CN")}
+                        <td className={`px-1.5 py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                          {row.corrMissing ? "—" : Math.round(row.netMv).toLocaleString("zh-CN")}
                         </td>
-                        <td className={`px-1.5 py-1.5 text-right ${row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                          {row.netPctNorm.toFixed(1)}%
+                        <td className={`px-1.5 py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                          {row.corrMissing ? "—" : `${row.netPctNorm.toFixed(1)}%`}
                         </td>
-                        <td className="px-1.5 py-1.5 text-right">
-                          {mvLatestMap[row.sector] != null && mvDates.length > 0
-                            ? `${mvLatestMap[row.sector].toFixed(1)}%`
+                        <td className="px-1.5 py-1.5 text-right" title={mktColMode === "avgCorr" ? "板块内品种平均相关" : "20日年化波动率"}>
+                          {mktColMode === "avgCorr"
+                            ? (avgCorrLatestMap[row.sector] != null ? avgCorrLatestMap[row.sector]!.toFixed(2) : "—")
+                            : (mktLatestMap[row.sector] != null ? `${mktLatestMap[row.sector]!.toFixed(1)}%` : "—")}
+                        </td>
+                        <td className="px-1.5 py-1.5 text-right" title="持仓市值加权20日年化波动率">
+                          {holdLatestMap[row.sector] != null
+                            ? `${holdLatestMap[row.sector]!.toFixed(1)}%`
                             : "—"}
                         </td>
                         <td className="px-1.5 py-1.5 text-right">
@@ -519,12 +750,13 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
                         <td className="px-1.5 py-1.5 text-right">{totals.longPct.toFixed(1)}%</td>
                         <td className="px-1.5 py-1.5 text-right">{Math.round(totals.shortMv).toLocaleString("zh-CN")}</td>
                         <td className="px-1.5 py-1.5 text-right">{totals.shortPct.toFixed(1)}%</td>
-                        <td className={`px-1.5 py-1.5 text-right ${totals.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                          {Math.round(totals.netMv).toLocaleString("zh-CN")}
+                        <td className={`px-1.5 py-1.5 text-right ${totals.netPending ? "text-muted-foreground" : "text-foreground"}`}>
+                          {totals.netPending ? "—" : Math.round(totals.netMv).toLocaleString("zh-CN")}
                         </td>
-                        <td className={`px-1.5 py-1.5 text-right ${totals.netPctNorm < 0 ? "text-blue-500" : "text-orange-500"}`}>
-                          {totals.netPctNorm.toFixed(1)}%
+                        <td className={`px-1.5 py-1.5 text-right ${totals.netPending ? "text-muted-foreground" : "text-foreground"}`}>
+                          {totals.netPending ? "—" : `${totals.netPctNorm.toFixed(1)}%`}
                         </td>
+                        <td className="px-1.5 py-1.5 text-right" />
                         <td className="px-1.5 py-1.5 text-right" />
                         <td className="px-1.5 py-1.5 text-right" />
                       </tr>
@@ -539,7 +771,7 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
           <div className="w-full">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">期货市值占比（市值/净资本）</CardTitle>
+                <CardTitle className="text-sm">期货市值占比（市值/总规模）</CardTitle>
               </CardHeader>
               <CardContent className="p-0 pb-2">
                 <ReactECharts option={capturing ? { ...chartOption, animation: false } : chartOption} style={{ height }} notMerge />

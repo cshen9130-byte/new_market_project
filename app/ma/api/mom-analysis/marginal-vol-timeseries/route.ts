@@ -135,10 +135,13 @@ function floorIndex(arr: string[], target: string): number {
   return idx
 }
 
+type SectorVol = { dv: number; ann: number }
+
 /**
  * For a given grouping function, compute sector-level marginal vol:
  *   r_s,t = Σᵢ∈s (|MVᵢ| / |MV_s|) × rᵢ,t  for each lookback day t
  *   dv_s  = stddev(r_s) × |MV_s|
+ *   ann_s = stddev(r_s) × √252 × 100   (板块持仓波动, percent)
  * This captures intra-sector correlation (unlike VaR which sums σᵢ × |MVᵢ|).
  */
 function computeSectorMarginalVol(
@@ -146,7 +149,7 @@ function computeSectorMarginalVol(
   lookbackDates: string[],
   pctMap: Map<string, Map<string, number>>,
   getGroup: (prod: string) => string,
-): Record<string, number> {
+): Record<string, SectorVol> {
   // Group products by sector
   const sectorItems = new Map<string, { prod: string; absMv: number }[]>()
   for (const { prod, mv } of prodMvs) {
@@ -155,7 +158,7 @@ function computeSectorMarginalVol(
     sectorItems.get(g)!.push({ prod, absMv: Math.abs(mv) })
   }
 
-  const sectorDv: Record<string, number> = {}
+  const sectorDv: Record<string, SectorVol> = {}
 
   for (const [sector, items] of sectorItems) {
     const totalAbsMv = items.reduce((s, { absMv }) => s + absMv, 0)
@@ -180,7 +183,7 @@ function computeSectorMarginalVol(
     const dv = sigma * totalAbsMv
     if (dv < 1) continue
 
-    sectorDv[sector] = dv
+    sectorDv[sector] = { dv, ann: Math.round(sigma * Math.sqrt(252) * 1000) / 10 }
   }
 
   return sectorDv
@@ -268,6 +271,9 @@ async function _GET(req: Request) {
       cat: Record<string, number>
       sector: Record<string, number>
       sub: Record<string, number>
+      catAnn: Record<string, number>
+      sectorAnn: Record<string, number>
+      subAnn: Record<string, number>
     }
     const rows: RowData[] = []
 
@@ -291,21 +297,24 @@ async function _GET(req: Request) {
       const sectorDv = computeSectorMarginalVol(prodMvs, lookbackDates, pctMap, p => PROD_SECTOR[p]     ?? "其他")
       const subDv    = computeSectorMarginalVol(prodMvs, lookbackDates, pctMap, p => PROD_SUB_SECTOR[p] ?? "其他")
 
-      const totalCat    = Object.values(catDv).reduce((s, v) => s + v, 0)
-      const totalSector = Object.values(sectorDv).reduce((s, v) => s + v, 0)
-      const totalSub    = Object.values(subDv).reduce((s, v) => s + v, 0)
+      const totalCat    = Object.values(catDv).reduce((s, v) => s + v.dv, 0)
+      const totalSector = Object.values(sectorDv).reduce((s, v) => s + v.dv, 0)
+      const totalSub    = Object.values(subDv).reduce((s, v) => s + v.dv, 0)
 
       if (totalSector === 0) continue
 
       const catPct:    Record<string, number> = {}
       const sectorPct: Record<string, number> = {}
       const subPct:    Record<string, number> = {}
+      const catAnn:    Record<string, number> = {}
+      const sectorAnn: Record<string, number> = {}
+      const subAnn:    Record<string, number> = {}
 
-      for (const [k, v] of Object.entries(catDv))    catPct[k]    = Math.round(v / totalCat    * 10000) / 100
-      for (const [k, v] of Object.entries(sectorDv)) sectorPct[k] = Math.round(v / totalSector * 10000) / 100
-      for (const [k, v] of Object.entries(subDv))    subPct[k]    = Math.round(v / totalSub    * 10000) / 100
+      for (const [k, v] of Object.entries(catDv))    { catPct[k]    = Math.round(v.dv / totalCat    * 10000) / 100; catAnn[k]    = v.ann }
+      for (const [k, v] of Object.entries(sectorDv)) { sectorPct[k] = Math.round(v.dv / totalSector * 10000) / 100; sectorAnn[k] = v.ann }
+      for (const [k, v] of Object.entries(subDv))    { subPct[k]    = Math.round(v.dv / totalSub    * 10000) / 100; subAnn[k]    = v.ann }
 
-      rows.push({ date, cat: catPct, sector: sectorPct, sub: subPct })
+      rows.push({ date, cat: catPct, sector: sectorPct, sub: subPct, catAnn, sectorAnn, subAnn })
     }
 
     if (rows.length === 0) {
@@ -320,10 +329,16 @@ async function _GET(req: Request) {
     const catData:       Record<string, number[]> = {}
     const sectorData:    Record<string, number[]> = {}
     const subSectorData: Record<string, number[]> = {}
+    const catVol:        Record<string, Array<number | null>> = {}
+    const sectorVol:     Record<string, Array<number | null>> = {}
+    const subSectorVol:  Record<string, Array<number | null>> = {}
 
     for (const g of allCats)    catData[g]       = rows.map(r => r.cat[g]    ?? 0)
     for (const g of allSectors) sectorData[g]    = rows.map(r => r.sector[g] ?? 0)
     for (const g of allSubs)    subSectorData[g] = rows.map(r => r.sub[g]    ?? 0)
+    for (const g of allCats)    catVol[g]        = rows.map(r => r.catAnn[g]    ?? null)
+    for (const g of allSectors) sectorVol[g]     = rows.map(r => r.sectorAnn[g] ?? null)
+    for (const g of allSubs)    subSectorVol[g]  = rows.map(r => r.subAnn[g]    ?? null)
 
     return NextResponse.json({
       ok: true,
@@ -331,6 +346,9 @@ async function _GET(req: Request) {
       catData,
       sectorData,
       subSectorData,
+      catVol,
+      sectorVol,
+      subSectorVol,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -341,4 +359,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("marginal-vol-timeseries", _GET)
+export const GET = withMomCache("marginal-vol-timeseries-holdvol", _GET)

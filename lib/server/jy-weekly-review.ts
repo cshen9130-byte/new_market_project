@@ -16,6 +16,7 @@ import {
   weeklyReviewPoolScopePhrase,
   type WeeklyReviewPoolKey,
 } from "@/lib/ma/weekly-review-pools"
+import { INVESTED_MEDIAN_ROW_LABEL, investedMedianInsertIndex } from "@/lib/ma/weekly-review-invested-median"
 import { WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS } from "@/lib/weekly-review-data-status"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { beianFamilyKey } from "@/lib/server/share-class-product"
@@ -1052,6 +1053,15 @@ function signedColor(v: number | null): string | undefined {
   return v > 0 ? RED : GREEN
 }
 
+function markerStyle(color?: string, numFmt?: string): CellStyle {
+  return {
+    font: { name: FONT_NAME, sz: 11, bold: true, color: color ? { rgb: color } : undefined },
+    fill: { patternType: "solid", fgColor: { rgb: "FFF2CC" } },
+    alignment: { wrapText: true, vertical: "center" },
+    numFmt,
+  }
+}
+
 function sheetName(seq: number, title: string): string {
   return `${String(seq).padStart(2, "0")}_${title}`.replace(/[:\\/?*[\]]/g, " ").slice(0, 31)
 }
@@ -1260,6 +1270,11 @@ export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: str
     },
     {
       kind: "pair",
+      label: "已投产品中位数",
+      text: "持仓中的私募 FOF 底层，按本表同一策略和同一口径取近一周中位数。该策略有已投产品、且近一周中位数有数时，按这个数在表中插入一行「已投产品中位数」，用来看它排在跟踪产品的什么位置。没有已投，或近一周没有净值，则不加这一行。",
+    },
+    {
+      kind: "pair",
       label: "空值",
       text: "净值点数不足、基准缺失、窗口被公布空档打断，或风险比率超出合理范围时，对应单元格留空，不填 0。绝对收益、夏普、卡玛与投资分析列表使用同一套净值算法；超额收益和超额回撤只在本周报里按下列基准计算。",
     },
@@ -1340,10 +1355,19 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
     throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可导出的股票策略产品`)
   }
 
-  const [metrics, market] = await Promise.all([
+  const [metrics, market, invested] = await Promise.all([
     computeFundMetrics(funds, asOf),
     buildMarketRows(weekStart, weekEnd),
+    import("@/lib/server/weekly-review-invested-median")
+      .then((mod) => mod.buildWeeklyReviewInvestedMedian("equity", weekEnd))
+      .catch((err: unknown) => {
+        console.error("[jy-weekly-review] invested median skipped:", err)
+        return null
+      }),
   ])
+  const investedMedianByBucket = new Map(
+    (invested?.groups ?? []).map((group) => [group.bucket, group.median.ret_1w] as const),
+  )
 
   const xlsxMod = await import("xlsx-js-style") as {
     default?: typeof import("xlsx")
@@ -1462,6 +1486,11 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
       const bv = mode === "excess" ? b.excess.ret_1w : b.ret.ret_1w
       return (bv ?? -Infinity) - (av ?? -Infinity)
     })
+    const weekValues = sorted.map((row) => mode === "excess" ? row.excess.ret_1w : row.ret.ret_1w)
+    const medianWeek = investedMedianByBucket.get(bucket) ?? null
+    const insertAt = investedMedianInsertIndex(weekValues, medianWeek)
+    const lines: Array<{ kind: "fund"; row: FundMetrics } | { kind: "median" }> = sorted.map((row) => ({ kind: "fund" as const, row }))
+    if (insertAt != null) lines.splice(insertAt, 0, { kind: "median" })
     const aoa: unknown[][] = []
     const styles = new Map<string, CellStyle>()
     const set = (r: number, c: number, v: unknown, s?: CellStyle) => {
@@ -1470,7 +1499,15 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
       if (s) styles.set(`${r},${c}`, s)
     }
     headers.forEach((h, c) => set(0, c, h, headerStyle()))
-    sorted.forEach((row, i) => {
+    lines.forEach((line, i) => {
+      if (line.kind === "median") {
+        set(i + 1, 0, INVESTED_MEDIAN_ROW_LABEL, markerStyle())
+        for (let c = 1; c < headers.length; c++) {
+          set(i + 1, c, c === 1 ? medianWeek : null, markerStyle(c === 1 ? signedColor(medianWeek) : undefined, c === 1 ? "0.00%" : undefined))
+        }
+        return
+      }
+      const row = line.row
       const alt = i % 2 === 0
       set(i + 1, 0, row.name, bodyStyle(alt))
       if (mode === "excess") {
@@ -1490,8 +1527,8 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
       }
     })
     const name = sheetName(seq, bucket)
-    sheets.push({ name, title: bucket, rows: sorted.length, cols: 8, aoa, styles })
-    tocRows.push([seq, name, bucket, sorted.length, 8])
+    sheets.push({ name, title: bucket, rows: lines.length, cols: 8, aoa, styles })
+    tocRows.push([seq, name, bucket, lines.length, 8])
     seq += 1
   }
 
