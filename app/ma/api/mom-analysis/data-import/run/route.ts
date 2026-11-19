@@ -54,9 +54,6 @@ export async function POST(request: Request) {
   if (skipMarketData) args.push("--skip-market-data")
   if (reset) args.push("--reset")
 
-  const { readConfig, fetchSettlementFiles } = await import("@/lib/server/settlement-email")
-  const settlementCfg = readConfig()
-
   const encoder = new TextEncoder()
   let proc: ChildProcess | null = null
 
@@ -66,43 +63,6 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(line)}\n\n`))
       }
 
-      // Step 1: fetch settlement files from mailbox before running ETL
-      if (settlementCfg.enabled && settlementCfg.email && settlementCfg.pass) {
-        send("[settlement] 正在从邮箱获取结算单附件…")
-        try {
-          const result = await fetchSettlementFiles()
-          if (result.downloaded.length > 0) {
-            send(`[settlement] 已下载 ${result.downloaded.length} 个文件: ${result.downloaded.join(", ")}`)
-          } else if (result.errors.length > 0) {
-            send(`[settlement] 获取完成，有 ${result.errors.length} 个错误: ${result.errors.join("; ")}`)
-          } else {
-            const skippedNote = result.skipped.length > 0 ? `已跳过 ${result.skipped.length}` : "收件箱中无匹配附件"
-            send(`[settlement] 无新文件 (${skippedNote})`)
-          }
-        } catch (e) {
-          send(`[settlement] 获取失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
-        }
-      }
-
-      // Step 1b: incremental ETL of account summary + transaction records into PostgreSQL
-      try {
-        send("[settlement-etl] 正在同步结算数据至数据库（增量）…")
-        const { runSettlementFilesETL } = await import("@/lib/server/settlement-account-etl")
-        const etlRes = await runSettlementFilesETL("incremental")
-        send(`[settlement-etl] 资金状况: 新增 ${etlRes.accountSummary.inserted}, 更新 ${etlRes.accountSummary.updated}, 跳过 ${etlRes.accountSummary.skipped}`)
-        send(`[settlement-etl] 成交记录: 新增 ${etlRes.transactions.inserted}, 更新 ${etlRes.transactions.updated}, 跳过 ${etlRes.transactions.skipped}`)
-        send(`[settlement-etl] 持仓明细: 新增 ${etlRes.positions.inserted}, 更新 ${etlRes.positions.updated}, 跳过 ${etlRes.positions.skipped}`)
-        send(`[settlement-etl] 持仓汇总: 新增 ${etlRes.positionSummary.inserted}, 更新 ${etlRes.positionSummary.updated}, 跳过 ${etlRes.positionSummary.skipped}`)
-        send(`[settlement-etl] 平仓明细: 新增 ${etlRes.positionClosed.inserted}, 更新 ${etlRes.positionClosed.updated}, 跳过 ${etlRes.positionClosed.skipped}`)
-        const allErrors = [...etlRes.accountSummary.errors, ...etlRes.transactions.errors, ...etlRes.positions.errors, ...etlRes.positionSummary.errors, ...etlRes.positionClosed.errors]
-        if (allErrors.length > 0) {
-          send(`[settlement-etl] 警告: ${allErrors.join("; ")}`)
-        }
-      } catch (e) {
-        send(`[settlement-etl] 同步失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
-      }
-
-      // Step 2: spawn ETL process
       proc = spawn(python, args, {
         env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
         cwd: process.cwd(),
@@ -280,8 +240,9 @@ export async function POST(request: Request) {
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
       "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   })
 }
