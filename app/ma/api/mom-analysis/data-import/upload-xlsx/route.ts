@@ -1,6 +1,7 @@
 import fs from "fs"
 import path from "path"
 import { NextResponse } from "next/server"
+import { isExcludedMomWorkbookName } from "@/lib/server/mom-data-standardize-names"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -25,16 +26,20 @@ export async function POST(request: Request) {
     }
 
     const rawFiles = formData.getAll("files")
+    const isWorkbook = (name: string) => {
+      const lower = name.toLowerCase()
+      return lower.endsWith(".xlsx") || lower.endsWith(".xls")
+    }
     const xlsxFiles = rawFiles.filter(
-      (f): f is File => f instanceof File && f.name.toLowerCase().endsWith(".xlsx"),
+      (f): f is File => f instanceof File && isWorkbook(f.name),
     )
 
     const invalid = rawFiles.filter(
-      (f) => f instanceof File && !f.name.toLowerCase().endsWith(".xlsx"),
+      (f) => f instanceof File && !isWorkbook(f.name),
     )
 
     if (xlsxFiles.length === 0) {
-      return NextResponse.json({ error: "请上传至少一个 .xlsx 文件。" }, { status: 400 })
+      return NextResponse.json({ error: "请上传至少一个 .xls 或 .xlsx 文件。" }, { status: 400 })
     }
 
     fs.mkdirSync(BASE_DIR, { recursive: true })
@@ -42,13 +47,19 @@ export async function POST(request: Request) {
 
     const savedFiles: string[] = []
     const errors: string[] = []
+    const skippedNames: string[] = (invalid as File[]).map((f) => f.name)
 
     for (const file of xlsxFiles) {
       try {
         // Strip any directory component from the filename
         const safeName = path.basename(file.name)
-        if (!safeName.toLowerCase().endsWith(".xlsx") || safeName.startsWith("~$")) {
+        const lowerName = safeName.toLowerCase()
+        if (!(lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) || safeName.startsWith("~$")) {
           errors.push(`跳过非法文件名: ${file.name}`)
+          continue
+        }
+        if (isExcludedMomWorkbookName(safeName)) {
+          skippedNames.push(safeName)
           continue
         }
         const targetPath = path.join(targetDir, safeName)
@@ -60,9 +71,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const skippedNames = (invalid as File[]).map((f) => f.name)
-
-    if (savedFiles.length === 0) {
+    if (savedFiles.length === 0 && errors.length > 0) {
       return NextResponse.json({ error: "所有文件写入失败。", errors }, { status: 500 })
     }
 

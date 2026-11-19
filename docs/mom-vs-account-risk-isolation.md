@@ -130,11 +130,26 @@ Long rows fill 买持仓/买入价; short rows fill 卖持仓/卖出价. This is
 
 ## MOM source format (do not use for 单账户)
 
-- Sheet `客户交易核算日报`
-- Fixed cells: D6 账户, I6 日期, D13 **当日盈亏**, D15 当日手续费, D20/I20 权利金, D23 平仓盈亏, I23 持仓盈亏
-- MOM product NAV: `当日盈亏 − 当日手续费 + 权利金收入 − 权利金支出` over `mom_daily_reports` + capital flows from `mom_fund_transactions`
+`scripts/ma/mom_data_etl.py` reads both layouts into the same `public.mom_*` columns. Do not point 单账户 parsing at either layout.
 
-Leave this pipeline unchanged.
+Through 2026-11-17 (`.xlsx`, `核算信息_{账户}_{日期}_逐日盯市.xlsx`):
+
+- Sheet `客户交易核算日报`
+- 账户 D6, 交易日期 I6, 上日结存 D11, **当日盈亏 D13**, 当日手续费 D15, 权利金 D20/I20, 平仓盈亏 D23, 持仓盈亏 I23
+- Detail header row is 11 (column B)
+
+From 2026-11-18 (`.xls`, `{账户}_{yyyymmdd}.xls`, for example `rx311_20261119.xls`):
+
+- Sheet `客户交易核算报表` (same other sheet names: 品种汇总, 成交明细, 持仓明细, …)
+- 账户(别名) is `rx311(投顾名)`, 交易日期 is beside it. Strip the parenthesis for the account code.
+- 期初结存 = 上日结存, 存取合计 = 当日存取合计, 平盈总计 = 平仓盈亏, 手续费 = 当日手续费, 期末结存 = 当日结存, 持盈总计 = 持仓盈亏
+- **当日盈亏** is no longer printed. It is still 平仓盈亏 + 持仓盈亏. 实有货币资金 is no longer printed; it matched 客户权益 on the old files.
+- 成交明细 renames: 柜台账户报单编号, 交易日, 柜台账户成交编号. 品种汇总 drops the 交易日 column.
+- Detail header row is found by label (row 9 on the 2026-11-19 sample).
+
+MOM product NAV is unchanged: `当日盈亏 − 当日手续费 + 权利金收入 − 权利金支出` over `mom_daily_reports`.
+
+Do not change this pipeline in order to support 单账户.
 
 ---
 

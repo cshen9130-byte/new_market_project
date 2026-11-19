@@ -40,7 +40,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 
@@ -199,7 +198,9 @@ export default function DataImportPage() {
 
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
-  const logEndRef = useRef<HTMLDivElement | null>(null)
+  const logQueueRef = useRef<string[]>([])
+  const logFlushRef = useRef<number | null>(null)
+  const [showRenameFiles, setShowRenameFiles] = useState(false)
 
   const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -299,10 +300,7 @@ export default function DataImportPage() {
             if (msg.startsWith("__EXIT__:")) {
               exitCode = msg.slice(9)
             } else {
-              setEtlLog((prev) => [...prev, msg])
-              if (autoFollowLogRef.current) {
-                setTimeout(() => logEndRef.current?.scrollIntoView({ behavior: "auto" }), 0)
-              }
+              enqueueEtlLog(msg)
             }
           }
         }
@@ -357,6 +355,50 @@ export default function DataImportPage() {
   useEffect(() => {
     autoFollowLogRef.current = autoFollowLog
   }, [autoFollowLog])
+
+  const isProgressLine = useCallback((line: string) => {
+    return line.includes("%|") || /\b\d+\/\d+\b/.test(line) && (line.includes("处理文件") || line.includes("it/s"))
+  }, [])
+
+  const enqueueEtlLog = useCallback((msg: string) => {
+    const queue = logQueueRef.current
+    if (isProgressLine(msg) && queue.length > 0 && isProgressLine(queue[queue.length - 1])) {
+      queue[queue.length - 1] = msg
+    } else {
+      queue.push(msg)
+    }
+    if (logFlushRef.current != null) return
+    logFlushRef.current = window.setTimeout(() => {
+      logFlushRef.current = null
+      const batch = logQueueRef.current
+      logQueueRef.current = []
+      if (batch.length === 0) return
+      setEtlLog((prev) => {
+        const next = prev.slice()
+        for (const line of batch) {
+          if (isProgressLine(line) && next.length > 0 && isProgressLine(next[next.length - 1])) {
+            next[next.length - 1] = line
+          } else {
+            next.push(line)
+          }
+        }
+        return next.length > 400 ? next.slice(next.length - 400) : next
+      })
+    }, 200)
+  }, [isProgressLine])
+
+  useEffect(() => {
+    if (!autoFollowLog) return
+    const el = logScrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [etlLog, autoFollowLog])
+
+  useEffect(() => {
+    return () => {
+      if (logFlushRef.current != null) window.clearTimeout(logFlushRef.current)
+    }
+  }, [])
 
   const classifyLogLine = useCallback((line: string) => {
     const s = line.toLowerCase()
@@ -715,23 +757,36 @@ export default function DataImportPage() {
       // Rename only the newly extracted folders before ETL (same as xlsx upload path)
       setIsRenaming(true)
       setRenameResult(null)
-      try {
-        const renameRes = await fetch("/ma/api/mom-analysis/data-import/rename", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ folders: uniqueFolders }),
-        })
-        const renameData = await renameRes.json()
-        setRenameResult(renameData)
-        if (!renameData.nothingToDo) {
-          setFolderFiles({})
-          setExpandedFolder(null)
-          await loadFolders()
-          await checkDates()
-        }
-      } finally {
-        setIsRenaming(false)
-      }
+            try {
+              const renameRes = await fetch("/ma/api/mom-analysis/data-import/rename", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ folders: uniqueFolders }),
+              })
+              const renameData = await renameRes.json()
+              if (!renameRes.ok) throw new Error(readError(renameData, "重命名失败"))
+              setRenameResult(renameData)
+              if (!renameData.nothingToDo) {
+                setFolderFiles({})
+                setExpandedFolder(null)
+                await loadFolders()
+                await checkDates()
+              }
+            } catch (e) {
+              const msg = e instanceof TypeError
+                ? "标准化命名时本地服务中断了连接。文件已解压，服务恢复后点「标准化命名」。"
+                : e instanceof Error ? e.message : "重命名失败"
+              toast({ title: "标准化命名失败", description: msg, variant: "destructive" })
+              setRenameResult({
+                renamedFiles: [],
+                renamedFolders: [],
+                errors: [msg],
+                duplicates: [],
+                nothingToDo: false,
+              })
+            } finally {
+              setIsRenaming(false)
+            }
 
       void runEtl({ skipDedup: true, skipMarketData: true })
     }
@@ -747,7 +802,7 @@ export default function DataImportPage() {
       toast({ title: "请选择或输入目标文件夹", variant: "destructive" }); return
     }
     if (xlsxFiles.length === 0) {
-      toast({ title: "请选择至少一个 .xlsx 文件", variant: "destructive" }); return
+      toast({ title: "请选择至少一个 .xls 或 .xlsx 文件", variant: "destructive" }); return
     }
 
     setIsUploadingXlsx(true)
@@ -938,7 +993,7 @@ export default function DataImportPage() {
         <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
           <UploadCloud className={`h-8 w-8 ${isDragOver ? "text-primary" : "text-muted-foreground"}`} />
           <p className="text-sm font-medium">拖放 ZIP 文件到此处</p>
-          <p className="text-xs text-muted-foreground">支持一次拖入多个 .zip 文件</p>
+          <p className="text-xs text-muted-foreground">支持一次拖入多个 .zip。压缩包内可以是 .xlsx 或 .xls</p>
           <Button
             variant="outline"
             size="sm"
@@ -990,7 +1045,7 @@ export default function DataImportPage() {
         <CardHeader className="pb-3 cursor-pointer select-none" onClick={() => setShowXlsxUpload((v) => !v)}>
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-            单日 XLSX 文件上传
+            单日核算文件上传
             <ChevronDown className={`ml-auto h-4 w-4 text-muted-foreground transition-transform ${showXlsxUpload ? "rotate-180" : ""}`} />
           </CardTitle>
         </CardHeader>
@@ -1037,13 +1092,13 @@ export default function DataImportPage() {
             onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setXlsxIsDragOver(false) }}
             onDrop={(e) => {
               e.preventDefault(); setXlsxIsDragOver(false)
-              const dropped = Array.from(e.dataTransfer.files).filter((f) => f.name.toLowerCase().endsWith(".xlsx"))
+              const dropped = Array.from(e.dataTransfer.files).filter((f) => /\.xlsx?$/i.test(f.name))
               if (dropped.length > 0) setXlsxFiles((prev) => [...prev, ...dropped])
             }}
           >
             <div className="flex flex-col items-center justify-center gap-2 py-5 text-center">
               <FileSpreadsheet className={`h-7 w-7 ${xlsxIsDragOver ? "text-primary" : "text-muted-foreground"}`} />
-              <p className="text-sm font-medium">拖放 .xlsx 文件到此处</p>
+              <p className="text-sm font-medium">拖放 .xls / .xlsx 文件到此处</p>
               <Button
                 variant="outline" size="sm" className="mt-1"
                 disabled={isUploadingXlsx}
@@ -1055,11 +1110,11 @@ export default function DataImportPage() {
             <input
               ref={xlsxInputRef}
               type="file"
-              accept=".xlsx"
+              accept=".xls,.xlsx"
               multiple
               className="hidden"
               onChange={(e) => {
-                const picked = Array.from(e.target.files ?? []).filter((f) => f.name.toLowerCase().endsWith(".xlsx"))
+                const picked = Array.from(e.target.files ?? []).filter((f) => /\.xlsx?$/i.test(f.name))
                 if (picked.length > 0) setXlsxFiles((prev) => [...prev, ...picked])
               }}
             />
@@ -1256,7 +1311,6 @@ export default function DataImportPage() {
                 {line}
               </div>
             ))}
-            <div ref={logEndRef} />
           </div>
         </div>
       )}
@@ -1270,13 +1324,32 @@ export default function DataImportPage() {
               : `已重命名 ${renameResult.renamedFiles.length} 个文件、${renameResult.renamedFolders.length} 个文件夹`}
           </AlertTitle>
           <AlertDescription>
-            <div className="mt-2 space-y-1 text-xs font-mono max-h-40 overflow-y-auto">
-              {renameResult.renamedFolders.map((r, i) => <div key={i} className="text-blue-600 dark:text-blue-400">📁 {r}</div>)}
-              {renameResult.renamedFiles.map((r, i) => <div key={i} className="text-emerald-600 dark:text-emerald-400">📄 {r}</div>)}
-              {renameResult.duplicates.map((r, i) => <div key={i} className="text-orange-600 dark:text-orange-400">⚠ 重复: {r}</div>)}
-              {renameResult.errors.map((r, i) => <div key={i} className="text-destructive">⚠ {r}</div>)}
-              {renameResult.nothingToDo && <div className="text-muted-foreground">所有文件名和文件夹名均符合标准格式。</div>}
-            </div>
+            {renameResult.nothingToDo && <div className="mt-2 text-xs text-muted-foreground">所有文件名和文件夹名均符合标准格式。</div>}
+            {renameResult.errors.length > 0 && (
+              <div className="mt-2 space-y-1 text-xs font-mono">
+                {renameResult.errors.map((r, i) => <div key={i} className="text-destructive">⚠ {r}</div>)}
+              </div>
+            )}
+            {renameResult.duplicates.length > 0 && (
+              <div className="mt-2 space-y-1 text-xs font-mono">
+                {renameResult.duplicates.map((r, i) => <div key={i} className="text-orange-600 dark:text-orange-400">⚠ 重复: {r}</div>)}
+              </div>
+            )}
+            {(renameResult.renamedFiles.length > 0 || renameResult.renamedFolders.length > 0) && (
+              <button
+                type="button"
+                onClick={() => setShowRenameFiles((v) => !v)}
+                className="mt-2 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                {showRenameFiles ? "收起文件列表" : "查看文件列表"}
+              </button>
+            )}
+            {showRenameFiles && (
+              <div className="mt-2 space-y-1 text-xs font-mono max-h-40 overflow-y-auto overscroll-contain">
+                {renameResult.renamedFolders.map((r, i) => <div key={`d-${i}`} className="text-blue-600 dark:text-blue-400">📁 {r}</div>)}
+                {renameResult.renamedFiles.map((r, i) => <div key={`f-${i}`} className="text-emerald-600 dark:text-emerald-400">📄 {r}</div>)}
+              </div>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -1298,7 +1371,7 @@ export default function DataImportPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="h-[60vh]">
+          <div>
             {isLoading ? (
               <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
                 <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
@@ -1369,7 +1442,7 @@ export default function DataImportPage() {
                 })}
               </div>
             )}
-          </ScrollArea>
+          </div>
         </CardContent>
       </Card>
 

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "child_process"
 import fs from "fs"
 import path from "path"
+import type { Readable } from "stream"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
     }
   } catch { /* no body or not JSON — use defaults */ }
 
-  const args = [script]
+  const args = ["-X", "utf8", script]
   if (skipDedup) args.push("--skip-dedup")
   if (skipMarketData) args.push("--skip-market-data")
   if (reset) args.push("--reset")
@@ -103,19 +104,54 @@ export async function POST(request: Request) {
 
       // Step 2: spawn ETL process
       proc = spawn(python, args, {
-        env: { ...process.env },
+        env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
         cwd: process.cwd(),
       })
 
-      const splitLines = (buf: string, tag: string) => {
-        for (const line of buf.split("\n")) {
-          const t = line.trim()
+      const emitChunk = (chunk: string, tag: string, pending: { buf: string }) => {
+        pending.buf += chunk
+        const lines = pending.buf.split("\n")
+        pending.buf = lines.pop() ?? ""
+        for (const line of lines) {
+          const t = line.replace(/\r/g, "").trim()
           if (t) send(tag ? `[${tag}] ${t}` : t)
+        }
+        const cr = pending.buf.lastIndexOf("\r")
+        if (cr >= 0) {
+          const progress = pending.buf.slice(cr + 1).trim()
+          pending.buf = ""
+          if (progress) send(tag ? `[${tag}] ${progress}` : progress)
         }
       }
 
-      proc.stdout?.on("data", (d: Buffer) => splitLines(d.toString(), ""))
-      proc.stderr?.on("data", (d: Buffer) => splitLines(d.toString(), "stderr"))
+      const stdoutPending = { buf: "" }
+      const stderrPending = { buf: "" }
+      // Windows Python still writes the ANSI code page (GBK) on some launches.
+      // UTF-8 decoding then shows "??". Fall back to GBK when that happens.
+      const decodeProcessOutput = (stream: Readable | null, tag: string, pending: { buf: string }) => {
+        if (!stream) return
+        let encoding: "utf-8" | "gbk" = "utf-8"
+        const utf8 = new TextDecoder("utf-8")
+        const take = (d: Buffer) => {
+          let text: string
+          if (encoding === "gbk") {
+            text = new TextDecoder("gbk").decode(d)
+          } else {
+            text = utf8.decode(d, { stream: true })
+            if (text.includes("\uFFFD")) {
+              encoding = "gbk"
+              text = new TextDecoder("gbk").decode(d)
+            }
+          }
+          emitChunk(text, tag, pending)
+        }
+        stream.on("data", (d: Buffer) => take(d))
+        stream.on("end", () => {
+          if (encoding === "utf-8") emitChunk(utf8.decode(), tag, pending)
+        })
+      }
+      decodeProcessOutput(proc.stdout, "", stdoutPending)
+      decodeProcessOutput(proc.stderr, "stderr", stderrPending)
 
       const ETL_TIMEOUT_MS = 1_800_000 // 30 min — market-data EmQuant steps can exceed 10 min
       const timer = setTimeout(() => {
@@ -177,24 +213,17 @@ export async function POST(request: Request) {
             }
           }
 
-          send("[warm-cache] 开始预热图表缓存…")
-          try {
-            const origin = new URL(request.url).origin
-            const resp = await fetch(`${origin}/ma/api/mom-analysis/warm-cache`)
-            const body = await resp.json() as { ok: boolean; totalMs?: number; results?: { route: string; ok: boolean }[] }
-            const ok = body.results?.filter((r: { ok: boolean }) => r.ok).length ?? 0
-            const total = body.results?.length ?? 0
-            send(`[warm-cache] 缓存预热完成: ${ok}/${total} 路由成功 (${((body.totalMs ?? 0) / 1000).toFixed(1)}s)`)
-          } catch (e) {
-            send(`[warm-cache] 缓存预热失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
-          }
+          // Chart warmup calls about 50 analysis routes one after another.
+          // The rows are already committed, so the import must not wait on it.
+          send("[warm-cache] 图表缓存在后台预热，导入已经完成")
+          const origin = new URL(request.url).origin
+          void fetch(`${origin}/ma/api/mom-analysis/warm-cache`).catch(() => {})
 
           try {
             const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs")
             const quantScript = path.join(process.cwd(), "scripts", "ma", "precompute_quant_strategy.ts")
             const child = spawn(process.execPath, [tsxCli, quantScript, "--force"], {
               cwd: process.cwd(),
-              detached: true,
               stdio: "ignore",
               windowsHide: true,
             })
@@ -209,7 +238,6 @@ export async function POST(request: Request) {
             const positionScript = path.join(process.cwd(), "scripts", "ma", "precompute_quant_positions.ts")
             const child = spawn(process.execPath, [tsxCli, positionScript], {
               cwd: process.cwd(),
-              detached: true,
               stdio: "ignore",
               windowsHide: true,
             })
@@ -224,7 +252,6 @@ export async function POST(request: Request) {
             const varScript = path.join(process.cwd(), "scripts", "ma", "persist_mom_position_var.ts")
             const child = spawn(process.execPath, [tsxCli, varScript], {
               cwd: process.cwd(),
-              detached: true,
               stdio: "ignore",
               windowsHide: true,
             })

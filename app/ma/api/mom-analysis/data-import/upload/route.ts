@@ -2,11 +2,29 @@ import fs from "fs"
 import path from "path"
 import AdmZip from "adm-zip"
 import { NextResponse } from "next/server"
+import { isExcludedMomWorkbookName } from "@/lib/server/mom-data-standardize-names"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 const BASE_DIR = process.env.MOM_DATA_DIR ?? path.join(process.cwd(), "..", "mom_data", "03.投顾逐日")
+
+function replaceFile(src: string, dest: string) {
+  if (fs.existsSync(dest)) fs.unlinkSync(dest)
+  fs.renameSync(src, dest)
+}
+
+function removeTree(dir: string) {
+  // Node 24 fs.rmSync aborts the process when the path contains Chinese
+  // characters, which takes down the dev server mid-upload.
+  if (!fs.existsSync(dir)) return
+  for (const entry of fs.readdirSync(dir)) {
+    const target = path.join(dir, entry)
+    if (fs.statSync(target).isDirectory()) removeTree(target)
+    else fs.unlinkSync(target)
+  }
+  fs.rmdirSync(dir)
+}
 
 export async function POST(request: Request) {
   try {
@@ -40,6 +58,10 @@ export async function POST(request: Request) {
     for (const entry of entries) {
       // Skip macOS metadata and hidden files
       if (entry.entryName.includes("__MACOSX") || path.basename(entry.entryName).startsWith(".")) {
+        continue
+      }
+      if (!entry.isDirectory && isExcludedMomWorkbookName(entry.entryName)) {
+        skipped.push(entry.entryName)
         continue
       }
 
@@ -84,26 +106,33 @@ export async function POST(request: Request) {
             // Merge files from src into existing dest
             for (const f of fs.readdirSync(src)) {
               const sf = path.join(src, f)
-              if (fs.statSync(sf).isFile()) fs.copyFileSync(sf, path.join(dest, f))
+              if (!fs.statSync(sf).isFile()) continue
+              if (isExcludedMomWorkbookName(f)) continue
+              fs.copyFileSync(sf, path.join(dest, f))
             }
-            fs.rmSync(src, { recursive: true })
+            removeTree(src)
           }
           if (!extractedFolders.includes(s)) extractedFolders.push(s)
         }
-        try { fs.rmSync(dPath, { recursive: true }) } catch { /* leave if non-empty */ }
+        try { removeTree(dPath) } catch { /* leave if non-empty */ }
       } else {
         // Case 2: day folder extracted directly
         extractedFolders.push(d)
       }
     }
 
-    // Case 3: loose xlsx files extracted flat into BASE_DIR — group into day folder
-    const looseXlsx = fs.readdirSync(BASE_DIR).filter((e) => {
-      try { return e.endsWith(".xlsx") && !e.startsWith("~$") && fs.statSync(path.join(BASE_DIR, e)).isFile() } catch { return false }
+    // Case 3: loose workbooks extracted flat into BASE_DIR — group into day folder.
+    // The 2026-11-18 export is a zip of {account}_{yyyymmdd}.xls files.
+    const looseBooks = fs.readdirSync(BASE_DIR).filter((e) => {
+      try {
+        const lower = e.toLowerCase()
+        const isWorkbook = lower.endsWith(".xlsx") || lower.endsWith(".xls")
+        return isWorkbook && !e.startsWith("~$") && fs.statSync(path.join(BASE_DIR, e)).isFile()
+      } catch { return false }
     })
-    if (looseXlsx.length > 0) {
+    if (looseBooks.length > 0) {
       const looseByDate: Record<string, string[]> = {}
-      for (const fname of looseXlsx) {
+      for (const fname of looseBooks) {
         // Extract YYYYMMDD from patterns like "2026-03-19" or "20260319" in the filename
         const m = /(\d{4})-(\d{2})-(\d{2})/.exec(fname) ?? /(\d{4})(\d{2})(\d{2})/.exec(fname)
         const dateKey = m ? m[1] + m[2] + m[3] : "unknown"
@@ -115,7 +144,13 @@ export async function POST(request: Request) {
         const folderPath = path.join(BASE_DIR, folderName)
         fs.mkdirSync(folderPath, { recursive: true })
         for (const fname of files) {
-          fs.renameSync(path.join(BASE_DIR, fname), path.join(folderPath, fname))
+          const src = path.join(BASE_DIR, fname)
+          if (isExcludedMomWorkbookName(fname)) {
+            try { fs.unlinkSync(src) } catch { /* already gone */ }
+            skipped.push(fname)
+            continue
+          }
+          replaceFile(src, path.join(folderPath, fname))
         }
         if (!extractedFolders.includes(folderName)) extractedFolders.push(folderName)
       }

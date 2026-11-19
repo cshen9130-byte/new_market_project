@@ -3,9 +3,14 @@
 Incremental MOM trade-detail ETL
 ================================
 
-Reads xlsx files from MOM data folders (03.投顾逐日), parses:
-- 品种汇总: D6(account), I6(trade_date)
-- 成交明细: header row 11, data rows start at 12, columns B..Q
+Reads MOM 投顾逐日 workbooks from 03.投顾逐日.
+
+Two layouts share one database shape:
+- through 2026-11-17: .xlsx, sheet 客户交易核算日报, account at D6, header row 11
+- from 2026-11-18: .xls named {account}_{yyyymmdd}.xls, sheet 客户交易核算报表,
+  account in 账户(别名), header row found by label (usually row 9)
+
+Fields that moved are matched by label, not by a fixed cell.
 
 Then upserts detail rows into PostgreSQL.
 
@@ -25,6 +30,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import os
 import posixpath
 import re
@@ -37,6 +43,12 @@ from cn_market_holidays import last_trading_day_on_or_before  # noqa: E402
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 from xml.etree import ElementTree as ET
+
+# Windows pipes use the ANSI code page unless told otherwise, and the import
+# page then shows Chinese paths as unrecognized characters.
+for _stdio in (sys.stdout, sys.stderr):
+    if hasattr(_stdio, "reconfigure"):
+        _stdio.reconfigure(encoding="utf-8", errors="replace")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +94,12 @@ DETAIL_COLUMNS: List[Tuple[str, str]] = [
 ]
 DETAIL_SQL_COLS = [f'"{sql}"' for _, sql in DETAIL_COLUMNS]
 DETAIL_XLSX_HEADERS = [xlsx for xlsx, _ in DETAIL_COLUMNS]
+# 2026-11-18 export renamed three 成交明细 headers. Values stay in the same columns.
+DETAIL_HEADER_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "资金账户报单编号": ("资金账户报单编号", "柜台账户报单编号"),
+    "成交日期": ("成交日期", "交易日"),
+    "资金账户成交编号": ("资金账户成交编号", "柜台账户成交编号"),
+}
 FUTURES_DETAIL_SHEET_NAME = "期货成交明细"
 # 期货成交明细 rows: same B-Q columns as 成交明细, plus 账户 (D6) and 交易日期 (I6).
 FUTURES_SQL_COLS = ['"账户"', '"交易日期"'] + DETAIL_SQL_COLS
@@ -174,7 +192,10 @@ SUMMARY_DETAIL_COLUMNS: List[Tuple[str, str]] = [
 SUMMARY_DETAIL_SQL_COLS = ['"账户"', '"交易日期"'] + [f'"{sql}"' for _, sql in SUMMARY_DETAIL_COLUMNS]
 
 DAILY_REPORT_SHEET_NAME = "客户交易核算日报"
-# Ordered (cell_ref, column_name) pairs to read from 客户交易核算日报 sheet.
+# Old sheet name, then the name used from the 2026-11-18 export onward.
+DAILY_REPORT_SHEET_CANDIDATES = ("客户交易核算日报", "客户交易核算报表")
+# Ordered (cell_ref, column_name) pairs. cell_ref is the pre-2026-11-18 location.
+# The reader matches the column_name via DAILY_LABEL_ALIASES, so both layouts load.
 DAILY_REPORT_COL_ORDER: List[Tuple[str, str]] = [
     ("D6",  "账户"),
     ("I6",  "交易日期"),
@@ -220,6 +241,53 @@ DAILY_REPORT_FUND_FLOW_COLUMNS: List[Tuple[str, str]] = [
     ("说明", "说明"),
 ]
 DAILY_REPORT_FUND_FLOW_SQL_COLS = ['"账户"', '"交易日期"'] + [f'"{sql}"' for _, sql in DAILY_REPORT_FUND_FLOW_COLUMNS]
+# 发生日期 was renamed 时间 in the 2026-11-18 export. The extra 资金使用类型 column is not stored.
+FUND_FLOW_HEADER_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
+    ("发生日期", ("发生日期", "时间")),
+    ("方向", ("方向",)),
+    ("最大允许亏损金额", ("最大允许亏损金额",)),
+    ("不可亏损金额", ("不可亏损金额",)),
+    ("说明", ("说明",)),
+]
+
+# Database column <- labels seen in either workbook version.
+# 市値 / 充抖 keep the historical column spelling already stored in PostgreSQL.
+DAILY_LABEL_ALIASES: List[Tuple[str, Tuple[str, ...]]] = [
+    ("上日结存", ("上日结存", "期初结存")),
+    ("客户权益", ("客户权益",)),
+    ("当日存取合计", ("当日存取合计", "存取合计")),
+    ("实有货币资金", ("实有货币资金",)),
+    ("当日盈亏", ("当日盈亏",)),
+    ("非货币充抖金额", ("非货币充抵金额", "非货币充抖金额")),
+    ("当日总权利金", ("当日总权利金",)),
+    ("货币充抖金额", ("货币充抵金额", "货币充抖金额")),
+    ("当日手续费", ("当日手续费", "手续费")),
+    ("冻结资金", ("冻结资金",)),
+    ("当日结存", ("当日结存", "期末结存")),
+    ("保证金占用", ("保证金占用",)),
+    ("可用资金", ("可用资金",)),
+    ("风险度", ("风险度",)),
+    ("追加保证金", ("追加保证金",)),
+    ("市値权益", ("市值权益", "市値权益")),
+    ("多头期权市値", ("多头期权市值", "多头期权市値")),
+    ("空头期权市値", ("空头期权市值", "空头期权市値")),
+    ("权利金收入", ("权利金收入",)),
+    ("权利金支出", ("权利金支出",)),
+    ("行权手续费", ("行权手续费",)),
+    ("行权盈亏", ("行权盈亏",)),
+    ("申报费", ("申报费",)),
+    ("平仓盈亏", ("平仓盈亏", "平盈总计")),
+    ("持仓盈亏", ("持仓盈亏", "持盈总计")),
+]
+DAILY_LABEL_TO_COLUMN: Dict[str, str] = {
+    label: column
+    for column, labels in DAILY_LABEL_ALIASES
+    for label in labels
+}
+ACCOUNT_LABELS = {"账户", "账户(别名)", "账户（别名）"}
+WORKBOOK_SUFFIXES = {".xlsx", ".xls"}
+# (row_number, {1-based column index: text})
+RowGrid = List[Tuple[int, Dict[int, str]]]
 
 def load_env_files() -> None:
     """Walk up and load .env/.env.local without overriding existing env vars."""
@@ -848,6 +916,12 @@ def clean_cell(value):
     return "" if value is None else value
 
 
+def is_excluded_mom_workbook(filename: str) -> bool:
+    """如川 rc* files ship in the same zip as 恒盈2 rx* files. MOM imports rx only."""
+    name = Path(filename).name
+    return re.match(r"(?i)^(?:核算信息_)?rc(?=\d|_)", name) is not None
+
+
 def collect_xlsx_files(base_dir: Path) -> List[Path]:
     files: List[Path] = []
     if not base_dir.exists():
@@ -857,8 +931,11 @@ def collect_xlsx_files(base_dir: Path) -> List[Path]:
         if not folder.is_dir():
             continue
         for file_path in sorted(folder.iterdir()):
-            if file_path.is_file() and file_path.suffix.lower() == ".xlsx" and not file_path.name.startswith("~$"):
-                files.append(file_path)
+            if not file_path.is_file() or file_path.suffix.lower() not in WORKBOOK_SUFFIXES:
+                continue
+            if file_path.name.startswith("~$") or is_excluded_mom_workbook(file_path.name):
+                continue
+            files.append(file_path)
     return files
 
 
@@ -937,159 +1014,284 @@ def extract_cell_value(cell_element, shared_strings: List[str]) -> str:
     return raw_value
 
 
-def parse_summary_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str]) -> Tuple[str, str]:
-    account = ""
-    trade_date = ""
+def format_xls_number(value) -> str:
+    """Render an Excel number without binary float noise. Integers stay integers."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "" if value is None else str(value)
+    if not math.isfinite(number):
+        return ""
+    nearest = round(number)
+    if abs(number - nearest) < 1e-8:
+        return str(int(nearest))
+    return f"{number:.8f}".rstrip("0").rstrip(".")
 
+
+def format_xls_cell(cell, datemode: int) -> str:
+    import xlrd
+
+    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK, xlrd.XL_CELL_ERROR):
+        return ""
+    if cell.ctype == xlrd.XL_CELL_TEXT:
+        return "" if cell.value is None else str(cell.value)
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return "TRUE" if cell.value else "FALSE"
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        try:
+            year, month, day, hour, minute, second = xlrd.xldate_as_tuple(cell.value, datemode)
+        except Exception:
+            return format_xls_number(cell.value)
+        if hour or minute or second:
+            return f"{hour:02d}:{minute:02d}:{second:02d}"
+        return f"{year:04d}{month:02d}{day:02d}"
+    if cell.ctype == xlrd.XL_CELL_NUMBER:
+        return format_xls_number(cell.value)
+    return "" if cell.value is None else str(cell.value)
+
+
+def _xlsx_sheet_grid(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str]) -> RowGrid:
+    rows: RowGrid = []
     with workbook_zip.open(sheet_path) as sheet_file:
         for _, element in ET.iterparse(sheet_file, events=("end",)):
             if element.tag != f"{{{MAIN_NS}}}row":
                 continue
-
             row_number = int(element.attrib.get("r", "0"))
-            if row_number == 6:
-                for cell in element.findall(f"{{{MAIN_NS}}}c"):
-                    reference = cell.attrib.get("r", "")
-                    if reference == "D6":
-                        account = str(clean_cell(extract_cell_value(cell, shared_strings))).strip()
-                    elif reference == "I6":
-                        trade_date = str(clean_cell(extract_cell_value(cell, shared_strings))).strip()
-                element.clear()
-                break
-            element.clear()
-
-    return account, trade_date
-
-
-def parse_daily_report_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str]) -> Dict[str, str]:
-    """Read specific cells from 客户交易核算日报 and return {cell_ref: value}."""
-    target_cells = {ref for ref, _ in DAILY_REPORT_COL_ORDER}
-    values: Dict[str, str] = {ref: "" for ref, _ in DAILY_REPORT_COL_ORDER}
-    with workbook_zip.open(sheet_path) as sheet_file:
-        for _, element in ET.iterparse(sheet_file, events=("end",)):
-            if element.tag != f"{{{MAIN_NS}}}row":
-                continue
-            row_number = int(element.attrib.get("r", "0"))
-            if row_number > 23:
-                element.clear()
-                break
-            for cell in element.findall(f"{{{MAIN_NS}}}c"):
-                ref = cell.attrib.get("r", "")
-                if ref in target_cells:
-                    values[ref] = str(clean_cell(extract_cell_value(cell, shared_strings))).strip()
-            element.clear()
-    return values
-
-
-def parse_daily_report_fund_flow_rows(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str]) -> List[List[str]]:
-    """Read the B26:F* 出入金子表 from 客户交易核算日报.
-
-    The table starts with a title at B25, headers at B26:F26, data at row 27,
-    and must stop at the first contiguous blank row or the first "合计" row so
-    later sections in the same sheet are ignored.
-    """
-    rows: List[List[str]] = []
-    saw_section_title = False
-    headers_found = False
-    width = DAILY_REPORT_FUND_FLOW_LAST_COLUMN - DAILY_REPORT_FUND_FLOW_FIRST_COLUMN + 1
-
-    with workbook_zip.open(sheet_path) as sheet_file:
-        for _, element in ET.iterparse(sheet_file, events=("end",)):
-            if element.tag != f"{{{MAIN_NS}}}row":
-                continue
-
-            row_number = int(element.attrib.get("r", "0"))
-            if row_number < DAILY_REPORT_FUND_FLOW_TITLE_ROW:
-                element.clear()
-                continue
-
-            row_values = [""] * width
+            cells: Dict[int, str] = {}
             for cell in element.findall(f"{{{MAIN_NS}}}c"):
                 ref = cell.attrib.get("r", "")
                 col_idx, _ = split_cell_reference(ref)
-                if col_idx is None or col_idx < DAILY_REPORT_FUND_FLOW_FIRST_COLUMN or col_idx > DAILY_REPORT_FUND_FLOW_LAST_COLUMN:
+                if col_idx is None:
                     continue
-                row_values[col_idx - DAILY_REPORT_FUND_FLOW_FIRST_COLUMN] = str(clean_cell(extract_cell_value(cell, shared_strings))).strip()
-
-            if row_number == DAILY_REPORT_FUND_FLOW_TITLE_ROW:
-                saw_section_title = DAILY_REPORT_FUND_FLOW_SECTION_TITLE in (row_values[0] or "")
-                element.clear()
-                continue
-
-            if row_number == DAILY_REPORT_FUND_FLOW_HEADER_ROW:
-                headers_found = any(row_values)
-                if not headers_found and not saw_section_title:
-                    element.clear()
-                    break
-                element.clear()
-                continue
-
-            if row_number < DAILY_REPORT_FUND_FLOW_DATA_START_ROW:
-                element.clear()
-                continue
-
-            if not headers_found:
-                element.clear()
-                break
-
-            if not any(v != "" for v in row_values):
-                element.clear()
-                break
-
-            if str(row_values[0]).strip() == "合计":
-                element.clear()
-                break
-
-            rows.append(row_values)
+                value = str(clean_cell(extract_cell_value(cell, shared_strings)))
+                if value != "":
+                    cells[col_idx] = value
+            if cells:
+                rows.append((row_number, cells))
             element.clear()
-
     return rows
 
 
-def parse_detail_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str], last_col: int | None = None) -> Tuple[List[str], List[List[str]]]:
+def _xls_sheet_grid(sheet, datemode: int) -> RowGrid:
+    rows: RowGrid = []
+    for row_index in range(sheet.nrows):
+        cells: Dict[int, str] = {}
+        for col_index in range(sheet.ncols):
+            value = format_xls_cell(sheet.cell(row_index, col_index), datemode)
+            if value != "":
+                cells[col_index + 1] = value
+        if cells:
+            rows.append((row_index + 1, cells))
+    return rows
+
+
+def load_workbook_grids(path: Path) -> Dict[str, RowGrid]:
+    """Load every sheet as a sparse grid. .xlsx keeps the raw Excel XML text."""
+    suffix = path.suffix.lower()
+    if suffix == ".xlsx":
+        with zipfile.ZipFile(path) as workbook_zip:
+            sheet_paths = get_sheet_paths(workbook_zip)
+            shared_strings = load_shared_strings(workbook_zip)
+            return {
+                name: _xlsx_sheet_grid(workbook_zip, sheet_path, shared_strings)
+                for name, sheet_path in sheet_paths.items()
+            }
+    if suffix == ".xls":
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise RuntimeError("xlrd not installed. Run: pip install xlrd") from exc
+        book = xlrd.open_workbook(str(path), formatting_info=False)
+        return {sheet.name: _xls_sheet_grid(sheet, book.datemode) for sheet in book.sheets()}
+    raise ValueError(f"unsupported workbook: {path.name}")
+
+
+def normalize_account_code(raw: str) -> str:
+    """rx311(李晓东（黑色）) -> rx311. A bare account code is unchanged."""
+    text = str(raw or "").strip()
+    return re.split(r"[（(]", text, maxsplit=1)[0].strip()
+
+
+def _next_value(ordered: List[Tuple[int, str]], start: int) -> str:
+    for _col, raw in ordered[start:]:
+        candidate = str(raw).strip()
+        if not candidate or candidate in ACCOUNT_LABELS or candidate == "交易日期":
+            continue
+        return candidate
+    return ""
+
+
+def parse_account_date(grid: RowGrid) -> Tuple[str, str]:
+    """Read 账户 / 账户(别名) and 交易日期 from the 基本资料 block."""
+    account = ""
+    trade_date = ""
+    for row_number, cells in grid:
+        if row_number > 15:
+            break
+        ordered = sorted((col, str(raw)) for col, raw in cells.items())
+        for index, (_col, raw) in enumerate(ordered):
+            label = raw.strip()
+            if label in ACCOUNT_LABELS and not account:
+                account = normalize_account_code(_next_value(ordered, index + 1))
+            elif label == "交易日期" and not trade_date:
+                trade_date = _next_value(ordered, index + 1)
+    return account, trade_date
+
+
+def _plain_number(text: str) -> float | None:
+    raw = str(text or "").strip().replace(",", "")
+    if not raw or raw.endswith("%"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _format_derived_number(value: float) -> str:
+    nearest = round(value)
+    if abs(value - nearest) < 1e-6:
+        return str(int(nearest))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def finalize_daily_report(found: Dict[str, str]) -> Dict[str, str]:
+    """Fill fields the 2026-11-18 sheet no longer prints.
+
+    On every pre-change file checked, 当日盈亏 = 平仓盈亏 + 持仓盈亏, and
+    实有货币资金 = 客户权益. The new sheet names those 平盈总计 / 持盈总计
+    and drops 实有货币资金.
+    """
+    values = {column: found.get(column, "") for column, _labels in DAILY_LABEL_ALIASES}
+    if not str(values.get("当日盈亏", "")).strip():
+        closed = _plain_number(values.get("平仓盈亏", ""))
+        holding = _plain_number(values.get("持仓盈亏", ""))
+        if closed is not None and holding is not None:
+            values["当日盈亏"] = _format_derived_number(closed + holding)
+    if not str(values.get("实有货币资金", "")).strip() and str(values.get("客户权益", "")).strip():
+        values["实有货币资金"] = values["客户权益"]
+    return values
+
+
+def parse_daily_report_grid(grid: RowGrid) -> Dict[str, str]:
+    """Read the 资金状况 block by label. Returns database column -> text."""
+    found: Dict[str, str] = {}
+    in_section = False
+    for _row_number, cells in grid:
+        ordered = sorted((col, str(raw).strip()) for col, raw in cells.items() if str(raw).strip())
+        texts = [text for _col, text in ordered]
+        if not in_section:
+            if any("资金状况" in text for text in texts):
+                in_section = True
+            continue
+        if any(text in ("成交汇总", "持仓汇总", "每日持盈") or "出入金" in text for text in texts):
+            break
+        index = 0
+        while index < len(ordered):
+            label = ordered[index][1]
+            column = DAILY_LABEL_TO_COLUMN.get(label)
+            if column and column not in found and index + 1 < len(ordered):
+                value = ordered[index + 1][1]
+                if value and value not in DAILY_LABEL_TO_COLUMN:
+                    found[column] = value
+                    index += 2
+                    continue
+            index += 1
+    return finalize_daily_report(found)
+
+
+def parse_fund_flow_grid(grid: RowGrid) -> List[List[str]]:
+    """Read 期货期权账户出入金明细 until the 合计 row or a blank gap."""
+    rows: List[List[str]] = []
+    seen_title = False
+    header_cols: Dict[str, int] | None = None
+    prev_row_number: int | None = None
+    for row_number, cells in grid:
+        texts = {str(raw).strip() for raw in cells.values() if str(raw).strip()}
+        if not seen_title:
+            if any("出入金明细" in text for text in texts):
+                seen_title = True
+            continue
+        if header_cols is None:
+            lead = str(cells.get(DAILY_REPORT_FUND_FLOW_FIRST_COLUMN, "")).strip()
+            if lead in ("发生日期", "时间"):
+                header_cols = {}
+                for column, aliases in FUND_FLOW_HEADER_ALIASES:
+                    for col_idx, raw in cells.items():
+                        if str(raw).strip() in aliases:
+                            header_cols[column] = col_idx
+                            break
+                prev_row_number = row_number
+            elif "成交汇总" in texts or "持仓汇总" in texts:
+                break
+            continue
+        if prev_row_number is not None and row_number > prev_row_number + 1:
+            break
+        prev_row_number = row_number
+        lead = str(cells.get(DAILY_REPORT_FUND_FLOW_FIRST_COLUMN, "")).strip()
+        if not cells or lead in ("合计", "成交汇总", "持仓汇总", "每日持盈"):
+            break
+        values = []
+        for column, _aliases in FUND_FLOW_HEADER_ALIASES:
+            col_idx = header_cols.get(column)
+            values.append(str(cells.get(col_idx, "")).strip() if col_idx is not None else "")
+        if not any(values):
+            break
+        rows.append(values)
+    return rows
+
+
+def parse_table_grid(grid: RowGrid, last_col: int, header_markers: set[str]) -> Tuple[List[str], List[List[str]]]:
+    """Read a B-anchored table. The header is the row whose column B is a marker."""
     headers: List[str] = []
     rows: List[List[str]] = []
-    lc = last_col if last_col is not None else LAST_COLUMN
-
-    with workbook_zip.open(sheet_path) as sheet_file:
-        for _, element in ET.iterparse(sheet_file, events=("end",)):
-            if element.tag != f"{{{MAIN_NS}}}row":
-                continue
-
-            row_number = int(element.attrib.get("r", "0"))
-            if row_number < HEADER_ROW:
-                element.clear()
-                continue
-
-            row_values = [""] * (lc - FIRST_COLUMN + 1)
-            for cell in element.findall(f"{{{MAIN_NS}}}c"):
-                ref = cell.attrib.get("r", "")
-                col_idx, _ = split_cell_reference(ref)
-                if col_idx is None or col_idx < FIRST_COLUMN or col_idx > lc:
-                    continue
-                row_values[col_idx - FIRST_COLUMN] = str(clean_cell(extract_cell_value(cell, shared_strings)))
-
-            if row_number == HEADER_ROW:
-                headers = row_values
-                element.clear()
-                continue
-
-            if row_number < DATA_START_ROW:
-                element.clear()
-                continue
-
-            if not any(v != "" for v in row_values):
-                element.clear()
-                continue
-
-            if str(row_values[0]).strip() == "合计":
-                element.clear()
-                break
-
-            rows.append(row_values)
-            element.clear()
-
+    header_found = False
+    for _row_number, cells in grid:
+        lead = str(cells.get(FIRST_COLUMN, "")).strip()
+        if not header_found:
+            if lead in header_markers:
+                headers = [str(cells.get(col, "")) for col in range(FIRST_COLUMN, last_col + 1)]
+                header_found = True
+            continue
+        if lead == "合计":
+            break
+        values = [str(cells.get(col, "")) for col in range(FIRST_COLUMN, last_col + 1)]
+        if not any(value != "" for value in values):
+            continue
+        rows.append(values)
     return headers, rows
+
+
+def detail_column_positions(headers: List[str]) -> List[int | None]:
+    header_index_map: Dict[str, int] = {}
+    for index, header in enumerate(headers):
+        key = header.strip()
+        if key and key not in header_index_map:
+            header_index_map[key] = index
+    positions: List[int | None] = []
+    for canonical in DETAIL_XLSX_HEADERS:
+        found: int | None = None
+        for name in DETAIL_HEADER_ALIASES.get(canonical, (canonical,)):
+            if name in header_index_map:
+                found = header_index_map[name]
+                break
+        positions.append(found)
+    return positions
+
+
+def read_side_sheet(
+    grids: Dict[str, RowGrid],
+    sheet_name: str,
+    last_col: int,
+    header_markers: set[str],
+) -> Tuple[str, str, List[List[str]]]:
+    grid = grids.get(sheet_name)
+    if grid is None:
+        return "", "", []
+    account, trade_date = parse_account_date(grid)
+    _headers, table_rows = parse_table_grid(grid, last_col, header_markers)
+    return account, trade_date, table_rows
+
 
 
 def normalize_trade_date(raw: str) -> str:
@@ -1097,6 +1299,8 @@ def normalize_trade_date(raw: str) -> str:
     if not s:
         return ""
     s2 = s.replace("-", "").replace("/", "")
+    if s2.endswith(".0"):
+        s2 = s2[:-2]
     if re.fullmatch(r"\d{8}", s2):
         return s2
     return s
@@ -1464,136 +1668,53 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
     size = int(stat.st_size)
 
     try:
-        with zipfile.ZipFile(file_path) as workbook_zip:
-            sheet_paths = get_sheet_paths(workbook_zip)
-            if SUMMARY_SHEET_NAME not in sheet_paths or DETAIL_SHEET_NAME not in sheet_paths:
-                upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing required sheet")
-                conn.commit()
-                return False, f"missing sheet: {rel}"
+        grids = load_workbook_grids(file_path)
+        if SUMMARY_SHEET_NAME not in grids or DETAIL_SHEET_NAME not in grids:
+            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing required sheet")
+            conn.commit()
+            return False, f"missing sheet: {rel}"
 
-            shared_strings = load_shared_strings(workbook_zip)
-            account, trade_date_raw = parse_summary_sheet(workbook_zip, sheet_paths[SUMMARY_SHEET_NAME], shared_strings)
-            headers, rows = parse_detail_sheet(workbook_zip, sheet_paths[DETAIL_SHEET_NAME], shared_strings)
+        account, trade_date_raw = parse_account_date(grids[SUMMARY_SHEET_NAME])
+        headers, rows = parse_table_grid(grids[DETAIL_SHEET_NAME], LAST_COLUMN, {"合约"})
 
-            # 期货成交明细 sheet — same B-Q structure; D6/I6 carry account/date too.
-            futures_rows: list = []
-            futures_account = ""
-            futures_date_raw = ""
-            if FUTURES_DETAIL_SHEET_NAME in sheet_paths:
-                futures_account, futures_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[FUTURES_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, futures_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[FUTURES_DETAIL_SHEET_NAME], shared_strings
-                )
+        futures_account, futures_date_raw, futures_rows = read_side_sheet(
+            grids, FUTURES_DETAIL_SHEET_NAME, LAST_COLUMN, {"合约"}
+        )
+        options_account, options_date_raw, options_rows = read_side_sheet(
+            grids, OPTIONS_DETAIL_SHEET_NAME, LAST_COLUMN, {"合约"}
+        )
+        close_account, close_date_raw, close_rows = read_side_sheet(
+            grids, CLOSE_DETAIL_SHEET_NAME, CLOSE_LAST_COLUMN, {"合约"}
+        )
+        position_account, position_date_raw, position_rows = read_side_sheet(
+            grids, POSITION_DETAIL_SHEET_NAME, POSITION_LAST_COLUMN, {"合约"}
+        )
+        options_position_account, options_position_date_raw, options_position_rows = read_side_sheet(
+            grids, OPTIONS_POSITION_DETAIL_SHEET_NAME, POSITION_LAST_COLUMN, {"合约"}
+        )
+        futures_position_account, futures_position_date_raw, futures_position_rows = read_side_sheet(
+            grids, FUTURES_POSITION_DETAIL_SHEET_NAME, POSITION_LAST_COLUMN, {"合约"}
+        )
+        order_account, order_date_raw, order_rows = read_side_sheet(
+            grids, ORDER_DETAIL_SHEET_NAME, ORDER_LAST_COLUMN, {"报单编号"}
+        )
+        summary_detail_account, summary_detail_date_raw, summary_detail_rows = read_side_sheet(
+            grids, SUMMARY_DETAIL_SHEET_NAME, SUMMARY_DETAIL_LAST_COLUMN, {"品种"}
+        )
 
-            # 期权成交明细 sheet — same B-Q structure; D6/I6 carry account/date too.
-            options_rows: list = []
-            options_account = ""
-            options_date_raw = ""
-            if OPTIONS_DETAIL_SHEET_NAME in sheet_paths:
-                options_account, options_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[OPTIONS_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, options_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[OPTIONS_DETAIL_SHEET_NAME], shared_strings
-                )
-
-            # 平仓明细 sheet — B-N columns (13); D6/I6 carry account/date too.
-            close_rows: list = []
-            close_account = ""
-            close_date_raw = ""
-            if CLOSE_DETAIL_SHEET_NAME in sheet_paths:
-                close_account, close_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[CLOSE_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, close_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[CLOSE_DETAIL_SHEET_NAME], shared_strings,
-                    last_col=CLOSE_LAST_COLUMN,
-                )
-
-            # 持仓明细 sheet — B-S columns (18); D6/I6 carry account/date too.
-            position_rows: list = []
-            position_account = ""
-            position_date_raw = ""
-            if POSITION_DETAIL_SHEET_NAME in sheet_paths:
-                position_account, position_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[POSITION_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, position_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[POSITION_DETAIL_SHEET_NAME], shared_strings,
-                    last_col=POSITION_LAST_COLUMN,
-                )
-
-            # 期权持仓明细 sheet — identical B-S columns to 持仓明细; D6/I6 carry account/date.
-            options_position_rows: list = []
-            options_position_account = ""
-            options_position_date_raw = ""
-            if OPTIONS_POSITION_DETAIL_SHEET_NAME in sheet_paths:
-                options_position_account, options_position_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[OPTIONS_POSITION_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, options_position_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[OPTIONS_POSITION_DETAIL_SHEET_NAME], shared_strings,
-                    last_col=POSITION_LAST_COLUMN,
-                )
-
-            # 期货持仓明细 sheet — identical B-S columns to 持仓明细; D6/I6 carry account/date.
-            futures_position_rows: list = []
-            futures_position_account = ""
-            futures_position_date_raw = ""
-            if FUTURES_POSITION_DETAIL_SHEET_NAME in sheet_paths:
-                futures_position_account, futures_position_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[FUTURES_POSITION_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, futures_position_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[FUTURES_POSITION_DETAIL_SHEET_NAME], shared_strings,
-                    last_col=POSITION_LAST_COLUMN,
-                )
-
-            # 委托明细 sheet — B-M columns (12); D6/I6 carry account/date too.
-            order_rows: list = []
-            order_account = ""
-            order_date_raw = ""
-            if ORDER_DETAIL_SHEET_NAME in sheet_paths:
-                order_account, order_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[ORDER_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, order_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[ORDER_DETAIL_SHEET_NAME], shared_strings,
-                    last_col=ORDER_LAST_COLUMN,
-                )
-
-            # 品种汇总 sheet — B-G columns (6); D6/I6 carry account/date too.
-            summary_detail_rows: list = []
-            summary_detail_account = ""
-            summary_detail_date_raw = ""
-            if SUMMARY_DETAIL_SHEET_NAME in sheet_paths:
-                summary_detail_account, summary_detail_date_raw = parse_summary_sheet(
-                    workbook_zip, sheet_paths[SUMMARY_DETAIL_SHEET_NAME], shared_strings
-                )
-                _, summary_detail_rows = parse_detail_sheet(
-                    workbook_zip, sheet_paths[SUMMARY_DETAIL_SHEET_NAME], shared_strings,
-                    last_col=SUMMARY_DETAIL_LAST_COLUMN,
-                )
-
-            # 客户交易核算日报 sheet — reads specific cells from rows 6 and 11-23.
-            daily_report_row: dict | None = None
-            daily_report_fund_flow_rows: list = []
-            dr_account = ""
-            dr_date_raw = ""
-            if DAILY_REPORT_SHEET_NAME in sheet_paths:
-                daily_cells = parse_daily_report_sheet(
-                    workbook_zip, sheet_paths[DAILY_REPORT_SHEET_NAME], shared_strings
-                )
-                dr_account = daily_cells.get("D6", "")
-                dr_date_raw = daily_cells.get("I6", "")
-                daily_report_row = daily_cells
-                daily_report_fund_flow_rows = parse_daily_report_fund_flow_rows(
-                    workbook_zip, sheet_paths[DAILY_REPORT_SHEET_NAME], shared_strings
-                )
+        daily_report_row: dict | None = None
+        daily_report_fund_flow_rows: list = []
+        dr_account = ""
+        dr_date_raw = ""
+        daily_grid = next((grids[name] for name in DAILY_REPORT_SHEET_CANDIDATES if name in grids), None)
+        if daily_grid is not None:
+            dr_account, dr_date_raw = parse_account_date(daily_grid)
+            daily_report_row = parse_daily_report_grid(daily_grid)
+            daily_report_fund_flow_rows = parse_fund_flow_grid(daily_grid)
 
         trade_date = normalize_trade_date(trade_date_raw)
+        if re.match(r"(?i)^rc(?=\d|_)", account or ""):
+            return True, f"skipped rc account: {rel}"
         if not account or not trade_date:
             upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing account/date in summary")
             conn.commit()
@@ -1635,12 +1756,8 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         dr_account = dr_account or account
         dr_date = dr_date or trade_date
 
-        # Build column-position map (tolerates minor header variations).
-        header_index_map: Dict[str, int] = {h.strip(): i for i, h in enumerate(headers)}
-        col_positions: List[int | None] = [
-            header_index_map.get(xlsx_hdr.strip())
-            for xlsx_hdr in DETAIL_XLSX_HEADERS
-        ]
+        # Build column-position map (old names and the 2026-11-18 renames).
+        col_positions = detail_column_positions(headers)
 
         trade_date_iso = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}" if re.fullmatch(r"\d{8}", trade_date) else None
         futures_date_iso = f"{futures_date[:4]}-{futures_date[4:6]}-{futures_date[6:8]}" if re.fullmatch(r"\d{8}", futures_date) else None
@@ -1783,6 +1900,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             sumvalues = []
             for ri, rv in enumerate(summary_detail_rows):
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(SUMMARY_DETAIL_COLUMNS))]
+                # The 2026-11-18 品种汇总 sheet drops the 交易日 column. The date is on the header.
+                if summary_detail_date and not str(detail_vals[-1]).strip():
+                    detail_vals[-1] = summary_detail_date
                 rh = row_hash(rel + "#summary", summary_detail_account, summary_detail_date, rv, ri)
                 sumvalues.append(tuple([summary_detail_account, summary_detail_date_iso] + detail_vals + [rel, rh]))
             if sumvalues:
@@ -1799,13 +1919,13 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             if daily_report_row is not None:
                 cur.execute('DELETE FROM mom_daily_reports WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
                 dr_vals: list = []
-                for ref, col in DAILY_REPORT_COL_ORDER:
+                for _ref, col in DAILY_REPORT_COL_ORDER:
                     if col == "账户":
                         dr_vals.append(dr_account)
                     elif col == "交易日期":
                         dr_vals.append(dr_date_iso)
                     else:
-                        dr_vals.append(daily_report_row.get(ref, ""))
+                        dr_vals.append(daily_report_row.get(col, ""))
                 dr_vals.append(rel)
                 dr_insert_cols = ", ".join(DAILY_REPORT_SQL_COLS) + ", source_file_rel"
                 placeholders = ", ".join(["%s"] * len(dr_vals))
@@ -1930,13 +2050,13 @@ def _dedup_detail_table(conn, table: str, acct_col: str, date_col: str) -> None:
 def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, skip_dedup: bool = False) -> int:
     files = collect_xlsx_files(base_dir)
     if not files:
-        print(json.dumps({"job": JOB_NAME, "processed": 0, "changed": 0, "message": "No xlsx files found"}, ensure_ascii=False))
+        print(json.dumps({"job": JOB_NAME, "processed": 0, "changed": 0, "message": "No workbook files found"}, ensure_ascii=False))
         return 0
 
     try:
         from tqdm import tqdm as _tqdm  # type: ignore[import-untyped]
         def progress(iterable, **kwargs):
-            return _tqdm(iterable, file=sys.stderr, **kwargs)
+            return _tqdm(iterable, file=sys.stderr, mininterval=1.0, **kwargs)
     except ImportError:
         def progress(iterable, desc="", total=None, **kwargs):  # type: ignore[misc]
             total = total or len(iterable) if hasattr(iterable, "__len__") else "?"
