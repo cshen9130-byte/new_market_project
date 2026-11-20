@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto"
+import { atmIvSpikeHrefForDedupe } from "@/lib/index-atm-iv-spike"
 import { publicQuery } from "@/lib/db"
 import { daysBehindNextWeeklyReport } from "@/lib/server/auto-weekly-report-week"
 import {
@@ -67,6 +68,7 @@ type RuleRow = { rule_key: string; enabled: boolean; config: unknown }
 type ItemRow = {
   id: string
   rule_key: string
+  dedupe_key: string
   title: string
   body: string
   href: string | null
@@ -231,7 +233,7 @@ export async function listNotifications(userId: string): Promise<{ unread: numbe
       [userId],
     ),
     rows<ItemRow>(
-      `SELECT id, rule_key, title, body, href, created_at, read_at
+      `SELECT id, rule_key, dedupe_key, title, body, href, created_at, read_at
          FROM public.user_notifications
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -246,7 +248,9 @@ export async function listNotifications(userId: string): Promise<{ unread: numbe
       rule_key: row.rule_key,
       title: row.title,
       body: row.body,
-      href: row.href,
+      href: row.rule_key === INDEX_ATM_IV_SPIKE_RULE
+        ? atmIvSpikeHrefForDedupe(row.dedupe_key) ?? row.href
+        : row.href,
       created_at: iso(row.created_at) ?? "",
       read_at: iso(row.read_at),
     })),

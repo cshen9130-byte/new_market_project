@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Read-only: how far RX383 and the market tapes go."""
+"""Read-only: futures after 9 Nov, and whether the open examples are still on the book."""
 import sys
 from pathlib import Path
 
@@ -11,50 +11,33 @@ ops.ensure_db()
 conn = get_conn()
 try:
     cur = conn.cursor()
-    queries = [
-        ("opt_trade", """
-            SELECT MAX("交易日期")::date, COUNT(*) FILTER (WHERE "交易日期" > DATE '2026-11-03'),
-                   COUNT(*) FILTER (WHERE "交易日期" BETWEEN DATE '2026-11-04' AND DATE '2026-11-09')
-            FROM mom_options_trade_details WHERE LOWER(TRIM("账户")) = 'rx383'
-        """),
-        ("fut_trade", """
-            SELECT MAX("交易日期")::date, COUNT(*) FILTER (WHERE "交易日期" > DATE '2026-11-03'),
-                   COUNT(*) FILTER (WHERE "交易日期" BETWEEN DATE '2026-11-04' AND DATE '2026-11-09')
-            FROM mom_futures_trade_details WHERE LOWER(TRIM("账户")) = 'rx383'
-        """),
-        ("daily", """
-            SELECT MAX("交易日期")::date, COUNT(*) FILTER (WHERE "交易日期" > DATE '2026-11-03'),
-                   COUNT(*) FILTER (WHERE "交易日期" BETWEEN DATE '2026-11-04' AND DATE '2026-11-09')
-            FROM mom_daily_reports WHERE LOWER(TRIM("账户")) = 'rx383'
-        """),
-        ("opt_pos", """
-            SELECT MAX("交易日期")::date, COUNT(*) FILTER (WHERE "交易日期" = DATE '2026-11-09')
-            FROM mom_options_position_details WHERE LOWER(TRIM("账户")) = 'rx383'
-        """),
-        ("fut_daily", """
-            SELECT MAX(trade_date)::date FROM raw_futures_contracts_daily
-        """),
-        ("opt_daily", """
-            SELECT MAX(trade_date)::date FROM raw_options_contracts_daily
-        """),
-        ("ak", """
-            SELECT MAX(trade_date)::date FROM raw_akshare_futures_daily
-        """),
-        ("civ", """
-            SELECT MAX(trade_date)::date FROM raw_commodity_option_iv_daily
-        """),
-    ]
-    for name, sql in queries:
-        cur.execute(sql)
-        print(name, cur.fetchone())
     cur.execute("""
-        SELECT "交易日期"::date, COUNT(*)
-        FROM mom_options_trade_details
-        WHERE LOWER(TRIM("账户")) = 'rx383'
-          AND "交易日期" BETWEEN DATE '2026-11-03' AND DATE '2026-11-09'
+        SELECT "交易日期"::date, "合约", "买/卖", "开/平", "手数", "成交价"
+        FROM mom_futures_trade_details
+        WHERE LOWER(TRIM("账户")) = 'rx383' AND "交易日期" > DATE '2026-11-09'
+        ORDER BY 1, 2
+    """)
+    print("FUT")
+    for row in cur.fetchall():
+        print(row)
+    cur.execute("""
+        SELECT "交易日期"::date, "合约", SUM("持仓手数"::float8)
+        FROM mom_futures_position_details
+        WHERE LOWER(TRIM("账户")) = 'rx383' AND "交易日期" = DATE '2026-11-19'
+        GROUP BY 1, 2 ORDER BY 2
+    """)
+    print("FPOS")
+    for row in cur.fetchall():
+        print(row)
+    cur.execute("""
+        SELECT "合约", SUM(CASE WHEN "买/卖" LIKE '%卖%' THEN "手数"::float8 ELSE 0 END),
+               SUM(CASE WHEN "买/卖" LIKE '%买%' THEN "手数"::float8 ELSE 0 END)
+        FROM mom_options_position_details
+        WHERE LOWER(TRIM("账户")) = 'rx383' AND "交易日期" = DATE '2026-11-19'
+          AND ("合约" ILIKE 'c2701%' OR "合约" ILIKE 'jd2612%' OR "合约" ILIKE 'm2701%' OR "合约" ILIKE 'rb2701%')
         GROUP BY 1 ORDER BY 1
     """)
-    print("by day")
+    print("OPOS examples")
     for row in cur.fetchall():
         print(row)
 finally:

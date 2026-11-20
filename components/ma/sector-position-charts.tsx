@@ -29,7 +29,8 @@ type BarMode = "大类" | "板块" | "细分"
 type SleeveMode = "all" | "quant" | "subjective"
 type NetMode = "direct" | "corr"
 type MktColMode = "vol" | "avgCorr"
-type SortCol = "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"
+type RowSortCol = "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"
+type SortCol = RowSortCol | "mktMetric" | "holdVol" | "margVol"
 type Sort = { col: SortCol; dir: "asc" | "desc" } | null
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -484,12 +485,35 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
 
   const sorted = useMemo(() => {
     if (!sort) return viewRows
+    const displayed = (row: SectorBarRow): string | number | null => {
+      if (sort.col === "mktMetric") {
+        const v = mktColMode === "avgCorr" ? avgCorrLatestMap[row.sector] : mktLatestMap[row.sector]
+        return v != null && Number.isFinite(v) ? v : null
+      }
+      if (sort.col === "holdVol") {
+        const v = holdLatestMap[row.sector]
+        return v != null && Number.isFinite(v) ? v : null
+      }
+      if (sort.col === "margVol") {
+        if (varDates.length === 0) return null
+        const v = varLatestMap[row.sector]
+        return v != null && Number.isFinite(v) ? v : null
+      }
+      const v = row[sort.col]
+      return typeof v === "number" && !Number.isFinite(v) ? null : v
+    }
     return [...viewRows].sort((a, b) => {
-      const va = a[sort.col], vb = b[sort.col]
+      const va = displayed(a), vb = displayed(b)
+      const aMissing = va == null
+      const bMissing = vb == null
+      if (aMissing || bMissing) {
+        if (aMissing && bMissing) return 0
+        return aMissing ? 1 : -1
+      }
       const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number)
       return sort.dir === "asc" ? cmp : -cmp
     })
-  }, [viewRows, sort])
+  }, [viewRows, sort, mktColMode, avgCorrLatestMap, mktLatestMap, holdLatestMap, varLatestMap, varDates.length])
 
   const chartOption = useMemo(() => {
     if (sorted.length === 0) return {}
@@ -530,7 +554,7 @@ export default function SectorPositionCharts({ height = 300, capturing = false, 
     }
   }, [viewRows, netMode])
 
-const COL_LABELS: Record<Exclude<SortCol, "netMv" | "netPctNorm">, string> = {
+const COL_LABELS: Record<Exclude<RowSortCol, "netMv" | "netPctNorm">, string> = {
   sector: "板块", longMv: "多头市值", longPct: "多头占比",
   shortMv: "空头市值", shortPct: "空头占比",
 }
@@ -541,7 +565,7 @@ const CORR_NET_FORMULA = "多空相关轧差市值 = 符号(各品种净市值�
 const CORR_PCT_FORMULA = "多空相关轧差占比 = |多空相关轧差市值| ÷ 总规模"
 const AVG_CORR_FORMULA = "板块内品种平均相关 = Σᵢ<ⱼ |市值ᵢ| × |市值ⱼ| × ρᵢⱼ ÷ Σᵢ<ⱼ |市值ᵢ| × |市值ⱼ|。同一品种的多空先合成净市值。ρ 用最近 252 个交易日。只有一个品种时没有配对，显示 —。"
 
-const COL_FORMULAS: Record<Exclude<SortCol, "netMv" | "netPctNorm"> | "mktVol" | "holdVol" | "margVol", string> = {
+const COL_FORMULAS: Record<Exclude<RowSortCol, "netMv" | "netPctNorm"> | "mktVol" | "holdVol" | "margVol", string> = {
   sector: "分组 = 当前选择的大类、板块或细分板块",
   longMv: "多头市值 = 该组买持仓市值",
   longPct: "多头占比 = 多头市值 ÷ 总规模",
@@ -705,11 +729,41 @@ function ColumnHeader({ formula, className, onClick, children }: {
                           </ColumnHeader>
                         )
                       })}
-                      <ColumnHeader formula={mktColMode === "avgCorr" ? AVG_CORR_FORMULA : COL_FORMULAS.mktVol} className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal">
-                        {mktColMode === "avgCorr" ? <>板块内品种<br />平均相关</> : <>板块市场<br />波动</>}
-                      </ColumnHeader>
-                      <ColumnHeader formula={COL_FORMULAS.holdVol} className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal">板块持仓<br />波动</ColumnHeader>
-                      <ColumnHeader formula={COL_FORMULAS.margVol} className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal">风险贡献<br />占比</ColumnHeader>
+                      {([
+                        {
+                          col: "mktMetric" as const,
+                          formula: mktColMode === "avgCorr" ? AVG_CORR_FORMULA : COL_FORMULAS.mktVol,
+                          label: mktColMode === "avgCorr" ? <>板块内品种<br />平均相关</> : <>板块市场<br />波动</>,
+                        },
+                        {
+                          col: "holdVol" as const,
+                          formula: COL_FORMULAS.holdVol,
+                          label: <>板块持仓<br />波动</>,
+                        },
+                        {
+                          col: "margVol" as const,
+                          formula: COL_FORMULAS.margVol,
+                          label: <>风险贡献<br />占比</>,
+                        },
+                      ]).map(({ col, formula, label }) => {
+                        const active = sort?.col === col
+                        const dir = active ? sort!.dir : null
+                        return (
+                          <ColumnHeader
+                            key={col}
+                            formula={formula}
+                            className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal cursor-pointer select-none hover:bg-muted/60"
+                            onClick={() => setSort(prev =>
+                              prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
+                            )}
+                          >
+                            <span className="inline-flex items-center justify-end gap-0.5">
+                              <span className="leading-tight">{label}</span>
+                              <span className="text-muted-foreground text-[10px]">{dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}</span>
+                            </span>
+                          </ColumnHeader>
+                        )
+                      })}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">

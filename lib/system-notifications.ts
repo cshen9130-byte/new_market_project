@@ -114,7 +114,7 @@ export const NOTIFICATION_RULES: NotificationRuleDef[] = [
     key: INDEX_ATM_IV_SPIKE_RULE,
     kind: "abnormal",
     title: "平值隐含波动率尖峰",
-    description: "上证50、沪深300、中证500、中证1000 的平值 IV，近 5 个交易日最高比窗口前一天高出 15 个点以上时通知。同一次尖峰只发一次。",
+    description: "上证50、沪深300、中证500、中证1000 的日线 QVIX，近 5 个交易日最高比窗口前一天高出 15 个点以上时通知。同一次尖峰只发一次。点开进入该品种的日线专业盘面。",
     defaultEnabled: true,
   },
   {

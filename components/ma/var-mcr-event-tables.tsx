@@ -159,15 +159,15 @@ function EventTable({ block }: { block: EventTableBlock }) {
               </tr>
             </thead>
             <tbody>
-              {block.rows.map((row: EventTableRow) => (
-                <tr key={row.date} className={`border-b last:border-0 ${rowClass(row.actionDisplay)}`} title={row.signsCn.join("、") || "无信号"}>
+              {(block.rows ?? []).map((row: EventTableRow) => (
+                <tr key={row.date} className={`border-b last:border-0 ${rowClass(row.actionDisplay)}`} title={(row.signsCn ?? []).join("、") || "无信号"}>
                   <td className="px-2.5 py-1.5 font-mono whitespace-nowrap">{row.dateShort}</td>
                   <td className="px-2.5 py-1.5 text-right font-mono whitespace-nowrap">{row.shareText}</td>
                   <td className="px-2.5 py-1.5 text-right font-mono whitespace-nowrap">{row.secondText}</td>
                   <td className="px-2.5 py-1.5 whitespace-nowrap">{row.driverLabel}</td>
                   <td className="px-2.5 py-1.5 text-right font-mono whitespace-nowrap">{row.dVarText}</td>
                   <td className="px-2.5 py-1.5 text-right font-mono whitespace-nowrap">{row.varPctText}</td>
-                  <td className="px-2.5 py-1.5 text-right font-mono" title={row.signsCn.join("、")}>{row.nSigns}</td>
+                  <td className="px-2.5 py-1.5 text-right font-mono" title={(row.signsCn ?? []).join("、")}>{row.nSigns}</td>
                   <td className="px-2.5 py-1.5 whitespace-nowrap">
                     <Badge variant="outline" className={actionClass(row.actionDisplay)}>{row.actionDisplay}</Badge>
                   </td>

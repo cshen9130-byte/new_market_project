@@ -12,6 +12,10 @@ import { aggregateCloseSeries, isIntradayTimeframe, type TimeframeId } from "@/l
 const dailyCache = new Map<IndexProduct, OverlayPoint[]>()
 const monthCache = new Map<string, OverlayPoint[]>()
 const windowCache = new Map<string, { bars: OverlayPoint[]; source: string | null; resolution: string | null; contract: string | null }>()
+const atmCache = new Map<string, { bars: OverlayPoint[]; source: string | null; contract: string | null; months: AtmMonthOption[] }>()
+
+export type AtmMonthOption = { id: string; label: string; expireDay: string }
+export type IvSeriesKind = "qvix" | "atm"
 
 export function useQvixSeries(
   product: IndexProduct,
@@ -20,6 +24,8 @@ export function useQvixSeries(
   month?: string | null,
   lookbackDays: IvLookbackDays = 1,
   strike?: number | null,
+  series: IvSeriesKind = "qvix",
+  atmMonth?: string | null,
 ) {
   const history = !isIntradayTimeframe(interval)
   const monthKey = (month || "").trim().toUpperCase() || null
@@ -34,8 +40,14 @@ export function useQvixSeries(
   const [windowContract, setWindowContract] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [atmBars, setAtmBars] = useState<OverlayPoint[]>([])
+  const [atmSource, setAtmSource] = useState<string | null>(null)
+  const [atmContract, setAtmContract] = useState<string | null>(null)
+  const [atmMonths, setAtmMonths] = useState<AtmMonthOption[]>([])
+  const atmKey = `${product}:${atmMonth || ""}`
 
   useEffect(() => {
+    if (series === "atm") return
     if (monthKey) return
     if (!history) return
     let cancelled = false
@@ -68,7 +80,71 @@ export function useQvixSeries(
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [history, product, still, monthKey])
+  }, [history, product, still, monthKey, series])
+
+  useEffect(() => {
+    if (series !== "atm" || !history) {
+      setAtmBars([])
+      setAtmSource(null)
+      setAtmContract(null)
+      setAtmMonths([])
+      return
+    }
+    let cancelled = false
+    const cached = atmCache.get(atmKey)
+    async function load() {
+      if (!cached) setLoading(true)
+      try {
+        const qs = new URLSearchParams({ product, series: "atm" })
+        if (atmMonth && /^\d{4}$/.test(atmMonth)) qs.set("atmMonth", atmMonth)
+        const res = await fetch(`/ma/api/realtime-quotes/qvix?${qs.toString()}`, { cache: "no-store" })
+        const json = (await res.json()) as {
+          ok?: boolean
+          error?: string
+          bars?: OverlayPoint[]
+          source?: string | null
+          contract?: string | null
+          months?: AtmMonthOption[]
+        }
+        if (!res.ok || json.ok === false) throw new Error(json.error || `load failed ${res.status}`)
+        const packed = {
+          bars: json.bars || [],
+          source: json.source || null,
+          contract: json.contract || null,
+          months: json.months || [],
+        }
+        atmCache.set(atmKey, packed)
+        if (!cancelled) {
+          setAtmBars(packed.bars)
+          setAtmSource(packed.source)
+          setAtmContract(packed.contract)
+          setAtmMonths(packed.months)
+          setError(null)
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "平值日线加载失败")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    if (cached) {
+      setAtmBars(cached.bars)
+      setAtmSource(cached.source)
+      setAtmContract(cached.contract)
+      setAtmMonths(cached.months)
+    }
+    void load()
+    if (still) {
+      return () => {
+        cancelled = true
+      }
+    }
+    const timer = window.setInterval(() => void load(), 5 * 60_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [atmKey, atmMonth, history, product, series, still])
 
   useEffect(() => {
     if (!needWindow) {
@@ -137,6 +213,22 @@ export function useQvixSeries(
   }, [needWindow, monthKey, product, still, days, strikeKey])
 
   return useMemo(() => {
+    if (series === "atm" && history) {
+      const packed = qvixBarsForTimeframe(interval, undefined, atmBars)
+      let bars = packed.bars
+      if (days > 1 && bars.length) bars = sliceOverlayByLookbackDays(bars, days)
+      return {
+        bars,
+        mode: bars.length ? ("history" as const) : ("unavailable" as const),
+        error,
+        loading: loading && bars.length === 0,
+        source: atmSource,
+        resolution: "daily" as const,
+        contract: atmContract,
+        degradedToDaily: false,
+        months: atmMonths,
+      }
+    }
     if (needWindow) {
       let bars = windowBars
       // If API degraded to daily closes while an intraday interval is selected, keep points as-is.
@@ -157,20 +249,22 @@ export function useQvixSeries(
         resolution: windowResolution,
         contract: windowContract,
         degradedToDaily: windowResolution === "daily",
+        months: [] as AtmMonthOption[],
       }
     }
-    const series = qvixBarsForTimeframe(interval, iv, daily)
-    let bars = series.bars
+    const historySeries = qvixBarsForTimeframe(interval, iv, daily)
+    let bars = historySeries.bars
     if (history && days > 1 && bars.length) bars = sliceOverlayByLookbackDays(bars, days)
     return {
-      ...series,
+      ...historySeries,
       bars,
       error,
       loading: history && loading && bars.length === 0,
       source: iv?.source ?? null,
       contract: iv?.contract ?? null,
-      resolution: series.mode === "history" ? "daily" : "minute",
+      resolution: historySeries.mode === "history" ? "daily" : "minute",
       degradedToDaily: false,
+      months: [] as AtmMonthOption[],
     }
-  }, [daily, days, error, history, interval, iv, loading, needWindow, windowBars, windowContract, windowResolution, windowSource])
+  }, [atmBars, atmContract, atmMonths, atmSource, daily, days, error, history, interval, iv, loading, needWindow, series, windowBars, windowContract, windowResolution, windowSource])
 }

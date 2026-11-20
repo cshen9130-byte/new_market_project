@@ -30,8 +30,8 @@ from cn_market_holidays import is_cn_market_closed  # noqa: E402
 from mom_data_etl import get_conn  # noqa: E402
 
 # Sample end. Metal-rule thresholds stay the ones read off 15 Oct–3 Nov.
-REPORT_END = pd.Timestamp("2026-11-09")
-REPORT_END_CN = "11 月 9 日"
+REPORT_END = pd.Timestamp("2026-11-19")
+REPORT_END_CN = "11 月 19 日"
 
 # Shanghai: 5th-to-last session of the month before delivery.
 _SHFE = {"CU", "AL", "ZN", "PB", "NI", "SN", "AU", "AG", "RB", "HC", "BU", "RU", "FU", "SP", "SS", "AO", "BR"}
@@ -191,7 +191,7 @@ def load() -> dict:
                    low::float8 AS low, close::float8 AS close,
                    clear::float8 AS clear, COALESCE(volume, 0)::float8 AS volume
             FROM raw_futures_contracts_daily
-            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-19'
             """,
         )
         ak = prof.read_sql(
@@ -202,7 +202,7 @@ def load() -> dict:
                    low::float8 AS low, close::float8 AS close,
                    clear::float8 AS clear, COALESCE(volume, 0)::float8 AS volume
             FROM raw_akshare_futures_daily
-            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-19'
             """,
         )
         hist_ohlc = prof.read_sql(
@@ -213,7 +213,7 @@ def load() -> dict:
                    low::float8 AS low, close::float8 AS close,
                    clear::float8 AS clear
             FROM raw_futures_contracts_daily
-            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-19'
             """,
         )
         hist_ak = prof.read_sql(
@@ -224,7 +224,7 @@ def load() -> dict:
                    low::float8 AS low, close::float8 AS close,
                    clear::float8 AS clear
             FROM raw_akshare_futures_daily
-            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-19'
             """,
         )
         civ = prof.read_sql(
@@ -232,7 +232,7 @@ def load() -> dict:
             """
             SELECT trade_date::date AS dt, LOWER(underlying_key) AS product, iv::float8 AS iv
             FROM raw_commodity_option_iv_daily
-            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-06-01' AND DATE '2026-11-19'
             """,
         )
         opt_px = prof.read_sql(
@@ -240,7 +240,7 @@ def load() -> dict:
             """
             SELECT trade_date::date AS dt, contract, COALESCE(clear, close)::float8 AS px
             FROM raw_options_contracts_daily
-            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-09-15' AND DATE '2026-11-19'
               AND COALESCE(clear, close) > 0
             """,
         )
@@ -968,7 +968,7 @@ def _option_closes(product: str, month: str, cp: str, strike: float) -> pd.DataF
             SELECT trade_date::date AS dt, clear::float8 AS close, volume::float8 AS volume
             FROM raw_options_contracts_daily
             WHERE regexp_replace(contract, '\\.[A-Za-z]+$', '') = %s
-              AND trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-09'
+              AND trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-19'
             ORDER BY trade_date
             """,
             (code,),
@@ -1629,13 +1629,13 @@ def category_examples(opt: pd.DataFrame, ohlc: pd.DataFrame) -> list[dict]:
     # Expiry-day sell lots: both-only 53, both-wing 4, one-wing 28, one-naked 33.
     out = []
     rows = (
-        ("both_open", "RB", "2701", "2026-10-19", "2026-11-09", False, "螺纹 RB2701  短宽跨式", "cat_open_both.png",
+        ("both_open", "RB", "2701", "2026-10-19", "2026-11-19", False, "螺纹 RB2701  短宽跨式", "cat_open_both.png",
          [("C", 3500, True, 10, 5.0), ("P", 2750, True, 10, 3.5)]),
-        ("both_wing_open", "M", "2701", "2026-10-21", "2026-11-09", False, "豆粕 M2701  短宽跨式加近买", "cat_open_wing.png",
+        ("both_wing_open", "M", "2701", "2026-10-21", "2026-11-19", False, "豆粕 M2701  短宽跨式加近买", "cat_open_wing.png",
          [("C", 3800, True, 15, 4.5), ("P", 2600, True, 10, 1.5), ("C", 3700, False, 2, 6.5)]),
-        ("one_wing_open", "C", "2701", "2026-10-22", "2026-11-09", False, "玉米 C2701  比率价差", "cat_open_one.png",
+        ("one_wing_open", "C", "2701", "2026-10-22", "2026-11-17", False, "玉米 C2701  比率价差", "cat_open_one.png",
          [("C", 2440, True, 20, 3.5), ("C", 2400, False, 2, 5.0)]),
-        ("naked_open", "JD", "2612", "2026-11-02", "2026-11-09", False, "鸡蛋 JD2612  单边卖权", "cat_open_naked.png",
+        ("naked_open", "JD", "2612", "2026-11-02", "2026-11-17", False, "鸡蛋 JD2612  单边卖权", "cat_open_naked.png",
          [("C", 4000, True, 20, 8.0)]),
         ("both", "NI", "2611", "2026-10-21", "2026-10-26", True, "镍 NI2611  短宽跨式，10月26日到期了结", "cat_both.png",
          [("C", 130000, True, 13, 1408 / 13), ("P", 110000, True, 15, 400 / 15)]),
@@ -1920,7 +1920,7 @@ def _write_category_examples(doc, add_fig, add_tab, cases, logic) -> None:
     )
     show(
         corn,
-        "还没到期",
+        "已经到期",
         [
             f"{_cn_day(corn['dt'])}玉米 {corn['label']}。期货收盘 {corn['fut']:.0f}，当天 {corn['day_low']:.0f} 到 {corn['day_high']:.0f}，收在最高价。"
             f"{corn['times'][0]} 卖出认购 {corn['legs'][0]['k']:.0f}、{corn['legs'][0]['lots']:.0f} 手、权利金 {corn['legs'][0]['px']:.1f}，虚值 {_otm(corn['legs'][0], corn['fut']):.0%}。"
@@ -1932,13 +1932,13 @@ def _write_category_examples(doc, add_fig, add_tab, cases, logic) -> None:
             f"从买进的 {corn['legs'][1]['k']:.0f} 涨到卖出的 {corn['legs'][0]['k']:.0f}，两手多头先赚，盈亏升到约 {_yuan(corn['peak'])} 元。"
             f"过了 {corn['legs'][0]['k']:.0f}，20 手空头对 2 手多头，净空 18 手。"
             f"期货到 {corn['be_high']:.0f} 以上转亏，往上不封顶。",
-            f"到 {pd.Timestamp(corn['end_dt']).strftime('%m-%d')} 期货 {corn['end_fut']:.0f}，两张认购都还是虚值。到期日还没到，这笔没有平掉。"
+            f"到 {pd.Timestamp(corn['end_dt']).strftime('%m-%d')} 期货 {corn['end_fut']:.0f}。这一天是到期日，样本在这天收这笔的标记。"
             f"卖出的收到 {corn['legs'][0]['end']:.1f}，盈亏 {_yuan(_leg_pnl(corn['legs'][0], corn['mult']), signed=True)} 元；"
             f"买进的收到 {corn['legs'][1]['end']:.1f}，盈亏 {_yuan(_leg_pnl(corn['legs'][1], corn['mult']), signed=True)} 元。"
             f"合计 {_yuan(corn['live'], signed=True)} 元，扣手续费后 {_yuan(corn['live'] - corn['fee'], signed=True)} 元。"
             "10 月 15 日他还单独卖过 4 手玉米 2380 认购，不在这张图里。",
         ],
-        f"上图红带是赚、绿带是亏。左边一直到买进行权价都是收进的权利金。价格再往上，先因为买进的两手拱起，过了卖出行权价就转为亏损。红色菱形是 {REPORT_END_CN}的重估。下图是期货路径和重估。这笔到 {REPORT_END_CN}还没有平。",
+        f"上图红带是赚、绿带是亏。左边一直到买进行权价都是收进的权利金。价格再往上，先因为买进的两手拱起，过了卖出行权价就转为亏损。红色菱形是到期日的重估。下图是期货路径和重估。玉米 1 月期权在 11 月 17 日到期。",
     )
     show(
         tin,
@@ -1980,7 +1980,7 @@ def _write_category_examples(doc, add_fig, add_tab, cases, logic) -> None:
     )
     show(
         egg,
-        "还没到期",
+        "已经到期",
         [
             f"{_cn_day(egg['dt'])}鸡蛋 {egg['label']}。期货收盘 {egg['fut']:.0f}，当天 {egg['day_low']:.0f} 到 {egg['day_high']:.0f}。"
             f"当天上涨，收盘仍比行权价低 {_otm(egg['legs'][0], egg['fut']):.0%}。"
@@ -1990,12 +1990,12 @@ def _write_category_examples(doc, add_fig, add_tab, cases, logic) -> None:
             f"到期日是 {_cn_full(egg['expiry'])}，大商所鸡蛋 12 月期权，交割月前一个月的第 12 个交易日。",
             f"到期时期货在 {egg['be_high']:.0f} 以下，认购归零，留下这笔权利金。"
             f"涨过 {egg['be_high']:.0f} 开始亏，往上不封顶。跌多少都不增加这笔的亏损。",
-            f"到 {pd.Timestamp(egg['end_dt']).strftime('%m-%d')} 期货 {egg['end_fut']:.0f}，认购收到 {egg['legs'][0]['end']:.1f}。到期日还没到，这 20 手还在仓里。"
+            f"到 {pd.Timestamp(egg['end_dt']).strftime('%m-%d')} 期货 {egg['end_fut']:.0f}，认购收到 {egg['legs'][0]['end']:.1f}。这一天是到期日。"
             f"重估 {_yuan(egg['live'], signed=True)} 元，扣手续费后 {_yuan(egg['live'] - egg['fee'], signed=True)} 元。"
             f"若到期仍停在 {egg['end_fut']:.0f}，能留下 {_yuan(egg['expiry_here'])} 元。"
             f"这 20 手是{CAT_NAKED}里最大的一笔。",
         ],
-        f"上图红带是赚、绿带是亏。行权价左边是一条平线，就是收进的权利金。涨过盈亏平衡点以后直线向下。红色菱形是 {REPORT_END_CN}的重估。下图是期货路径和重估。这笔到 {REPORT_END_CN}还没有平。",
+        f"上图红带是赚、绿带是亏。行权价左边是一条平线，就是收进的权利金。涨过盈亏平衡点以后直线向下。红色菱形是到期日的重估。下图是期货路径和重估。鸡蛋 12 月期权在 11 月 17 日到期。",
     )
     show(
         asphalt,
@@ -2179,7 +2179,7 @@ def write_expiry_compare(doc, add_tab, add_fig) -> None:
         doc,
         "他的短宽跨式用同一把尺子。距离是卖开时行权价离当天期货的百分比，权利金是成交价除以当天期货。"
         "同一个品种、同一个月份既卖过认购也卖过认沽，才算进短宽跨式。"
-        "下面到期归零的是已经走到到期日的那些手。11 月 5 日到 9 日新卖的还没到期，不进这张到期表。",
+        "下面到期归零的表，是截到 11 月 6 日已经到期的那 109 手。11 月 17 日玉米 1 月和鸡蛋 12 月到期，那两笔不是短宽跨式，不进这张表。",
     )
     prof.para(
         doc,
@@ -2188,7 +2188,7 @@ def write_expiry_compare(doc, add_tab, add_fig) -> None:
     )
     prof.para(
         doc,
-        "到 2026 年 11 月 9 日的行情为止，已经到期又能对上结算的仍是 109 手：10 月 26 日的铜、镍、锡 11 月期权，以及 "
+        "截到 2026 年 11 月 6 日，已经到期又能对上结算的短宽跨式是 109 手：10 月 26 日的铜、镍、锡 11 月期权，以及 "
         f"{lc_day}到期的碳酸锂 12 月。碳酸锂在他 10 月 19 日到 23 日的卖出日没有期货打印，最近的打印是 10 月 26 日，距离用这一天的期货；到期是否归零用到期结算。"
         "这 109 手全部到期归零。认购 58 手，留下的权利金是期货的 +0.10%。认沽 51 手，是 +0.06%。"
         "没有一手被行权，所以他的期望就等于这笔权利金。"
@@ -2210,7 +2210,7 @@ def write_expiry_compare(doc, add_tab, add_fig) -> None:
     )
     prof.para(
         doc,
-        "462 手里有 353 手到 11 月 9 日还没到期。11 月 7 日到 9 日没有新的期权到期，所以上一截 109 手没有加。不进上一张表的期望。下面是他卖出时实际收进的权利金，未到期的也算在内，对照的是市场同档有成交合约的平均权利金。"
+        "11 月 10 日到 19 日新卖的，以及还没到自己到期日的短宽跨式，不进上一张表的期望。下面是他卖出时实际收进的权利金，未到期的也算在内，对照的是市场同档有成交合约的平均权利金。"
         "还开着的里面，高于市场同档的是 25% 到 40% 外的认购，他卖在 1.07%，市场同档 0.26%；以及 3% 到 7% 外的认沽，他卖在 1.70%，市场同档 0.63%。这两处都还没走到到期。",
     )
     add_tab(
@@ -2357,12 +2357,12 @@ def exposure_facts() -> dict:
         opt = base.prof.read_sql(conn, """
             SELECT trade_date::date AS dt, contract, close::float8 AS px, volume::float8 AS volume
             FROM raw_options_contracts_daily
-            WHERE trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-19'
         """)
         fut = base.prof.read_sql(conn, """
             SELECT trade_date::date AS dt, contract, COALESCE(clear, close)::float8 AS px
             FROM raw_futures_contracts_daily
-            WHERE trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-09'
+            WHERE trade_date BETWEEN DATE '2026-10-01' AND DATE '2026-11-19'
         """)
     finally:
         conn.close()
@@ -3359,11 +3359,12 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
         prof.para(
             doc,
             f"期货卖出 {fut_sell:.0f} 手、买入 {fut_buy:.0f} 手。"
-            "碳酸锂和生猪是卖开以后留着的空头：10 月 29 日 LC 卖期货 10 手，同时卖购 6 手、卖沽 1 手；"
+            "10 月 29 日 LC 卖期货 10 手，同时卖购 6 手、卖沽 1 手；"
             "10 月 30 日 LH 卖期货 12 手，同时卖购 10 手、卖沽 5 手；11 月 2 日 LC 卖期货 7 手，同时卖沽 5 手。"
             "11 月 3 日 LH 再卖期货 6 手，当天没有新的期权开仓。"
-            "11 月 6 日锡期货卖开 1 手、当天买平 1 手，和当天的认沽卖开落在同一天，没有留到期末。"
-            "期末还留着的期货空头是碳酸锂和生猪。其他标的只有期权。",
+            "11 月 6 日锡期货卖开 1 手、当天买平 1 手，没有留到期末。"
+            "11 月 11 日生猪再卖开 2 手。11 月 16 日碳酸锂买平 17 手，这笔期货空头在样本结束前平掉。"
+            "期末还留着的期货空头是生猪。其他标的只有期权。",
         )
     prof.para(
         doc,
@@ -3541,8 +3542,8 @@ def write_doc(path, summary, pick, timing, months, rows, tape, both, only_opt, f
     prof.para(
         doc,
         f"从 10 月 15 日到 {REPORT_END_CN}，上期所到期日过了 10 月 26 日，大商所 11 月期权的到期日过了 10 月 23 日。走到这两个日子的空头，在当天收盘批次了结。"
-        "螺纹 1 月的到期日是 12 月 25 日，豆粕 1 月是 12 月 16 日，玉米 1 月和鸡蛋 12 月都是 11 月 17 日，这些合约到样本结束都还开着。第一节那笔螺纹就是其中一张。"
-        "卖虚值。到期日当天，该月份的空头在收盘批次了结；到期日之前大部分留着，盘中买平的是少数。LC 和 LH 上另外加着没有买回的期货空头。"
+        "螺纹 1 月的到期日是 12 月 25 日，豆粕 1 月是 12 月 16 日，到样本结束都还开着。玉米 1 月和鸡蛋 12 月在 11 月 17 日到期，已经落在这一窗里。"
+        "卖虚值。到期日当天，该月份的空头在收盘批次了结；到期日之前大部分留着，盘中买平的是少数。碳酸锂期货空头在 11 月 16 日买平，生猪期货空头还留着。"
         "选品种的模型打中三成，高于随机，还不能按名单逐个下单。"
         + intraday_close,
     )
@@ -3808,7 +3809,7 @@ _HYP_FIXES = (
     ("写在第六部分。", "写在「有色：哪一天做、做几个、为什么放过第一名」。"),
     ("那份模型在第七部分。", "那份模型在「有色开仓模型」。"),
     ("在第八部分。", "在「有色开哪张合约、权利金写多少」。"),
-    ("在第九部分。", "在「11月3日到9日，模型开什么、他做了什么」。"),
+    ("在第九部分。", "在「11月3日到19日，模型开什么、他做了什么」。"),
 )
 
 
@@ -4067,7 +4068,7 @@ def relocate_metal_model(doc) -> None:
         if "还是第七部分那套规则" in tx:
             _rename_heading(el, tx.replace("还是第七部分那套规则", "还是「有色开仓模型」那套规则"))
     hold = _heading_by_title(doc, "持有到到期", start=True)
-    note = "规则、合约、11 月 3 日到 9 日，写在预测模型。"
+    note = "规则、合约、11 月 3 日到 19 日，写在预测模型。"
     if any(note in _body_text(el) for el in doc.element.body):
         return
     lines = (

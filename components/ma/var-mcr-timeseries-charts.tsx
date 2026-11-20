@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { PROD_NAMES, prodLabel } from "@/lib/ma/prod-sector"
+import { cropMcrHistory, normalizeMcrPayload, type VarMcrPayload } from "@/lib/ma/var-mcr-payload"
 
 const API_URL = "/ma/api/mom-analysis/var-mcr-timeseries?volDays=20&corrDays=252"
 const POLL_MS = 60_000
@@ -447,24 +448,7 @@ function ProductCandleSearch({
   )
 }
 
-/** First included date: mature sample starts when n_prod first reaches 20. */
-const HISTORY_START = "2025-08-06"
-
-type McrPayload = {
-  ok: boolean
-  dates: string[]
-  productData: Record<string, number[]>
-  sectorData: Record<string, number[]>
-  maxProductShare: number[]
-  maxSectorShare: number[]
-  distanceProduct: number[]
-  distanceSector: number[]
-  productSoft?: number
-  productHard?: number
-  sectorSoft?: number
-  sectorHard?: number
-  cacheStatus?: string
-}
+type McrPayload = VarMcrPayload
 
 function sectorLabel(name: string): string {
   return SECTOR_DISPLAY[name] ?? name
@@ -484,24 +468,6 @@ function peakIndex(series: number[]): number {
 
 function axisDate(v: string): string {
   return (v ?? "").slice(0, 10)
-}
-
-function cropHistory(payload: McrPayload): McrPayload {
-  const startIdx = payload.dates.findIndex(d => axisDate(d) >= HISTORY_START)
-  if (startIdx <= 0) return payload
-  const cut = <T,>(arr: T[]) => arr.slice(startIdx)
-  const cutMap = (obj: Record<string, number[]>) =>
-    Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, cut(v)]))
-  return {
-    ...payload,
-    dates: cut(payload.dates),
-    productData: cutMap(payload.productData),
-    sectorData: cutMap(payload.sectorData),
-    maxProductShare: cut(payload.maxProductShare),
-    maxSectorShare: cut(payload.maxSectorShare),
-    distanceProduct: cut(payload.distanceProduct),
-    distanceSector: cut(payload.distanceSector),
-  }
 }
 
 export default function VarMcrTimeseriesCharts() {
@@ -537,13 +503,13 @@ export default function VarMcrTimeseriesCharts() {
   const load = useCallback(async () => {
     try {
       const resp = await fetch(API_URL, { cache: "no-cache" })
-      const json = (await resp.json()) as McrPayload
+      const json = (await resp.json()) as Partial<McrPayload> & { error?: string }
       if (!json?.ok) {
-        setError((json as { error?: string }).error || "加载失败")
+        setError(json?.error || "加载失败")
         return
       }
       setError(null)
-      setData(json)
+      setData(normalizeMcrPayload(json))
       const stale = resp.headers.get("X-Mom-Cache") === "stale" || json.cacheStatus === "stale"
       if (stale) {
         if (staleTimer.current) clearTimeout(staleTimer.current)
@@ -570,7 +536,7 @@ export default function VarMcrTimeseriesCharts() {
     }
   }, [load])
 
-  const view = useMemo(() => (data ? cropHistory(data) : null), [data])
+  const view = useMemo(() => (data ? cropMcrHistory(data) : null), [data])
   const productSoft = view?.productSoft ?? PRODUCT_SOFT
   const productHard = view?.productHard ?? PRODUCT_HARD
   const sectorSoft = view?.sectorSoft ?? SECTOR_SOFT

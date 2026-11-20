@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { PRIVATE_FUND_BENCHMARK_OPTIONS, privateFundBenchmarkLabel } from "@/lib/ma/private-fund-benchmark-options"
+import { ENV_CHART_MONTHS, monthsBefore, trailingScoreMean } from "@/lib/ma/strategy-environment"
 import type { StrategyComparePayload } from "@/lib/server/strategy-environment-compare"
 
 const COMMON_BENCHMARKS_SETTINGS_HREF = "/ma/dashboard/settings?tab=common-benchmarks"
@@ -80,35 +81,12 @@ function linkCharts(left: LinkChart, right: LinkChart) {
   }
 }
 
-function monthsBefore(ymd: string, months: number): string {
-  const [year, month, day] = ymd.split("-").map(Number)
-  const shifted = new Date(Date.UTC(year, month - 1 - months, day))
-  return shifted.toISOString().slice(0, 10)
-}
-
 /** Score smooth and trailing-return length. Most strategies share one window. */
 const CHART_SETUP: Record<string, { score: number; span: number; noun: string }> = {}
 const DEFAULT_CHART = { score: 10, span: 20, noun: "超额" }
 
 function chartSetup(key: string) {
   return CHART_SETUP[key] ?? DEFAULT_CHART
-}
-
-/** Trailing mean. Early points use the days available so the line has no gap. */
-function trailingMean(values: Array<number | null>, window: number): Array<number | null> {
-  const out: Array<number | null> = []
-  const buf: number[] = []
-  for (const value of values) {
-    if (value == null || !Number.isFinite(value)) {
-      out.push(null)
-      continue
-    }
-    buf.push(value)
-    if (buf.length > window) buf.shift()
-    const sum = buf.reduce((total, item) => total + item, 0)
-    out.push(Math.round((sum / buf.length) * 10) / 10)
-  }
-  return out
 }
 
 /** Trailing return of a cumulative index, in percent. The first `window` points stay empty. */
@@ -122,7 +100,7 @@ function trailingReturn(values: Array<number | null>, window: number): Array<num
 
 function latestZoom(dates: string[]): { start: string; end: string } {
   const end = dates[dates.length - 1] ?? ""
-  const cutoff = end ? monthsBefore(end, 6) : ""
+  const cutoff = end ? monthsBefore(end, ENV_CHART_MONTHS) : ""
   const start = dates.find((date) => date >= cutoff) ?? dates[0] ?? ""
   return { start, end }
 }
@@ -306,7 +284,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
     datesRef.current = dates
     const setup = chartSetup(strategyKey)
     const zoom = windowRange ?? latestZoom(dates)
-    const smoothed = trailingMean(payload.points.map((point) => point.score), setup.score)
+    const smoothed = trailingScoreMean(payload.points.map((point) => point.score), setup.score)
     const peer = trailingReturn(payload.points.map((point) => point.peer), setup.span)
     const fundValues = payload.funds.map((fund) => trailingReturn(fund.values, setup.span))
     const [i0, i1] = sliceBounds(dates, zoom.start, zoom.end)
@@ -360,7 +338,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
     ]
     return {
       animation: false,
-      grid: { left: 48, right: 52, top: 32, bottom: 64 },
+      grid: { left: 48, right: 52, top: 32, bottom: 108 },
       dataZoom: [
         {
           type: "inside",
@@ -376,18 +354,22 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
           type: "slider",
           xAxisIndex: 0,
           filterMode: "filter",
-          height: 22,
+          height: 64,
           bottom: 8,
           startValue: zoom.start,
           endValue: zoom.end,
           borderColor: split,
           backgroundColor: dark ? "#27272a" : "#f4f4f5",
-          fillerColor: dark ? "rgba(161,161,170,0.28)" : "rgba(24,24,27,0.12)",
+          fillerColor: dark ? "rgba(161,161,170,0.22)" : "rgba(24,24,27,0.08)",
           handleStyle: { color: dark ? "#e4e4e7" : "#3f3f46" },
           textStyle: { color: axis, fontSize: 10 },
           dataBackground: {
-            lineStyle: { color: "#e11d48", width: 1 },
-            areaStyle: { color: "rgba(225,29,72,0.15)" },
+            lineStyle: { color: "#e11d48", width: 1.25 },
+            areaStyle: { color: "rgba(225,29,72,0.18)" },
+          },
+          selectedDataBackground: {
+            lineStyle: { color: "#e11d48", width: 1.25 },
+            areaStyle: { color: "rgba(225,29,72,0.28)" },
           },
         },
       ],
@@ -463,7 +445,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
     const beta = trailingReturn(payload.points.map((point) => point.beta ?? null), setup.span)
     return {
       animation: false,
-      grid: { left: 48, right: 16, top: 32, bottom: 64 },
+      grid: { left: 48, right: 16, top: 32, bottom: 108 },
       dataZoom: [
         {
           type: "inside",
@@ -479,7 +461,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
           type: "slider",
           xAxisIndex: 0,
           filterMode: "filter",
-          height: 22,
+          height: 64,
           bottom: 8,
           startValue: zoom.start,
           endValue: zoom.end,
@@ -489,8 +471,12 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
           handleStyle: { color: dark ? "#e4e4e7" : "#3f3f46" },
           textStyle: { color: axis, fontSize: 10 },
           dataBackground: {
-            lineStyle: { color: "#2563eb", width: 1 },
+            lineStyle: { color: "#2563eb", width: 1.25 },
             areaStyle: { color: "rgba(37,99,235,0.12)" },
+          },
+          selectedDataBackground: {
+            lineStyle: { color: "#2563eb", width: 1.25 },
+            areaStyle: { color: "rgba(37,99,235,0.22)" },
           },
         },
       ],
@@ -729,13 +715,13 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
         <div>
           {error && <p className="text-sm text-red-600">{error}</p>}
           {!error && option && (
-            <ReactECharts option={option} style={{ height: 380 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("alpha", chart as LinkChart)} />
+            <ReactECharts option={option} style={{ height: 424 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("alpha", chart as LinkChart)} />
           )}
           {loading && !payload && <div className="h-80 animate-pulse rounded bg-zinc-50 dark:bg-zinc-900" />}
         </div>
         <div>
           {!error && betaOption && (
-            <ReactECharts option={betaOption} style={{ height: 380 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("beta", chart as LinkChart)} />
+            <ReactECharts option={betaOption} style={{ height: 424 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("beta", chart as LinkChart)} />
           )}
           {loading && !payload && <div className="h-80 animate-pulse rounded bg-zinc-50 dark:bg-zinc-900" />}
         </div>

@@ -509,6 +509,12 @@ export default function VarMcrSuggestionsPanel() {
         setError(json?.error || "加载失败")
         return
       }
+      // Account-risk catch-all answers `{ ok: true }` with no suggestion body.
+      if (typeof json.conclusion !== "string") {
+        setError(null)
+        setData(null)
+        return
+      }
       setError(null)
       setData(json)
       const stale = resp.headers.get("X-Mom-Cache") === "stale" || json.cacheStatus === "stale"
@@ -545,10 +551,14 @@ export default function VarMcrSuggestionsPanel() {
   const gapNotes = useMemo(() => {
     const gaps = data?.dataGaps
     if (!gaps) return []
+    const names = (value: unknown) => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []
+    const positionsWithoutAdvisor = names(gaps.positionsWithoutAdvisor)
+    const missingWarningLines = names(gaps.missingWarningLines)
+    const equityWithoutRoster = names(gaps.equityWithoutRoster)
     const notes: string[] = []
-    if (gaps.positionsWithoutAdvisor.length) notes.push(`持仓账户未在投顾对照表中找到姓名：${gaps.positionsWithoutAdvisor.join("、")}。`)
-    if (gaps.missingWarningLines.length) notes.push(`下列在场账户对照表中没有解析到预警/止损线：${gaps.missingWarningLines.join("、")}。`)
-    if (gaps.equityWithoutRoster.length) notes.push(`有结算权益但不在当前对照表：${gaps.equityWithoutRoster.join("、")}。`)
+    if (positionsWithoutAdvisor.length) notes.push(`持仓账户未在投顾对照表中找到姓名：${positionsWithoutAdvisor.join("、")}。`)
+    if (missingWarningLines.length) notes.push(`下列在场账户对照表中没有解析到预警/止损线：${missingWarningLines.join("、")}。`)
+    if (equityWithoutRoster.length) notes.push(`有结算权益但不在当前对照表：${equityWithoutRoster.join("、")}。`)
     return notes
   }, [data])
 

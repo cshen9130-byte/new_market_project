@@ -83,6 +83,8 @@ type Props = {
   iv: Record<string, IvSnapshot>
   initialSymbol: string | null
   initialLayout?: ProTradingLayout
+  /** Open on the daily near-quarter desk so the IV panel shows the QVIX history. */
+  initialDesk?: DeskMode
   onWatchSymbols?: (symbols: string[]) => void
 }
 
@@ -101,6 +103,7 @@ export function ProTradingWorkspace({
   iv,
   initialSymbol,
   initialLayout = "market",
+  initialDesk,
   onWatchSymbols,
 }: Props) {
   const [symbol, setSymbol] = useState(initialSymbol || "")
@@ -136,8 +139,17 @@ export function ProTradingWorkspace({
   useEffect(() => setMounted(true), [])
 
   const openedRef = useRef(false)
+  const spikeDeskRef = useRef(false)
   useEffect(() => {
     if (!open) {
+      if (spikeDeskRef.current) {
+        spikeDeskRef.current = false
+        setDeskMode("intraday")
+        setInterval("1m")
+        setBasisInterval("1m")
+        setIvInterval("1m")
+        pendingDeskFit.current = null
+      }
       openedRef.current = false
       return
     }
@@ -146,14 +158,25 @@ export function ProTradingWorkspace({
     setLayout(initialLayout)
     setChartMode("sleeves")
     setShowNavChart(false)
+    if (initialDesk === "season") {
+      spikeDeskRef.current = true
+      setDeskMode("season")
+      setInterval("1d")
+      setBasisInterval("1d")
+      setIvInterval("1d")
+      pendingDeskFit.current = "season"
+      setDeskFitNonce((n) => n + 1)
+    }
     if (!initialSymbol) return
-    setSymbol(initialSymbol)
-    setQuery(initialSymbol)
-    const role = cffexRoleOfContract(initialSymbol) || "next"
+    const product = productOfSymbol(initialSymbol)
+    const nextSymbol = initialDesk === "season" && product ? cffexContractForRole(product, "quarter") : initialSymbol
+    setSymbol(nextSymbol)
+    setQuery(nextSymbol)
+    const role = (initialDesk === "season" && product ? "quarter" : cffexRoleOfContract(nextSymbol)) || "next"
     setContractRole(role)
     setIvMonth(null)
     setIvMonthPinned(false)
-  }, [open, initialSymbol, initialLayout])
+  }, [open, initialSymbol, initialLayout, initialDesk])
 
   useEffect(() => {
     if (layout !== "paper") setShowNavChart(false)

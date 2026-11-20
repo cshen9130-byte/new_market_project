@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic"
 import { useEffect, useState } from "react"
-import { headlineFromHistory, totalSpark, type EnvStrategy, type EnvTone, type StrategyEnvironmentPayload } from "@/lib/ma/strategy-environment"
+import { headlineFromHistory, scoreSpark, type EnvStrategy, type EnvTone, type StrategyEnvironmentPayload } from "@/lib/ma/strategy-environment"
 import { StrategyEnvironmentMethodDialog } from "./StrategyEnvironmentMethodDialog"
 
 const StrategyEnvironmentCompare = dynamic(
@@ -47,24 +47,29 @@ function Delta({ value }: { value: number | null }) {
   )
 }
 
-function Spark({ values, tone }: { values: number[]; tone: EnvTone }) {
+/** Same red the chart uses for 环境分, drawn on the chart's 0–100 axis. */
+function Spark({ values }: { values: Array<number | null> }) {
   if (values.length < 2) return <div className="h-6" />
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = Math.max(max - min, 1)
   const w = 96
   const h = 24
+  let drawing = false
   const d = values
     .map((value, index) => {
+      if (value == null || !Number.isFinite(value)) {
+        drawing = false
+        return ""
+      }
       const x = (index / (values.length - 1)) * w
-      const y = h - ((value - min) / span) * (h - 2) - 1
-      return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`
+      const y = h - 1 - (Math.min(100, Math.max(0, value)) / 100) * (h - 2)
+      const cmd = drawing ? "L" : "M"
+      drawing = true
+      return `${cmd}${x.toFixed(1)} ${y.toFixed(1)}`
     })
     .join(" ")
-  const stroke = tone === "good" ? "#e11d48" : tone === "weak" ? "#059669" : "#71717a"
+  if (!d.trim()) return <div className="h-6" />
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="h-6 w-24" aria-hidden>
-      <path d={d} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
+      <path d={d} fill="none" stroke="#e11d48" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   )
 }
@@ -218,8 +223,8 @@ export function StrategyEnvironmentView() {
                         </span>
                       </div>
                     </div>
-                    <div className="flex flex-col items-end gap-1">
-                      <Spark values={totalSpark(item)} tone={item.tone} />
+                    <div className="flex flex-col items-end gap-1" title="近 6 个月环境分，与下方图中的红线相同">
+                      <Spark values={scoreSpark(item)} />
                       <span className="text-xs tabular-nums">
                         <Delta value={item.totalDelta} />
                       </span>

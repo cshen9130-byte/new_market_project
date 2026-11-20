@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { INDEX_ATM_IV_SPIKE_HREF, atmIvSpikeMessage, atmIvSpikes, barsWithSessionCloses } from "./index-atm-iv-spike"
+import { atmIvSpikeDesk, atmIvSpikeHref, atmIvSpikeHrefForDedupe, atmIvSpikeMessage, atmIvSpikes, barsWithSessionCloses } from "./index-atm-iv-spike"
 
 function bars(values: number[]): { date: string; value: number }[] {
   return values.map((value, index) => ({
@@ -60,8 +60,12 @@ test("a 5-day jump above 15 points names the peak and opens the IV charts", () =
   assert.equal(spike?.baseDate, "2026-11-01")
   const message = spike ? atmIvSpikeMessage(spike) : null
   assert.equal(message?.title, "2026-11-03 中证1000平值隐含波动率尖峰")
-  assert.match(message?.body ?? "", /最高 48\.00%/)
+  assert.match(message?.body ?? "", /日线近 5 个交易日 QVIX 最高 48\.00%/)
   assert.match(message?.body ?? "", /高出 28\.00 个点/)
-  assert.equal(message?.href, INDEX_ATM_IV_SPIKE_HREF)
+  assert.equal(message?.href, atmIvSpikeHref("IM"))
+  assert.equal(atmIvSpikeDesk(message?.href ?? "")?.product, "IM")
+  assert.equal(atmIvSpikeDesk("view=pro&product=nope&desk=season"), null)
   assert.equal(message?.dedupeKey, "index_atm_iv_spike:IM:2026-11-03")
+  assert.equal(atmIvSpikeHrefForDedupe("index_atm_iv_spike:IC:2026-11-18"), atmIvSpikeHref("IC"))
+  assert.equal(atmIvSpikeHrefForDedupe("other:IC:2026-11-18"), null)
 })

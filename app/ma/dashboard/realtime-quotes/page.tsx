@@ -45,6 +45,7 @@ import {
 import { isCffexProduct, isCffexSession, overlaySinaQuote } from "@/lib/client/market-hours"
 import { NHCI_SYMBOL } from "@/lib/client/nhci-market"
 import { type TimeframeId } from "@/lib/client/timeframes"
+import { atmIvSpikeDesk } from "@/lib/index-atm-iv-spike"
 import { cn } from "@/lib/utils"
 
 export default function RealtimeQuotesPage() {
@@ -57,6 +58,7 @@ export default function RealtimeQuotesPage() {
   const [manual, setManual] = useState<Record<string, true>>({})
   const [proOpen, setProOpen] = useState(false)
   const [proLayout, setProLayout] = useState<ProTradingLayout>("market")
+  const [spikeProduct, setSpikeProduct] = useState<"IH" | "IF" | "IC" | "IM" | null>(null)
 
   function setProViewParam(on: boolean) {
     const url = new URL(window.location.href)
@@ -193,6 +195,8 @@ export default function RealtimeQuotesPage() {
       setProLayout("market")
       setProOpen(true)
     }
+    const spike = atmIvSpikeDesk(window.location.search)
+    if (spike) setSpikeProduct(spike.product)
     const basis = params.get("basis")
     if (basis && CFFEX_CONTRACT_ROLES.some((role) => role.id === basis)) {
       setBasisRole(basis as CffexContractRole)
@@ -479,6 +483,7 @@ export default function RealtimeQuotesPage() {
         open={proOpen}
         onClose={() => {
           setProOpen(false)
+          setSpikeProduct(null)
           setProViewParam(false)
         }}
         symbols={indexSymbols}
@@ -488,14 +493,17 @@ export default function RealtimeQuotesPage() {
         iv={overlay.iv}
         onWatchSymbols={setHqExtra}
         initialLayout={proLayout}
+        initialDesk={spikeProduct ? "season" : undefined}
         initialSymbol={
-          selected.IF ||
-          selected.IH ||
-          selected.IC ||
-          selected.IM ||
-          pickMostActiveContract(indexSymbols, "IF", quotes) ||
-          indexSymbols[0] ||
-          null
+          spikeProduct
+            ? cffexContractForRole(spikeProduct, "quarter")
+            : selected.IF ||
+              selected.IH ||
+              selected.IC ||
+              selected.IM ||
+              pickMostActiveContract(indexSymbols, "IF", quotes) ||
+              indexSymbols[0] ||
+              null
         }
       />
     </div>

@@ -162,10 +162,17 @@ export async function GET(req: Request) {
   const month = (url.searchParams.get("month") || "").trim().toUpperCase() || null
   const days = clampIvLookbackDays(url.searchParams.get("days") || 1)
   const strike = parseStrike(url.searchParams.get("strike"))
+  const series = (url.searchParams.get("series") || "").trim().toLowerCase()
+  const atmMonth = (url.searchParams.get("atmMonth") || "").trim()
   if (!PRODUCTS.has(product as IndexProduct)) {
     return NextResponse.json({ ok: false, error: "invalid product" }, { status: 400 })
   }
   try {
+    if (series === "atm") {
+      const { fetchIndexAtmDaily } = await import("@/lib/server/etf-atm-iv-daily")
+      const found = await fetchIndexAtmDaily(product as IndexProduct, /^\d{4}$/.test(atmMonth) ? atmMonth : null)
+      return NextResponse.json({ ok: true, product, ...found })
+    }
     kickOptionMinuteCapture()
     if (strike != null) {
       const live = await fetchChosenStrike(product as IndexProduct, month, days, strike)

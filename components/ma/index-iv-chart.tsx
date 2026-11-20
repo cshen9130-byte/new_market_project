@@ -8,7 +8,7 @@ import { HelpIndexIv } from "@/components/ma/realtime-chart-help"
 import { TimeframeSelect } from "@/components/ma/timeframe-select"
 import { type IvLookbackDays, ivLookbackLabel } from "@/lib/client/iv-lookback"
 import { IvLookbackSelect } from "@/components/ma/iv-lookback-select"
-import { useQvixSeries } from "@/hooks/use-qvix-series"
+import { useQvixSeries, type IvSeriesKind } from "@/hooks/use-qvix-series"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import type { CtpCandle } from "@/lib/client/ctp-market"
 import { annualizedGarmanKlassByTime, levelScaleFactor, volPeriodsPerYear } from "@/lib/client/rolling-volatility"
@@ -87,6 +87,7 @@ function seriesUsesContractPair(source?: string | null) {
 
 function contractLine(mode: "intraday" | "history" | "unavailable", source: string | null | undefined, contract: string | null | undefined, degradedToDaily: boolean) {
   if (!contract) return null
+  if (source?.startsWith("sina-atm-daily:") || source?.startsWith("emquant-atm:")) return contract
   if (mode === "intraday" && !degradedToDaily && seriesUsesContractPair(source)) return `计算合约 ${contract}`
   return `QVIX近月平值 ${contract}`
 }
@@ -166,6 +167,8 @@ function dataSourceLabel(source?: string | null) {
   if (!source) return null
   if (source.startsWith("optbbs:")) return "期权论坛分钟"
   if (source === "sina") return "新浪QVIX分钟"
+  if (source.startsWith("emquant-atm:")) return "Choice期权日线"
+  if (source.startsWith("sina-atm-daily:")) return "新浪期权日线"
   if (source.startsWith("qvix-sina:") || source.startsWith("sina-atm:")) return "新浪ETF期权"
   if (source.endsWith("1000index") && (source.startsWith("qvix-cffex:") || source.startsWith("em-atm:"))) {
     return "新浪实时+东财分钟"
@@ -184,6 +187,11 @@ function sourceNote(interval: TimeframeId, mode: "intraday" | "history" | "unava
     return `${ivLookbackLabel(lookbackDays)} · 日线收盘（分钟多日暂不可用）`
   }
   if (mode === "history") {
+    if (source?.startsWith("sina-atm-daily:") || source?.startsWith("emquant-atm:")) {
+      return lookbackDays > 1
+        ? `${ivLookbackLabel(lookbackDays)} · 平值`
+        : `${getTimeframe(interval).label} · 平值`
+    }
     return lookbackDays > 1
       ? `${ivLookbackLabel(lookbackDays)} · ${getTimeframe(interval).label}`
       : `${getTimeframe(interval).label} · 历史日线`
@@ -225,7 +233,10 @@ export function IndexIvChart({
   const [localLookback, setLocalLookback] = useState<IvLookbackDays>(1)
   const [ivStrike, setIvStrike] = useState<string | null>(null)
   const [compareGk, setCompareGk] = useState(false)
+  const [ivKind, setIvKind] = useState<IvSeriesKind>("qvix")
+  const [atmMonth, setAtmMonth] = useState<string | null>(null)
   const interval = controlledInterval ?? localInterval
+  const plotInterval: TimeframeId = ivKind === "atm" && isIntradayTimeframe(interval) ? "1d" : interval
   const setInterval = onIntervalChange ?? setLocalInterval
   const ivMonth = controlledMonth !== undefined ? controlledMonth : localMonth
   const setIvMonth = onIvMonthChange ?? setLocalMonth
@@ -233,8 +244,8 @@ export function IndexIvChart({
   const setLookbackDays = onLookbackDaysChange ?? setLocalLookback
   const contracts = useIvContracts(product, ivMonth)
   const strikeNum = ivStrike ? Number(ivStrike) : null
-  const { bars, mode, loading, error, source: seriesSource, degradedToDaily, contract: seriesContract } = useQvixSeries(product, interval, iv, ivMonth, lookbackDays, strikeNum)
-  const pinnedSeries = strikeNum != null || !!ivMonth || lookbackDays > 1
+  const { bars, mode, loading, error, source: seriesSource, degradedToDaily, contract: seriesContract, months: atmMonths } = useQvixSeries(product, plotInterval, iv, ivMonth, lookbackDays, strikeNum, ivKind, atmMonth)
+  const pinnedSeries = ivKind === "atm" || strikeNum != null || !!ivMonth || lookbackDays > 1
   const last = pinnedSeries ? (bars.at(-1)?.close ?? null) : (iv?.value ?? bars.at(-1)?.close ?? null)
   const prevClose = returnBaseline(bars, !ivMonth && strikeNum == null ? (iv?.prevClose ?? null) : null)
   const dayReturn = last != null && prevClose != null && prevClose > 0 ? ((last - prevClose) / prevClose) * 100 : null
@@ -266,14 +277,14 @@ export function IndexIvChart({
   const selectClass = pro
     ? "h-6 max-w-[9rem] rounded border border-[#2a2e39] bg-[#1e222d] px-1.5 font-mono text-[11px] text-[#d1d4dc]"
     : "h-6 max-w-[9rem] rounded border bg-background px-1.5 font-mono text-[11px]"
-  const reusePrice = compareGk && priceInterval === interval && (priceCandles?.length ?? 0) > 0
-  const gkKline = useSymbolKline(compareGk && !reusePrice ? symbol : null, interval, [], undefined, { history: true })
+  const reusePrice = compareGk && priceInterval === plotInterval && (priceCandles?.length ?? 0) > 0
+  const gkKline = useSymbolKline(compareGk && !reusePrice ? symbol : null, plotInterval, [], undefined, { history: true })
   const gkCandles = reusePrice ? priceCandles! : gkKline.candles
-  const gkPeriods = volPeriodsPerYear(interval, isIntradayTimeframe(interval) ? intradaySessionSlots(symbol, interval) : 0)
+  const gkPeriods = volPeriodsPerYear(plotInterval, isIntradayTimeframe(plotInterval) ? intradaySessionSlots(symbol, plotInterval) : 0)
   const gkByTime = useMemo(() => {
     if (!compareGk || !gkCandles.length) return new Map<number, number>()
-    return annualizedGarmanKlassByTime(gkCandles, 20, gkPeriods, (time) => bucketTime(time, interval))
-  }, [compareGk, gkCandles, gkPeriods, interval])
+    return annualizedGarmanKlassByTime(gkCandles, 20, gkPeriods, (time) => bucketTime(time, plotInterval))
+  }, [compareGk, gkCandles, gkPeriods, plotInterval])
 
   const chartRef = useRef<ReactECharts>(null)
   const plottedTimesRef = useRef<number[]>([])
@@ -281,22 +292,22 @@ export function IndexIvChart({
   const driven = variant === "pro" && cursorTime != null
   const chartModel = useMemo(() => {
     const padded =
-      mode === "intraday" && isIntradayTimeframe(interval)
-        ? padIntradaySeries(bars, interval, Math.max(lookbackDays, 1), quoteAxisEnd(variant === "pro" ? viewportMode : undefined))
+      mode === "intraday" && isIntradayTimeframe(plotInterval)
+        ? padIntradaySeries(bars, plotInterval, Math.max(lookbackDays, 1), quoteAxisEnd(variant === "pro" ? viewportMode : undefined))
         : null
     // 当日 stays on the main chart's window. 2日 / 5日 / 10日 own this chart's axis.
     const follow = variant === "pro" && lookbackDays <= 1 ? visibleWindow : null
-    const extendTo = follow?.coversAll && viewportMode === "fixed-window" && isIntradayTimeframe(interval)
+    const extendTo = follow?.coversAll && viewportMode === "fixed-window" && isIntradayTimeframe(plotInterval)
       ? quoteAxisEnd("fixed-window")
       : undefined
     const aligned = padded ? (variant === "pro" ? padded : omitIsolatedNulls(padded)) : bars
-    const plot = plotOnVisibleWindow(aligned, follow, interval, extendTo)
+    const plot = plotOnVisibleWindow(aligned, follow, plotInterval, extendTo)
     plottedTimesRef.current = plot.map((p) => p.time)
-    const times = plot.map((p) => formatCandleTime(p.time, interval))
+    const times = plot.map((p) => formatCandleTime(p.time, plotInterval))
     const values = plot.map((p) => (p.close == null || !Number.isFinite(p.close) ? null : Number(p.close.toFixed(2))))
     const gkRaw = compareGk
       ? plot.map((p) => {
-          const value = gkByTime.get(bucketTime(p.time, interval))
+          const value = gkByTime.get(bucketTime(p.time, plotInterval))
           return value == null || !Number.isFinite(value) ? null : value
         })
       : null
@@ -331,7 +342,7 @@ export function IndexIvChart({
         }]
       : []
     const sessionMarkLine =
-      mode === "intraday" && isIntradayTimeframe(interval)
+      mode === "intraday" && isIntradayTimeframe(plotInterval)
         ? sessionOpenEchartsMarkLine(times, plot.map((p) => p.time), dark, zeroLine)
         : undefined
     describeRef.current = (index) => {
@@ -414,7 +425,7 @@ export function IndexIvChart({
           : null,
       ].filter(Boolean),
       series: [
-        ...ivLineSeries(values, color, returnScale?.prev ?? null, sparse, interval, sessionMarkLine, variant === "pro"),
+        ...ivLineSeries(values, color, returnScale?.prev ?? null, sparse, plotInterval, sessionMarkLine, variant === "pro"),
         ...(gkValues
           ? [{
               name: "区间波动20",
@@ -431,17 +442,19 @@ export function IndexIvChart({
       ],
     }
     return { option, gkScale }
-  }, [bars, color, compareGk, gkByTime, interval, lookbackDays, mode, prevClose, variant, viewportMode, visibleWindow])
+  }, [bars, color, compareGk, gkByTime, plotInterval, lookbackDays, mode, prevClose, variant, viewportMode, visibleWindow])
   const option = chartModel.option
   const gkScale = chartModel.gkScale
   const linkedPointer = driven ? cursorTime ?? null : null
 
   const emptyText = loading
-    ? (ivStrike || ivMonth ? "加载该合约…" : "加载 QVIX 日线…")
+    ? (ivKind === "atm" ? "加载平值日线…" : ivStrike || ivMonth ? "加载该合约…" : "加载 QVIX 日线…")
     : error
       ? error
       : mode === "unavailable"
-        ? (ivStrike ? "该行权价暂无分钟线" : "分钟线中断，日内周期暂不可用")
+        ? ivKind === "atm"
+          ? "平值日线暂不可用"
+          : (ivStrike ? "该行权价暂无分钟线" : "分钟线中断，日内周期暂不可用")
         : last != null
           ? "暂无该周期数据"
           : "等待 QVIX…"
@@ -456,7 +469,49 @@ export function IndexIvChart({
               <span className="ml-2 font-mono text-xs text-muted-foreground">{iv?.option || product}</span>
             </div>
             <HelpIndexIv product={title} />
-            {hideMonthSelect ? null : (
+            <button
+              type="button"
+              title="日线用 QVIX 方差指数"
+              onClick={() => setIvKind("qvix")}
+              className={ivKind === "qvix"
+                ? "h-6 rounded border border-[#4c84ff] bg-[#4c84ff]/15 px-1.5 text-[11px] text-[#4c84ff]"
+                : pro
+                  ? "h-6 rounded border border-[#2a2e39] bg-[#1e222d] px-1.5 text-[11px] text-[#adb3bd] hover:text-white"
+                  : "h-6 rounded border bg-background px-1.5 text-[11px] text-muted-foreground hover:text-foreground"}
+            >
+              QVIX
+            </button>
+            <button
+              type="button"
+              title="日线用近月平值认购和认沽的收盘价反推，和 OpenVlab 的平值隐波是同一类"
+              onClick={() => {
+                setIvKind("atm")
+                if (!onIntervalChange && isIntradayTimeframe(interval)) setLocalInterval("1d")
+              }}
+              className={ivKind === "atm"
+                ? "h-6 rounded border border-[#4c84ff] bg-[#4c84ff]/15 px-1.5 text-[11px] text-[#4c84ff]"
+                : pro
+                  ? "h-6 rounded border border-[#2a2e39] bg-[#1e222d] px-1.5 text-[11px] text-[#adb3bd] hover:text-white"
+                  : "h-6 rounded border bg-background px-1.5 text-[11px] text-muted-foreground hover:text-foreground"}
+            >
+              平值
+            </button>
+            {ivKind === "atm" ? (
+              <select
+                value={atmMonth || ""}
+                onChange={(e) => setAtmMonth(e.target.value || null)}
+                className={pro
+                  ? "h-6 rounded border border-[#2a2e39] bg-[#1e222d] px-1.5 font-mono text-[11px] text-[#d1d4dc]"
+                  : "h-6 rounded border bg-background px-1.5 font-mono text-[11px]"}
+                title="平值到期月。当月是每个交易日仍在交易的最近月份。"
+              >
+                <option value="">当月</option>
+                {atmMonths.map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            ) : null}
+            {hideMonthSelect || ivKind === "atm" ? null : (
               <select
                 value={ivMonth || ""}
                 onChange={(e) => setIvMonth(e.target.value || null)}
@@ -477,7 +532,7 @@ export function IndexIvChart({
                 })}
               </select>
             )}
-            <select
+            {ivKind === "atm" ? null : <select
               value={ivStrike || ""}
               onChange={(e) => setIvStrike(e.target.value || null)}
               className={selectClass}
@@ -489,7 +544,7 @@ export function IndexIvChart({
                   {item.id}{item.atm ? " 平值" : ""}
                 </option>
               ))}
-            </select>
+            </select>}
           </div>
           {hideTimeframe && hideLookback ? null : (
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -522,7 +577,7 @@ export function IndexIvChart({
             ? "mt-0.5 flex flex-wrap items-baseline gap-x-2 text-[11px] text-[#787b86]"
             : "mt-1 flex flex-wrap items-baseline gap-x-2 text-[11px] text-muted-foreground"}>
             <span>
-              {ivMonth ? ivMonth : (iv?.name || "QVIX")} · {sourceNote(interval, mode, activeSource, lookbackDays, degradedToDaily, !!ivStrike)}
+              {ivKind === "atm" ? (atmMonth ? atmMonths.find((item) => item.id === atmMonth)?.label || atmMonth : "当月") : ivMonth ? ivMonth : (iv?.name || "QVIX")} · {sourceNote(plotInterval, mode, activeSource, lookbackDays, degradedToDaily, !!ivStrike)}
             </span>
             {sourceText ? <span>数据源 {sourceText}</span> : null}
             {contractText ? (
@@ -552,7 +607,7 @@ export function IndexIvChart({
               chartRef={chartRef}
               timesRef={plottedTimesRef}
               describeRef={describeRef}
-              interval={interval}
+              interval={plotInterval}
               linkedTime={linkedPointer}
             />
           </>

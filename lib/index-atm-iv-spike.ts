@@ -6,7 +6,26 @@
 export const INDEX_ATM_IV_SPIKE_POINTS = 15
 export const INDEX_ATM_IV_SPIKE_DAYS = 5
 
-export const INDEX_ATM_IV_SPIKE_HREF = "/ma/dashboard/realtime-quotes#section-iv"
+/** Pro desk on the daily near-quarter contract, so the bottom-right IV panel is the daily QVIX line. */
+export function atmIvSpikeHref(product: string): string {
+  const code = product.trim().toUpperCase()
+  return `/ma/dashboard/realtime-quotes?view=pro&product=${code}&desk=season`
+}
+
+/** Older alerts stored the four-chart link. The dedupe key still names the product. */
+export function atmIvSpikeHrefForDedupe(dedupeKey: string): string | null {
+  const match = /^index_atm_iv_spike:(IH|IF|IC|IM):/.exec(dedupeKey)
+  return match ? atmIvSpikeHref(match[1]) : null
+}
+
+export function atmIvSpikeDesk(search: string): { product: "IH" | "IF" | "IC" | "IM" } | null {
+  const query = search.includes("?") ? search.slice(search.indexOf("?") + 1) : search.replace(/^\?/, "")
+  const params = new URLSearchParams(query)
+  if (params.get("view") !== "pro" || params.get("desk") !== "season") return null
+  const product = (params.get("product") || "").trim().toUpperCase()
+  if (product !== "IH" && product !== "IF" && product !== "IC" && product !== "IM") return null
+  return { product }
+}
 
 export type AtmIvBar = { date: string; value: number }
 
@@ -57,8 +76,8 @@ export function atmIvSpikeMessage(spike: AtmIvSpike): { title: string; body: str
   const rise = spike.peak - spike.base
   return {
     title: `${spike.peakDate} ${spike.name}平值隐含波动率尖峰`,
-    body: `${spike.name}（${spike.product}）近 ${INDEX_ATM_IV_SPIKE_DAYS} 个交易日平值 IV 最高 ${spike.peak.toFixed(2)}%（${spike.peakDate}），比 ${spike.baseDate} 的 ${spike.base.toFixed(2)}% 高出 ${rise.toFixed(2)} 个点。`,
-    href: INDEX_ATM_IV_SPIKE_HREF,
+    body: `${spike.name}（${spike.product}）日线近 ${INDEX_ATM_IV_SPIKE_DAYS} 个交易日 QVIX 最高 ${spike.peak.toFixed(2)}%（${spike.peakDate}），比 ${spike.baseDate} 的 ${spike.base.toFixed(2)}% 高出 ${rise.toFixed(2)} 个点。`,
+    href: atmIvSpikeHref(spike.product),
     dedupeKey: `index_atm_iv_spike:${spike.product}:${spike.peakDate}`,
   }
 }

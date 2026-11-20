@@ -137,8 +137,38 @@ export function deltaPhrase(delta: number | null, compareDate: string | null): s
 
 /** Cards and the chart's red line both judge the alpha environment on this window. */
 export const ENV_SCORE_WINDOW = 10
+/** Default window the strategy chart opens on, and the card preview copies. */
+export const ENV_CHART_MONTHS = 6
 /** One point of beta-driven return, in percent, moves the beta score by this many points. */
 export const MARKET_BETA_SCALE = 5
+
+export function monthsBefore(ymd: string, months: number): string {
+  const [year, month, day] = ymd.split("-").map(Number)
+  if (!year || !month || !day) return ymd
+  const shifted = new Date(Date.UTC(year, month - 1 - months, day))
+  return shifted.toISOString().slice(0, 10)
+}
+
+/**
+ * Trailing mean of the daily environment score.
+ * Early points use the days available so the line has no gap.
+ * This is the chart's red line.
+ */
+export function trailingScoreMean(values: Array<number | null>, window = ENV_SCORE_WINDOW): Array<number | null> {
+  const out: Array<number | null> = []
+  const buf: number[] = []
+  for (const value of values) {
+    if (value == null || !Number.isFinite(value)) {
+      out.push(null)
+      continue
+    }
+    buf.push(value)
+    if (buf.length > window) buf.shift()
+    const sum = buf.reduce((total, item) => total + item, 0)
+    out.push(Math.round((sum / buf.length) * 10) / 10)
+  }
+  return out
+}
 
 /** Mean of the daily scores ending at `end`, same window the chart draws. */
 export function smoothedScoreAt(
@@ -239,18 +269,18 @@ export function headlineFromHistory(item: {
   }
 }
 
-export function totalSpark(item: {
-  history: Array<{ score: number }>
-  marketBeta?: number | null
-  market10?: Array<number | null> | null
-}, count = 24): number[] {
-  const out: number[] = []
-  for (let i = 0; i < item.history.length; i++) {
-    const raw = smoothedScoreAt(item.history, i)
-    if (raw == null) continue
-    out.push(totalOf(round1(raw), betaPoints(item.marketBeta, item.market10?.[i] ?? null)))
-  }
-  return out.slice(-count)
+/**
+ * Preview on each strategy card.
+ * Same series as the chart's red line: the 10-day environment score,
+ * over the same 6 months the chart opens on, still on a 0–100 scale.
+ */
+export function scoreSpark(item: { history: Array<{ date: string; score: number }> }): Array<number | null> {
+  const history = item.history
+  if (history.length < 2) return []
+  const smoothed = trailingScoreMean(history.map((point) => point.score))
+  const cutoff = monthsBefore(history[history.length - 1].date, ENV_CHART_MONTHS)
+  const start = history.findIndex((point) => point.date >= cutoff)
+  return smoothed.slice(start < 0 ? 0 : start)
 }
 
 export function emptyStrategy(key: string, name: string, group: string, why: string): EnvStrategy {
