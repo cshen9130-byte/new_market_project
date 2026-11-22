@@ -32,6 +32,13 @@ type TokenRecord = {
   totalTokens: number
   model: string
   questionPreview: string
+  channel?: "web" | "mcp"
+  tool?: string
+}
+
+function tokenSourceLabel(record: TokenRecord): string {
+  if (record.channel === "mcp") return record.tool === "kb_ask" ? "MCP 知识库问答" : `MCP ${record.tool || "工具"}`
+  return "网页知识库"
 }
 
 type DeployWindow = {
@@ -503,6 +510,7 @@ export default function AdminAccountsPage() {
               {tokenLoading ? "刷新中..." : "刷新"}
             </Button>
           </div>
+          <p className="mt-2 text-xs text-cyan-500/70">网页知识库问答和 MCP 的 kb_ask 都记在这里。填表时每个格子各算一次。</p>
           <Separator className="my-4 bg-cyan-500/30" />
           {tokenLoading ? (
             <div className="text-cyan-500">加载中...</div>
@@ -575,6 +583,7 @@ export default function AdminAccountsPage() {
                       <TableRow>
                         <TableHead className="text-cyan-400">时间</TableHead>
                         <TableHead className="text-cyan-400">用户</TableHead>
+                        <TableHead className="text-cyan-400">来源</TableHead>
                         <TableHead className="text-cyan-400">模型</TableHead>
                         <TableHead className="text-cyan-400 text-right">输入</TableHead>
                         <TableHead className="text-cyan-400 text-right">输出</TableHead>
@@ -587,6 +596,7 @@ export default function AdminAccountsPage() {
                         <TableRow key={r.id}>
                           <TableCell className="text-cyan-500 text-xs whitespace-nowrap">{new Date(r.timestamp).toLocaleString("zh-CN")}</TableCell>
                           <TableCell className="text-cyan-200">{r.userName}</TableCell>
+                          <TableCell className="text-cyan-400 text-xs whitespace-nowrap">{tokenSourceLabel(r)}</TableCell>
                           <TableCell className="text-cyan-500 text-xs">{r.model}</TableCell>
                           <TableCell className="text-cyan-200 text-right">{r.inputTokens.toLocaleString()}</TableCell>
                           <TableCell className="text-cyan-200 text-right">{r.outputTokens.toLocaleString()}</TableCell>

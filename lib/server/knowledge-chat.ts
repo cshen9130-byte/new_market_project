@@ -48,6 +48,8 @@ import {
   KB_SHORT_FILE_CHARS,
   assembleContext,
   buildFileBody,
+  cellFocusText,
+  neighborWindow,
   extractQueryAnchors,
   cellSourcesFromCitations,
   namesColumn,
@@ -1490,10 +1492,11 @@ async function buildMultiFileRetrievalContext(input: {
   inlineDocuments?: Array<{ name: string; text: string }>
   history?: KbChatHistoryTurn[]
   grounded?: boolean
+  contextCharBudget?: number
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const history = normalizeChatHistory(input.history)
-  const MAX_CONTEXT_CHARS = 28000
+  const MAX_CONTEXT_CHARS = input.contextCharBudget ?? 28000
   const parts: string[] = []
   const sources: string[] = []
 
@@ -1556,6 +1559,10 @@ async function buildRetrievalContext(input: {
   deepSearch?: boolean
   thinkingSearch?: boolean
   grounded?: boolean
+  /** MCP table cells send a short window instead of the whole note. */
+  compactCell?: boolean
+  /** Caps the characters placed in the model prompt. Website chat leaves this unset. */
+  contextCharBudget?: number
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const history = normalizeChatHistory(input.history)
@@ -1568,15 +1575,31 @@ async function buildRetrievalContext(input: {
   const filePaths = (input.filePaths ?? []).map((p) => String(p).trim()).filter(Boolean)
   const inlineDocuments = (input.inlineDocuments ?? []).filter((doc) => doc.name && doc.text?.trim())
   if (filePaths.length > 0 || inlineDocuments.length > 0) {
-    return buildMultiFileRetrievalContext({ question, filePaths, inlineDocuments, history, grounded: input.grounded })
+    return buildMultiFileRetrievalContext({
+      question,
+      filePaths,
+      inlineDocuments,
+      history,
+      grounded: input.grounded,
+      contextCharBudget: input.contextCharBudget,
+    })
   }
 
   // ── Single-file mode ──
   if (input.filePath) {
     const file = await getKnowledgeBaseFile(input.filePath)
     const paged = input.grounded ? await readKnowledgeFilePages(file.absolutePath, file.extension) : null
-    const text = paged?.text ?? await readFileDocumentText(file.absolutePath, file.extension)
-    const pages = paged?.pages ?? (text ? [{ num: 1, text }] : [])
+    const rawText = paged?.text ?? await readFileDocumentText(file.absolutePath, file.extension)
+    const singleCell = parseTableCellQuestion(question)
+    let text = rawText
+    if (input.compactCell && rawText && singleCell) {
+      text = cellFocusText(rawText, singleCell, input.contextCharBudget ?? 8_000)
+    } else if (input.contextCharBudget && rawText.length > input.contextCharBudget) {
+      const pieces: string[] = []
+      for (let i = 0; i < rawText.length; i += 800) pieces.push(rawText.slice(i, i + 800))
+      text = neighborWindow(pieces, question, input.contextCharBudget)
+    }
+    const pages = paged?.pages ?? (rawText ? [{ num: 1, text: rawText }] : [])
     const scopeLabel = file.relativePath
     const systemContent = kbSystem(
       text
@@ -1671,7 +1694,12 @@ async function buildRetrievalContext(input: {
   const passages: KbSearchHit[] = []
   for (const doc of ranked) {
     const loaded = await loadRankedFile(doc.source, memoryRows)
-    const body = buildFileBody({ fullText: loaded.fullText, chunks: loaded.chunks, question })
+    const body = buildFileBody({
+      fullText: loaded.fullText,
+      chunks: loaded.chunks,
+      question,
+      compactCell: Boolean(input.compactCell && cell),
+    })
     if (!body.text.trim()) continue
     pageIndex[doc.source] = loaded.pages
     parts.push({ source: doc.source, text: body.text })
@@ -1720,7 +1748,9 @@ async function buildRetrievalContext(input: {
     passages.push(...namedPassages)
     cellEmpty = named.length === 0
   }
-  const assembled = assembleContext(parts)
+  const assembled = input.contextCharBudget
+    ? assembleContext(parts, input.contextCharBudget)
+    : assembleContext(parts)
   const hasGraphExpanded = matches.some((m) => m.metadata?.graphExpanded)
   const systemNote = enableGraphRag && hasGraphExpanded
     ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。部分资料来自知识图谱关联扩展（标注[图谱扩展]），请综合利用。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
@@ -1767,6 +1797,8 @@ export async function askKnowledgeBaseQuestion(input: {
   grounded?: boolean
   /** Include retrieved snippets, scores, and pages. */
   includePassages?: boolean
+  /** Set by MCP kb_ask. Table cells and whole-file reads use a smaller prompt. */
+  compactCell?: boolean
 }) {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
@@ -1787,7 +1819,10 @@ export async function askKnowledgeBaseQuestion(input: {
     }
   }
   const cell = parseTableCellQuestion(question)
-  const ctx = await buildRetrievalContext(input)
+  const contextCharBudget = input.compactCell
+    ? (cell ? 12_000 : input.filePath ? 12_000 : undefined)
+    : undefined
+  const ctx = await buildRetrievalContext({ ...input, contextCharBudget })
   if (cell && ctx.cellEmpty) {
     return {
       answer: "暂无数据",

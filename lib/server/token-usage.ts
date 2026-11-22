@@ -1,9 +1,10 @@
 /**
  * Token usage tracking for DashScope/LangChain API calls.
- * Stored as JSON: {storageDir}/token_usage/records.json
+ * Older rows live in {storageDir}/token_usage/records.json.
+ * New rows are appended to records.jsonl so overlapping requests do not overwrite each other.
  */
 import { randomUUID } from "crypto"
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs"
+import { mkdirSync, existsSync, readFileSync, appendFileSync } from "fs"
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
 
@@ -19,6 +20,10 @@ export type TokenUsageRecord = {
   totalTokens: number
   model: string
   questionPreview: string   // first 80 chars of question
+  /** web = 网页知识库问答. mcp = WorkBuddy / API 工具调用. Older rows omit this and are web. */
+  channel?: "web" | "mcp"
+  /** Tool name when channel is mcp, e.g. kb_ask. */
+  tool?: string
 }
 
 export type UserTokenStats = {
@@ -41,31 +46,54 @@ function recordsFile(): string {
   return path.join(storageDir(), "records.json")
 }
 
-function readRecords(): TokenUsageRecord[] {
-  mkdirSync(storageDir(), { recursive: true })
+function journalFile(): string {
+  return path.join(storageDir(), "records.jsonl")
+}
+
+function readJsonRecords(): TokenUsageRecord[] {
   const file = recordsFile()
   if (!existsSync(file)) return []
   try { return JSON.parse(readFileSync(file, "utf-8")) } catch { return [] }
 }
 
-function writeRecords(records: TokenUsageRecord[]): void {
+function readJournalRecords(): TokenUsageRecord[] {
+  const file = journalFile()
+  if (!existsSync(file)) return []
+  try {
+    const out: TokenUsageRecord[] = []
+    for (const line of readFileSync(file, "utf-8").split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try { out.push(JSON.parse(trimmed) as TokenUsageRecord) } catch { /* skip a torn line */ }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function readRecords(): TokenUsageRecord[] {
   mkdirSync(storageDir(), { recursive: true })
-  writeFileSync(recordsFile(), JSON.stringify(records, null, 2))
+  const merged = [...readJsonRecords(), ...readJournalRecords()]
+  if (merged.length > 10000) return merged.slice(-10000)
+  return merged
+}
+
+/** Append one line. A short line is one write, so two Node processes do not overwrite each other. */
+function appendJournal(record: TokenUsageRecord): void {
+  mkdirSync(storageDir(), { recursive: true })
+  appendFileSync(journalFile(), `${JSON.stringify(record)}\n`, "utf8")
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export function appendTokenUsage(entry: Omit<TokenUsageRecord, "id" | "timestamp">): TokenUsageRecord {
-  const records = readRecords()
   const record: TokenUsageRecord = {
     id: randomUUID(),
     timestamp: new Date().toISOString(),
     ...entry,
   }
-  records.push(record)
-  // Keep last 10000 records to avoid unbounded growth
-  if (records.length > 10000) records.splice(0, records.length - 10000)
-  writeRecords(records)
+  appendJournal(record)
   return record
 }
 

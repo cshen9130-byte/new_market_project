@@ -107,6 +107,8 @@ export async function POST(req: Request) {
                       totalTokens: event.tokenUsage!.totalTokens,
                       model: event.model ?? "unknown",
                       questionPreview: String(body?.question || "").trim().slice(0, 80),
+                      channel: "web",
+                      tool: "kb_chat",
                     })
                   } catch {}
                 }
@@ -168,6 +170,8 @@ export async function POST(req: Request) {
           totalTokens: answer.tokenUsage!.totalTokens,
           model: answer.model ?? "unknown",
           questionPreview: String(body?.question || "").trim().slice(0, 80),
+          channel: "web",
+          tool: "kb_chat",
         })
       } catch {}
     }

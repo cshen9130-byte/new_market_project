@@ -506,7 +506,7 @@ async function kbSearch(args: Record<string, unknown>) {
   })
 }
 
-async function kbAsk(args: Record<string, unknown>) {
+async function kbAsk(account: McpAccount, args: Record<string, unknown>) {
   const question = str(args, "question")
   if (!question) throw new Error("请提供 question")
   const { askKnowledgeBaseQuestion } = await import("@/lib/server/knowledge-chat")
@@ -517,7 +517,27 @@ async function kbAsk(args: Record<string, unknown>) {
     modelMode: kbModelMode(args),
     grounded: true,
     includePassages: boolArg(args, "debug"),
+    compactCell: true,
   })
+  const usage = "tokenUsage" in result ? result.tokenUsage : undefined
+  if (usage && usage.totalTokens > 0) {
+    try {
+      const { appendTokenUsage } = await import("@/lib/server/token-usage")
+      appendTokenUsage({
+        userId: account.id,
+        userName: account.name,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        totalTokens: usage.totalTokens,
+        model: result.model ?? "unknown",
+        questionPreview: question.slice(0, 80),
+        channel: "mcp",
+        tool: "kb_ask",
+      })
+    } catch {
+      // Usage logging must not fail the answer.
+    }
+  }
   if ("ranking" in result && result.ranking) {
     return {
       answer: result.answer,
@@ -619,7 +639,7 @@ export async function callAccountMcpTool(
     case "kb_search":
       return kbSearch(args)
     case "kb_ask":
-      return kbAsk(args)
+      return kbAsk(account, args)
     case "investment_note_search": {
       const q = str(args, "q") || str(args, "question") || str(args, "keyword")
       const { searchWebsiteInvestmentNotes } = await import("@/lib/server/investment-note-query")

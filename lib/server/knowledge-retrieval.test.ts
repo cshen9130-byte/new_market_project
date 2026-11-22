@@ -6,6 +6,7 @@ import { describe, it } from "node:test"
 import {
   assembleContext,
   buildFileBody,
+  cellFocusText,
   extractQueryAnchors,
   extractSnippets,
   cellSourcesFromCitations,
@@ -165,6 +166,24 @@ describe("table cells", () => {
     )
     assert.equal(ranked.length, 1)
     assert.match(ranked[0].source, /衍复/)
+  })
+
+  it("keeps a cell window and drops the rest of a long note", () => {
+    const padding = "无关段落。".repeat(3000)
+    const note = `${padding}\n代表产品：千石资本量道对冲1号。基金经理程余。\n${padding}`
+    const focused = cellFocusText(note, { column: "量道", row: "代表产品" }, 4_500)
+    assert.match(focused, /千石资本量道对冲1号/)
+    assert.ok(focused.length <= 4_500)
+    assert.ok(focused.length < note.length / 5)
+    const body = buildFileBody({
+      fullText: note,
+      chunks: [],
+      question: cellQuestion,
+      compactCell: true,
+    })
+    assert.equal(body.coverage, "neighbors")
+    assert.match(body.text, /程余/)
+    assert.ok(body.text.length <= 6_000)
   })
 
   it("drops a trailing 暂无数据 when the cell already has a value", () => {

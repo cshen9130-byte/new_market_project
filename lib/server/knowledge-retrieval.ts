@@ -309,13 +309,74 @@ export function rankSources(hits: KbHit[], question: string, extraPaths: string[
   return ranked.filter((row) => pathMatchScore(row.source, question, anchors) > 0 || row.score >= 20)
 }
 
+const CELL_FILE_CHARS = 6_000
+
+/**
+ * Table-cell asks only need the header plus the paragraphs that name the
+ * column or the row. A 24k note sent once per cell is the same text many times.
+ */
+export function cellFocusText(
+  fullText: string,
+  cell: { column: string; row: string | null },
+  maxChars: number,
+): string {
+  const text = fullText.trim()
+  if (!text) return ""
+  if (text.length <= maxChars) return text
+  const cues = [cell.column, cell.row || ""].map((item) => item.trim()).filter((item) => item.length >= 2)
+  const slices: Array<{ start: number; end: number }> = [{ start: 0, end: Math.min(text.length, 2_000) }]
+  for (const cue of cues) {
+    let from = 0
+    let found = 0
+    while (found < 4) {
+      const at = text.indexOf(cue, from)
+      if (at < 0) break
+      slices.push({
+        start: Math.max(0, at - 350),
+        end: Math.min(text.length, at + cue.length + 1_200),
+      })
+      from = at + cue.length
+      found += 1
+    }
+  }
+  slices.sort((a, b) => a.start - b.start)
+  const merged: Array<{ start: number; end: number }> = []
+  for (const slice of slices) {
+    const last = merged[merged.length - 1]
+    if (last && slice.start <= last.end + 40) last.end = Math.max(last.end, slice.end)
+    else merged.push({ start: slice.start, end: slice.end })
+  }
+  const parts: string[] = []
+  let used = 0
+  for (const slice of merged) {
+    const piece = text.slice(slice.start, slice.end).trim()
+    if (!piece) continue
+    const sep = parts.length ? 2 : 0
+    if (used + sep + piece.length > maxChars) {
+      const room = maxChars - used - sep
+      if (room >= 80) parts.push(piece.slice(0, room))
+      break
+    }
+    parts.push(piece)
+    used += sep + piece.length
+  }
+  return parts.join("\n\n")
+}
+
 /** Whole file when it is short enough to answer from; otherwise a window around the stance. */
 export function buildFileBody(input: {
   fullText: string
   chunks: string[]
   question: string
+  /** MCP table cells: do not resend a whole short note. */
+  compactCell?: boolean
 }): { coverage: "full" | "neighbors"; text: string } {
   const full = input.fullText.trim()
+  const cell = parseTableCellQuestion(input.question)
+  if (input.compactCell && cell) {
+    const source = full || input.chunks.map((chunk) => chunk.trim()).filter(Boolean).join("\n\n")
+    return { coverage: "neighbors", text: cellFocusText(source, cell, CELL_FILE_CHARS) }
+  }
   if (full && full.length <= KB_SHORT_FILE_CHARS) {
     return { coverage: "full", text: full }
   }
