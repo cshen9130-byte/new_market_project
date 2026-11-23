@@ -20,17 +20,15 @@ export async function GET(req: Request) {
   if (raw && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     return NextResponse.json({ ok: false, error: "date 需要 YYYY-MM-DD" }, { status: 400 })
   }
-  // The button always asks for the latest day. That payload is the ETL file.
+  // The button always asks for the latest day. That payload is today's file.
   // A dated request is a one-off and is not stored over the daily snapshot.
+  // A missing today-file is recomputed. Serving an older file here left the
+  // page on 2026-11-19 after the evening job deleted the current snapshot.
   const cacheable = !raw
   if (cacheable && !nocache) {
     const cached = readCache(FILE_KEY)
     if (cached) {
       return NextResponse.json(cached, { headers: cacheHeaders })
-    }
-    const stale = findStaleCache("mom", QUANT_POSITIONS_CACHE_KEY, "", "")
-    if (stale) {
-      return NextResponse.json(stale.data, { headers: { ...cacheHeaders, "X-Mom-Cache": "stale" } })
     }
   }
   try {
@@ -54,6 +52,12 @@ export async function GET(req: Request) {
       })
     }
     console.error("[quant-positions]", err)
+    if (cacheable && !nocache) {
+      const stale = findStaleCache("mom", QUANT_POSITIONS_CACHE_KEY, "", "")
+      if (stale) {
+        return NextResponse.json(stale.data, { headers: { ...cacheHeaders, "X-Mom-Cache": "stale" } })
+      }
+    }
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }

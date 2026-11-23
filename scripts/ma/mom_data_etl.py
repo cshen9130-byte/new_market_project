@@ -884,6 +884,10 @@ def clear_mom_file_cache(*substrings: str) -> int:
         # 单账户 cache keys stay on disk; this ETL only advances MOM tables.
         if "account__" in p.name or "source=account" in p.name:
             continue
+        # 当日持仓 is one file per day. Deleting it makes the page serve the
+        # newest leftover file, which stayed on 2026-11-19 after later clears.
+        if "quant-positions" in p.name:
+            continue
         if substrings and not any(s in p.name for s in substrings):
             continue
         try:
@@ -894,6 +898,44 @@ def clear_mom_file_cache(*substrings: str) -> int:
     if removed:
         log.info("Cleared %d MOM cache file(s)", removed)
     return removed
+
+
+def rebuild_quant_positions_cache() -> None:
+    """Rewrite today's 量化策略分析 当日持仓 file from the database.
+
+    The page reads that file and does not scan holdings on open. The evening
+    job used to delete it and leave the previous snapshot on screen.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    script = project_root / "scripts" / "ma" / "precompute_quant_positions.ts"
+    tsx = project_root / "node_modules" / ".bin" / "tsx"
+    if not script.is_file() or not tsx.is_file():
+        log.warning("quant positions cache rebuild skipped: tsx or script missing")
+        return
+    log.info("Rebuilding 量化策略分析 当日持仓 cache …")
+    try:
+        proc = subprocess.run(
+            [str(tsx), str(script)],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=os.environ,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("quant positions cache rebuild timed out")
+        return
+    except Exception as exc:
+        log.warning("quant positions cache rebuild failed: %s", exc)
+        return
+    if proc.returncode != 0:
+        log.warning(
+            "quant positions cache rebuild failed: %s",
+            (proc.stderr or proc.stdout or "")[:800],
+        )
+        return
+    log.info("quant positions cache rebuild: %s", (proc.stdout or "").strip()[:500])
 
 
 def run_market_data_steps(conn) -> None:
@@ -2177,8 +2219,10 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
 
         # Positions and/or NHCI may have advanced. Drop every MOM chart cache
         # from today; a partial clear left 持仓 / VaR on the previous session.
+        # Then rewrite 当日持仓 so the page is not left on the previous file.
         if ok_count > 0 or not skip_market_data:
             clear_mom_file_cache()
+            rebuild_quant_positions_cache()
 
         return 0 if err_count == 0 else 2
 

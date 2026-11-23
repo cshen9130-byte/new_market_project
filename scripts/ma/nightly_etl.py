@@ -4646,6 +4646,10 @@ def clear_mom_file_cache(*substrings: str) -> int:
         # 单账户 cache keys stay on disk; this ETL only advances MOM / market tables.
         if "account__" in p.name or "source=account" in p.name:
             continue
+        # 当日持仓 is one file per day. Deleting it makes the page serve the
+        # newest leftover file, which stayed on 2026-11-19 after later clears.
+        if "quant-positions" in p.name:
+            continue
         if substrings and not any(s in p.name for s in substrings):
             continue
         try:
