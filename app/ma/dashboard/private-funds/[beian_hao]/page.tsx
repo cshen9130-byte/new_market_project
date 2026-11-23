@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
 import { PRIVATE_FUND_BENCHMARK_OPTIONS as BENCHMARK_OPTIONS } from "@/lib/ma/private-fund-benchmark-options"
+import { PrivateFundBenchmarkMenuItems } from "@/components/ma/private-fund-benchmark-menu-items"
 import { resolveDefaultBenchmarkKey } from "@/lib/ma/team-benchmark"
 import { computeFundNavMetrics, type FundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
 import { isWeekendIsoDate, countChinaTradingDaysInclusive } from "@/lib/nav-trading-day"
@@ -2209,19 +2210,14 @@ export default function PrivateFundDetailPage() {
                 <ChevronDown className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="max-h-80 w-[200px] overflow-y-auto p-1">
-              {BENCHMARK_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.key || "none"}
-                  onClick={() => {
-                    setFilterBench(option.key)
-                    setAppliedBench(option.key)
-                  }}
-                  className={option.key === filterBench ? "font-medium text-zinc-900" : "text-zinc-600"}
-                >
-                  {option.label}
-                </DropdownMenuItem>
-              ))}
+            <DropdownMenuContent align="start" className="max-h-96 w-[220px] overflow-y-auto p-1">
+              <PrivateFundBenchmarkMenuItems
+                selectedKey={filterBench}
+                onSelect={(key) => {
+                  setFilterBench(key)
+                  setAppliedBench(key)
+                }}
+              />
               <DropdownMenuSeparator />
               <div className="mt-1 rounded-md bg-zinc-50 px-1 py-1">
                 <DropdownMenuItem

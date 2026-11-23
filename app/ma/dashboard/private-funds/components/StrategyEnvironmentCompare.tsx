@@ -10,7 +10,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { PRIVATE_FUND_BENCHMARK_OPTIONS, privateFundBenchmarkLabel } from "@/lib/ma/private-fund-benchmark-options"
+import { privateFundBenchmarkLabel } from "@/lib/ma/private-fund-benchmark-options"
+import { PrivateFundBenchmarkMenuItems } from "@/components/ma/private-fund-benchmark-menu-items"
 import { ENV_CHART_MONTHS, monthsBefore, trailingScoreMean } from "@/lib/ma/strategy-environment"
 import type { StrategyComparePayload } from "@/lib/server/strategy-environment-compare"
 
@@ -608,22 +609,12 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
                 <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="max-h-80 w-[200px] overflow-y-auto p-1">
-              <DropdownMenuItem
-                onClick={() => setBenchKey("")}
-                className={!benchKey ? "font-medium text-zinc-900" : "text-zinc-600"}
-              >
-                默认
-              </DropdownMenuItem>
-              {PRIVATE_FUND_BENCHMARK_OPTIONS.filter((option) => option.key).map((option) => (
-                <DropdownMenuItem
-                  key={option.key}
-                  onClick={() => setBenchKey(option.key)}
-                  className={option.key === benchKey ? "font-medium text-zinc-900" : "text-zinc-600"}
-                >
-                  {option.label}
-                </DropdownMenuItem>
-              ))}
+            <DropdownMenuContent align="start" className="max-h-96 w-[220px] overflow-y-auto p-1">
+              <PrivateFundBenchmarkMenuItems
+                selectedKey={benchKey}
+                onSelect={setBenchKey}
+                emptyLabel="默认"
+              />
               <DropdownMenuSeparator />
               <div className="mt-1 rounded-md bg-zinc-50 px-1 py-1">
                 <DropdownMenuItem

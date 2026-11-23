@@ -28,7 +28,7 @@ import {
   type SavedFundCompareFund,
 } from "@/lib/ma-fund-compare-storage"
 import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
-import { PRIVATE_FUND_BENCHMARK_OPTIONS as BENCHMARK_OPTIONS } from "@/lib/ma/private-fund-benchmark-options"
+import { PRIVATE_FUND_BENCHMARK_OPTIONS as BENCHMARK_OPTIONS, groupedPrivateFundBenchmarkOptions } from "@/lib/ma/private-fund-benchmark-options"
 import { DateInput } from "@/components/ui/date-input"
 import {
   filterPointsByFrequency,
@@ -691,7 +691,12 @@ export function FundCompareDetailView({
             onChange={(e) => setFilterBench(e.target.value as typeof filterBench)}
             className="border rounded px-2 py-1 bg-white min-w-[140px]"
           >
-            {BENCHMARK_OPTIONS.map((o) => <option key={o.key || "none"} value={o.key}>{o.label}</option>)}
+            {BENCHMARK_OPTIONS.filter((o) => !o.key).map((o) => <option key={o.key || "none"} value={o.key}>{o.label}</option>)}
+            {groupedPrivateFundBenchmarkOptions().map((entry) => (
+              <optgroup key={entry.group} label={entry.group}>
+                {entry.options.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </optgroup>
+            ))}
           </select>
         </div>
         <label className="inline-flex items-center gap-1.5 cursor-pointer">

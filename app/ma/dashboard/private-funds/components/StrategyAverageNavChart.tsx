@@ -10,7 +10,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { PRIVATE_FUND_BENCHMARK_OPTIONS, privateFundBenchmarkLabel } from "@/lib/ma/private-fund-benchmark-options"
+import { privateFundBenchmarkLabel } from "@/lib/ma/private-fund-benchmark-options"
+import { PrivateFundBenchmarkMenuItems } from "@/components/ma/private-fund-benchmark-menu-items"
 import type { StrategyNavOverlay } from "@/lib/server/strategy-environment-compare"
 
 const COMMON_BENCHMARKS_SETTINGS_HREF = "/ma/dashboard/settings?tab=common-benchmarks"
@@ -340,16 +341,8 @@ export function StrategyAverageNavChart({ activeKey }: { activeKey: string }) {
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="max-h-80 w-[200px] overflow-y-auto p-1">
-                {PRIVATE_FUND_BENCHMARK_OPTIONS.map((option) => (
-                  <DropdownMenuItem
-                    key={option.key || "none"}
-                    onClick={() => setBenchKey(option.key)}
-                    className={option.key === benchKey ? "font-medium text-zinc-900" : "text-zinc-600"}
-                  >
-                    {option.label}
-                  </DropdownMenuItem>
-                ))}
+              <DropdownMenuContent align="end" className="max-h-96 w-[220px] overflow-y-auto p-1">
+                <PrivateFundBenchmarkMenuItems selectedKey={benchKey} onSelect={setBenchKey} />
                 <DropdownMenuSeparator />
                 <div className="mt-1 rounded-md bg-zinc-50 px-1 py-1">
                   <DropdownMenuItem

@@ -51,8 +51,8 @@ INDEX_SPECS: list[tuple[str, list[tuple[str, str]]]] = [
     ("000985.SH", [("em", "1.000985"), ("qq", "sh000985"), ("sina", "sh000985"), ("csindex", "000985")]),
     ("000001.SH", [("em", "1.000001"), ("qq", "sh000001"), ("sina", "sh000001"), ("csindex", "000001")]),
     ("000510.SH", [("em", "1.000510"), ("qq", "sh000510"), ("sina", "sh000510"), ("csindex", "000510")]),
-    ("HSI.HI", [("em", "100.HSI"), ("qq", "hkHSI")]),
-    ("HSTECH.HI", [("em", "124.HSTECH"), ("qq_hk", "hkHSTECH")]),
+    ("HSI.HI", [("ak_hk", "HSI"), ("em", "100.HSI"), ("qq", "hkHSI")]),
+    ("HSTECH.HI", [("ak_hk", "HSTECH"), ("em", "124.HSTECH"), ("qq_hk", "hkHSTECH")]),
     ("000688.SH", [("em", "1.000688"), ("qq", "sh000688"), ("sina", "sh000688")]),
     ("899050.BJ", [("sina", "bj899050"), ("qq", "bj899050"), ("em", "0.899050")]),
     ("399372.SZ", [("em", "0.399372"), ("qq", "sz399372"), ("sina", "sz399372")]),
@@ -289,6 +289,29 @@ def fetch_sw(code: str, start: str, end: str) -> list[dict]:
     return out
 
 
+def fetch_ak_hk(symbol: str, start: str, end: str) -> list[dict]:
+    try:
+        import akshare as ak
+        df = ak.stock_hk_index_daily_sina(symbol=symbol)
+    except Exception as exc:
+        _log(f"ak_hk {symbol}: {exc}")
+        return []
+    if df is None or getattr(df, "empty", True):
+        return []
+    date_col = next((c for c in df.columns if str(c).lower() in ("date", "日期")), None)
+    close_col = next((c for c in df.columns if str(c).lower() in ("close", "收盘")), None)
+    if not date_col or not close_col:
+        return []
+    out: list[dict] = []
+    for _, r in df.iterrows():
+        d = str(r.get(date_col, ""))[:10]
+        close = _num(r.get(close_col))
+        if close is None or not _in_range(d, start, end):
+            continue
+        out.append({"date": d, "close": close, "amount": None, "source": "akshare_sina"})
+    return out
+
+
 def fetch_one(kind: str, symbol: str, start: str, end: str, lmt: int) -> list[dict]:
     if kind == "em":
         return fetch_em(symbol, start, end, lmt)
@@ -298,6 +321,8 @@ def fetch_one(kind: str, symbol: str, start: str, end: str, lmt: int) -> list[di
         return fetch_qq(symbol, start, end, lmt, hk=True)
     if kind == "sina":
         return fetch_sina(symbol, start, end, lmt)
+    if kind == "ak_hk":
+        return fetch_ak_hk(symbol, start, end)
     if kind == "csindex":
         return fetch_csindex(symbol, start, end)
     if kind == "sw":
@@ -376,7 +401,7 @@ def main() -> None:
         start_date = (datetime.today() - timedelta(days=400)).strftime("%Y-%m-%d")
 
     span = (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days
-    lmt = 40 if span <= 45 else min(1200, max(80, span + 10))
+    lmt = 40 if span <= 45 else min(4000, max(80, span + 40))
 
     data: list[dict] = []
     errors: list[str] = []
