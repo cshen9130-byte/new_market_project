@@ -27,7 +27,7 @@ import {
   type StrategyEnvironmentPayload,
 } from "@/lib/ma/strategy-environment"
 import { UNDERLYING_CN_LABELS } from "@/lib/option-iv-labels"
-import { query, queryUnbounded } from "@/lib/db"
+import { queryUnbounded } from "@/lib/db"
 import { loadQuantExtras, type QuantPrint } from "@/lib/server/strategy-environment-quant"
 import { loadPrivateFundBenchmarkSeries } from "@/lib/server/private-fund-benchmarks"
 import { readStrategySnapshot, writeStrategySnapshot } from "@/lib/server/strategy-environment-snapshot"
@@ -244,8 +244,10 @@ async function loadLimitUps(): Promise<Array<{ date: string; code: string }>> {
   return rows.map((row) => ({ date: ymd(row.trade_date), code: row.code }))
 }
 
+// These reads sit beside the full A-share scan. The pool's 60s statement
+// timeout used to cancel them, and the snapshot then stored an empty sleeve.
 async function loadIndexes(): Promise<Map<string, IndexDay[]>> {
-  const rows = await query<{
+  const rows = await queryUnbounded<{
     trade_date: string
     ts_code: string
     close: string | number
@@ -270,7 +272,7 @@ async function loadIndexes(): Promise<Map<string, IndexDay[]>> {
 }
 
 async function loadFutures(): Promise<ContractRow[]> {
-  const rows = await query<{
+  const rows = await queryUnbounded<{
     trade_date: string
     contract: string
     open: string | number | null
@@ -312,7 +314,7 @@ async function loadFutures(): Promise<ContractRow[]> {
 }
 
 async function loadSpots(): Promise<Map<string, Map<string, number>>> {
-  const rows = await query<{ trade_date: string; symbol: string; close: string | number }>(
+  const rows = await queryUnbounded<{ trade_date: string; symbol: string; close: string | number }>(
     `SELECT DISTINCT ON (trade_date, upper(symbol))
             trade_date::text AS trade_date,
             upper(symbol) AS symbol,
@@ -336,7 +338,7 @@ async function loadSpots(): Promise<Map<string, Map<string, number>>> {
 }
 
 async function loadCommodities(): Promise<Map<string, CommodityBar[]>> {
-  const rows = await query<{
+  const rows = await queryUnbounded<{
     trade_date: string
     code: string
     close: string | number
@@ -374,7 +376,7 @@ async function loadCommodities(): Promise<Map<string, CommodityBar[]>> {
 }
 
 async function loadIv(): Promise<IvPoint[]> {
-  const rows = await query<{ trade_date: string; underlying_key: string; iv: string | number }>(
+  const rows = await queryUnbounded<{ trade_date: string; underlying_key: string; iv: string | number }>(
     `SELECT trade_date::text AS trade_date, underlying_key, iv::float8 AS iv
      FROM raw_option_iv_qvix_daily
      WHERE underlying_key IN ('50etf','50index','300etf','300index','500etf','500index','1000index','1000etf','cyb','kcb','kcb_efund')
@@ -390,7 +392,7 @@ async function loadIv(): Promise<IvPoint[]> {
 }
 
 async function loadCommodityIv(): Promise<IvPoint[]> {
-  const rows = await query<{ trade_date: string; underlying_key: string; iv: string | number }>(
+  const rows = await queryUnbounded<{ trade_date: string; underlying_key: string; iv: string | number }>(
     `SELECT trade_date::text AS trade_date, underlying_key, iv::float8 AS iv
      FROM raw_commodity_option_iv_daily
      WHERE trade_date >= DATE '2015-01-01'
@@ -1756,6 +1758,33 @@ function shiftIso(iso: string, days: number): string {
   return date.toISOString().slice(0, 10)
 }
 
+function hasHistory(item: { history?: Array<unknown> } | null | undefined): boolean {
+  return (item?.history?.length ?? 0) > 0
+}
+
+/**
+ * A timed-out side query used to be saved as an empty sleeve. The page then
+ * kept showing that empty card, because it reads the snapshot and does not
+ * rescore on open. Keep the last scored sleeve when a rebuild comes back blank.
+ */
+async function keepScoredStrategies(fresh: StrategyEnvironmentPayload): Promise<StrategyEnvironmentPayload> {
+  const stored = await readStrategySnapshot<StrategyEnvironmentPayload>("board")
+  const previous = stored?.body?.strategies ?? []
+  if (!previous.length) return fresh
+  let kept = 0
+  const strategies = fresh.strategies.map((item) => {
+    if (hasHistory(item)) return item
+    const old = previous.find((prev) => prev.key === item.key)
+    if (!hasHistory(old)) return item
+    kept += 1
+    console.warn(`[strategy-environment] ${item.key} came back empty (${item.headline}); kept the stored score`)
+    return old as EnvStrategy
+  })
+  if (!kept) return fresh
+  const asOf = strategies.map((item) => item.asOf).filter((item): item is string => !!item).sort().at(-1) ?? fresh.asOf
+  return { asOf, strategies }
+}
+
 async function compute(): Promise<StrategyEnvironmentPayload> {
   const [stock, limitUps, indexes, futures, spots, commodities, iv, commodityIv, extras] = await Promise.all([
     safe("stock", loadStock, [] as StockDay[]),
@@ -1801,7 +1830,7 @@ export async function loadStrategyEnvironment(force = false): Promise<StrategyEn
     }
   }
   const started = Date.now()
-  const data = await compute()
+  const data = await keepScoredStrategies(await compute())
   console.info(`[strategy-environment] computed in ${Date.now() - started}ms asOf=${data.asOf ?? "none"}`)
   cache = { at: Date.now(), data }
   try {

@@ -13,8 +13,9 @@ let running: Promise<void> | null = null
 
 export async function refreshStrategyEnvironmentDaily(force = false): Promise<void> {
   if (!force) {
-    const existing = await readStrategySnapshot("board")
-    if (existing && Date.now() - existing.updatedAt < FRESH_MS) {
+    const existing = await readStrategySnapshot<{ strategies?: Array<{ history?: unknown[] }> }>("board")
+    const scored = existing?.body?.strategies?.filter((item) => (item.history?.length ?? 0) > 0).length ?? 0
+    if (existing && scored >= 6 && Date.now() - existing.updatedAt < FRESH_MS) {
       console.log("[strategy-environment] snapshot is under 18h old, skip")
       return
     }

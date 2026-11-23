@@ -1,4 +1,4 @@
-import { PROD_SECTOR, prodLabel } from "@/lib/ma/prod-sector"
+import { PROD_SECTOR } from "@/lib/ma/prod-sector"
 
 export type VarProductInput = { prod: string; mv: number; sigma: number }
 
@@ -32,29 +32,4 @@ export function varConcentrationShares(
     .map(([name, value]) => ({ name, pct: pct(value) }))
     .sort((a, b) => b.pct - a.pct)
   return { products: productShares, sectors: sectorShares }
-}
-
-export function momVarConcentrationMessage(input: {
-  date: string
-  products: readonly ConcentrationShare[]
-  sectors: readonly ConcentrationShare[]
-  productPct: number
-  sectorPct: number
-}): { title: string; body: string; href: string } | null {
-  const hotProducts = input.products.filter((item) => item.pct > input.productPct)
-  const hotSectors = input.sectors.filter((item) => item.pct > input.sectorPct)
-  if (hotProducts.length === 0 && hotSectors.length === 0) return null
-  const lines = [
-    ...hotProducts.map((item) => `${prodLabel(item.name)} 的品种边际波动贡献 ${formatPct(item.pct)}%，超过你设置的 ${formatPct(input.productPct)}%。`),
-    ...hotSectors.map((item) => `${item.name} 的板块边际波动贡献 ${formatPct(item.pct)}%，超过你设置的 ${formatPct(input.sectorPct)}%。`),
-  ]
-  return {
-    title: `${input.date} 日间风控集中度`,
-    body: lines.join(""),
-    href: "/ma/dashboard/mom-analysis/risk-report?tab=intraday#section-intraday-sandbox",
-  }
-}
-
-function formatPct(value: number): string {
-  return (Math.round(value * 10) / 10).toString()
 }

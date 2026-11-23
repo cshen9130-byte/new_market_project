@@ -614,6 +614,12 @@ export async function runPublicEnhancedWeeklyJob(jobId: string, weekEnd: string)
     const result = await generatePublicEnhancedWeeklyWorkbook(weekEnd)
     await mkdir(jobDir(jobId), { recursive: true })
     await writeFile(path.join(jobDir(jobId), "report.xlsx"), result.buffer)
+    try {
+      const { saveWeeklyReviewExcelCache } = await import("@/lib/server/weekly-review-excel-cache")
+      await saveWeeklyReviewExcelCache("public-enhanced", weekEnd, [], result)
+    } catch (cacheErr) {
+      console.error("[public-enhanced-weekly-review] cache save failed:", cacheErr)
+    }
     await writeJobStatus({
       status: "done",
       jobId,

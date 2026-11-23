@@ -250,6 +250,9 @@ cron.schedule("30 18 * * 1-5", () => {
     cron.schedule(expr, () => {
       void (async () => {
         try {
+          const { runScheduledWeeklyReviewExcel } = await import("./weekly-review-excel-cache")
+          const generated = await runScheduledWeeklyReviewExcel(`coverage-cron:${expr}`)
+          console.log(`[weekly-review-excel] ${expr} ${JSON.stringify(generated.items)}`)
           const { notifyManagedSystemWeeklyIfReady, notifyWeeklyStrategyExcelIfReady } = await import(
             "./system-notifications"
           )
@@ -277,11 +280,10 @@ cron.schedule("30 18 * * 1-5", () => {
         console.log(`[us-macro-bell] ${result.reason} events=${result.events} sent=${result.sent}`)
         const launches = await notifyFeatureLaunches("morning")
         console.log(`[feature-launch] ${launches.reason} pending=${launches.pending} sent=${launches.sent}`)
-        const { notifyMomDecisionSignals, notifyMomVarBudget, notifyMomVarConcentration } = await import("./system-notifications")
-        const momVar = await notifyMomVarConcentration("morning")
-        console.log(`[mom-var-bell] ${momVar.reason} ${momVar.date} sent=${momVar.sent}`)
-        const momBudget = await notifyMomVarBudget("morning")
-        console.log(`[mom-var-budget] ${momBudget.reason} ${momBudget.date} sent=${momBudget.sent}`)
+        const { notifyMomDecisionSignals, notifyMomVarPolicy } = await import("./system-notifications")
+        const momPolicy = await notifyMomVarPolicy("morning")
+        console.log(`[mom-var-bell] ${momPolicy.concentration.reason} ${momPolicy.concentration.date} sent=${momPolicy.concentration.sent}`)
+        console.log(`[mom-var-budget] ${momPolicy.budget.reason} ${momPolicy.budget.date} sent=${momPolicy.budget.sent}`)
         const momDecision = await notifyMomDecisionSignals("morning")
         console.log(`[mom-decision-bell] ${momDecision.reason} ${momDecision.date} sent=${momDecision.sent}`)
         const { notifyMacroRecovery } = await import("./system-notifications")
@@ -303,15 +305,14 @@ cron.schedule("30 18 * * 1-5", () => {
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
 
   // 18:30 Beijing weekdays: the latest MOM book is usually in by then.
-  // Variety share above the account's limit, or sector share above its limit.
+  // Concentration and budget bells use the written MOM-lite lines.
   cron.schedule("30 18 * * 1-5", () => {
     void (async () => {
       try {
-        const { notifyMomDecisionSignals, notifyMomVarBudget, notifyMomVarConcentration } = await import("./system-notifications")
-        const momVar = await notifyMomVarConcentration("evening")
-        console.log(`[mom-var-bell] ${momVar.reason} ${momVar.date} sent=${momVar.sent}`)
-        const momBudget = await notifyMomVarBudget("evening")
-        console.log(`[mom-var-budget] ${momBudget.reason} ${momBudget.date} sent=${momBudget.sent}`)
+        const { notifyMomDecisionSignals, notifyMomVarPolicy } = await import("./system-notifications")
+        const momPolicy = await notifyMomVarPolicy("evening")
+        console.log(`[mom-var-bell] ${momPolicy.concentration.reason} ${momPolicy.concentration.date} sent=${momPolicy.concentration.sent}`)
+        console.log(`[mom-var-budget] ${momPolicy.budget.reason} ${momPolicy.budget.date} sent=${momPolicy.budget.sent}`)
         const momDecision = await notifyMomDecisionSignals("evening")
         console.log(`[mom-decision-bell] ${momDecision.reason} ${momDecision.date} sent=${momDecision.sent}`)
         const { notifyMacroRecovery } = await import("./system-notifications")
@@ -484,6 +485,19 @@ cron.schedule("30 18 * * 1-5", () => {
   // Nightly 22:30 Beijing: system weekly reports, plus 月报 / 季报 / 持有期报告 in the same job.
   // Idempotent: skips products that already have the latest available-data week.
   // Skipped on Windows->:5433 tunnel unless forced (same as other heavy ETLs).
+  // Daily at 22:45: rebuild 周度回顾 Excel for the last three weeks with >80% NAV coverage.
+  cron.schedule("45 22 * * *", () => {
+    void (async () => {
+      try {
+        const { runScheduledWeeklyReviewExcel } = await import("./weekly-review-excel-cache")
+        const generated = await runScheduledWeeklyReviewExcel("daily-cron")
+        console.log(`[weekly-review-excel] daily ${JSON.stringify(generated.items)}`)
+      } catch (e) {
+        console.error("[weekly-review-excel] daily scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   cron.schedule("30 22 * * *", () => {
     void (async () => {
       try {

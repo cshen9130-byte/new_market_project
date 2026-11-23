@@ -576,6 +576,29 @@ const COL_FORMULAS: Record<Exclude<RowSortCol, "netMv" | "netPctNorm"> | "mktVol
   margVol: "风险贡献占比 = 该组边际方差贡献 ÷ 组合边际方差合计",
 }
 
+function SortMark({ dir }: { dir: "asc" | "desc" | null }) {
+  return (
+    <span aria-hidden className="shrink-0 text-muted-foreground text-[10px] leading-none">
+      {dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}
+    </span>
+  )
+}
+
+/** Two nowrap lines plus a sort mark beside them. The mark must not wrap the name onto a third row. */
+function TwoLineSortLabel({ lines, dir }: { lines: readonly [string, string]; dir: "asc" | "desc" | null }) {
+  return (
+    <span className="inline-flex w-max max-w-none items-center justify-end gap-0.5">
+      <span className="flex flex-col items-end leading-tight">
+        <span className="whitespace-nowrap">{lines[0]}</span>
+        <span className="whitespace-nowrap">{lines[1]}</span>
+      </span>
+      <SortMark dir={dir} />
+    </span>
+  )
+}
+
+const HEAD_CELL = "px-[3px] py-1 font-medium whitespace-nowrap cursor-pointer select-none hover:bg-muted/60"
+
 function ColumnHeader({ formula, className, onClick, children }: {
   formula: string
   className: string
@@ -699,7 +722,7 @@ function ColumnHeader({ formula, className, onClick, children }: {
           <div className="w-full">
             <Card className="overflow-x-auto">
               <CardContent className="p-0">
-                <table className="w-full text-xs table-auto">
+                <table className="w-full min-w-max text-xs table-auto">
                   <thead className="sticky top-0 bg-card z-10">
                     <tr className="border-b bg-muted/40">
                       {(["sector","longMv","longPct","shortMv","shortPct","netMv","netPctNorm"] as const).map((col, ci) => {
@@ -715,17 +738,25 @@ function ColumnHeader({ formula, className, onClick, children }: {
                           <ColumnHeader
                             key={col}
                             formula={formula}
-                            className={`${ci === 0 ? "text-left" : "text-right"} px-1 py-1.5 font-medium cursor-pointer select-none hover:bg-muted/60 ${isNet ? "leading-tight whitespace-normal" : "whitespace-nowrap"}`}
+                            className={`${ci === 0 ? "text-left" : "text-right"} ${HEAD_CELL}`}
                             onClick={() => setSort(prev =>
                               prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
                             )}
                           >
-                            <span className="inline-flex items-center justify-end gap-0.5">
-                              {isNet ? (
-                                <span className="leading-tight">{netMode === "corr" ? "多空相关" : "多空直接"}<br />{col === "netMv" ? "轧差市值" : "轧差占比"}</span>
-                              ) : COL_LABELS[col]}
-                              <span className="text-muted-foreground text-[10px]">{dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}</span>
-                            </span>
+                            {isNet ? (
+                              <TwoLineSortLabel
+                                lines={[
+                                  netMode === "corr" ? "多空相关" : "多空直接",
+                                  col === "netMv" ? "轧差市值" : "轧差占比",
+                                ]}
+                                dir={dir}
+                              />
+                            ) : (
+                              <span className="inline-flex items-center justify-end gap-0.5">
+                                {COL_LABELS[col]}
+                                <SortMark dir={dir} />
+                              </span>
+                            )}
                           </ColumnHeader>
                         )
                       })}
@@ -733,34 +764,31 @@ function ColumnHeader({ formula, className, onClick, children }: {
                         {
                           col: "mktMetric" as const,
                           formula: mktColMode === "avgCorr" ? AVG_CORR_FORMULA : COL_FORMULAS.mktVol,
-                          label: mktColMode === "avgCorr" ? <>板块内品种<br />平均相关</> : <>板块市场<br />波动</>,
+                          lines: (mktColMode === "avgCorr" ? ["板块内品种", "平均相关"] : ["板块市场", "波动"]) as [string, string],
                         },
                         {
                           col: "holdVol" as const,
                           formula: COL_FORMULAS.holdVol,
-                          label: <>板块持仓<br />波动</>,
+                          lines: ["板块持仓", "波动"] as [string, string],
                         },
                         {
                           col: "margVol" as const,
                           formula: COL_FORMULAS.margVol,
-                          label: <>风险贡献<br />占比</>,
+                          lines: ["风险贡献", "占比"] as [string, string],
                         },
-                      ]).map(({ col, formula, label }) => {
+                      ]).map(({ col, formula, lines }) => {
                         const active = sort?.col === col
                         const dir = active ? sort!.dir : null
                         return (
                           <ColumnHeader
                             key={col}
                             formula={formula}
-                            className="text-right px-1 py-1.5 font-medium leading-tight whitespace-normal cursor-pointer select-none hover:bg-muted/60"
+                            className={`text-right ${HEAD_CELL}`}
                             onClick={() => setSort(prev =>
                               prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
                             )}
                           >
-                            <span className="inline-flex items-center justify-end gap-0.5">
-                              <span className="leading-tight">{label}</span>
-                              <span className="text-muted-foreground text-[10px]">{dir === "desc" ? "↓" : dir === "asc" ? "↑" : "↕"}</span>
-                            </span>
+                            <TwoLineSortLabel lines={lines} dir={dir} />
                           </ColumnHeader>
                         )
                       })}
@@ -769,28 +797,28 @@ function ColumnHeader({ formula, className, onClick, children }: {
                   <tbody className="divide-y divide-border">
                     {sorted.map(row => (
                       <tr key={row.sector} className="hover:bg-muted/30">
-                        <td className="px-1.5 py-1.5 font-medium whitespace-nowrap">{row.sector}</td>
-                        <td className="px-1.5 py-1.5 text-right">{Math.round(row.longMv).toLocaleString("zh-CN")}</td>
-                        <td className="px-1.5 py-1.5 text-right">{row.longPct.toFixed(1)}%</td>
-                        <td className="px-1.5 py-1.5 text-right">{Math.round(row.shortMv).toLocaleString("zh-CN")}</td>
-                        <td className="px-1.5 py-1.5 text-right">{row.shortPct.toFixed(1)}%</td>
-                        <td className={`px-1.5 py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                        <td className="px-[3px] py-1.5 font-medium whitespace-nowrap">{row.sector}</td>
+                        <td className="px-[3px] py-1.5 text-right">{Math.round(row.longMv).toLocaleString("zh-CN")}</td>
+                        <td className="px-[3px] py-1.5 text-right">{row.longPct.toFixed(1)}%</td>
+                        <td className="px-[3px] py-1.5 text-right">{Math.round(row.shortMv).toLocaleString("zh-CN")}</td>
+                        <td className="px-[3px] py-1.5 text-right">{row.shortPct.toFixed(1)}%</td>
+                        <td className={`px-[3px] py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
                           {row.corrMissing ? "—" : Math.round(row.netMv).toLocaleString("zh-CN")}
                         </td>
-                        <td className={`px-1.5 py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                        <td className={`px-[3px] py-1.5 text-right ${row.corrMissing ? "text-muted-foreground" : row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
                           {row.corrMissing ? "—" : `${row.netPctNorm.toFixed(1)}%`}
                         </td>
-                        <td className="px-1.5 py-1.5 text-right" title={mktColMode === "avgCorr" ? "板块内品种平均相关" : "20日年化波动率"}>
+                        <td className="px-[3px] py-1.5 text-right" title={mktColMode === "avgCorr" ? "板块内品种平均相关" : "20日年化波动率"}>
                           {mktColMode === "avgCorr"
                             ? (avgCorrLatestMap[row.sector] != null ? avgCorrLatestMap[row.sector]!.toFixed(2) : "—")
                             : (mktLatestMap[row.sector] != null ? `${mktLatestMap[row.sector]!.toFixed(1)}%` : "—")}
                         </td>
-                        <td className="px-1.5 py-1.5 text-right" title="持仓市值加权20日年化波动率">
+                        <td className="px-[3px] py-1.5 text-right" title="持仓市值加权20日年化波动率">
                           {holdLatestMap[row.sector] != null
                             ? `${holdLatestMap[row.sector]!.toFixed(1)}%`
                             : "—"}
                         </td>
-                        <td className="px-1.5 py-1.5 text-right">
+                        <td className="px-[3px] py-1.5 text-right">
                           {varLatestMap[row.sector] != null && varDates.length > 0
                             ? `${varLatestMap[row.sector].toFixed(1)}%`
                             : "—"}
@@ -799,20 +827,20 @@ function ColumnHeader({ formula, className, onClick, children }: {
                     ))}
                     {totals && (
                       <tr className="border-t-2 font-semibold bg-muted/40">
-                        <td className="px-1.5 py-1.5">合计</td>
-                        <td className="px-1.5 py-1.5 text-right">{Math.round(totals.longMv).toLocaleString("zh-CN")}</td>
-                        <td className="px-1.5 py-1.5 text-right">{totals.longPct.toFixed(1)}%</td>
-                        <td className="px-1.5 py-1.5 text-right">{Math.round(totals.shortMv).toLocaleString("zh-CN")}</td>
-                        <td className="px-1.5 py-1.5 text-right">{totals.shortPct.toFixed(1)}%</td>
-                        <td className={`px-1.5 py-1.5 text-right ${totals.netPending ? "text-muted-foreground" : "text-foreground"}`}>
+                        <td className="px-[3px] py-1.5">合计</td>
+                        <td className="px-[3px] py-1.5 text-right">{Math.round(totals.longMv).toLocaleString("zh-CN")}</td>
+                        <td className="px-[3px] py-1.5 text-right">{totals.longPct.toFixed(1)}%</td>
+                        <td className="px-[3px] py-1.5 text-right">{Math.round(totals.shortMv).toLocaleString("zh-CN")}</td>
+                        <td className="px-[3px] py-1.5 text-right">{totals.shortPct.toFixed(1)}%</td>
+                        <td className={`px-[3px] py-1.5 text-right ${totals.netPending ? "text-muted-foreground" : "text-foreground"}`}>
                           {totals.netPending ? "—" : Math.round(totals.netMv).toLocaleString("zh-CN")}
                         </td>
-                        <td className={`px-1.5 py-1.5 text-right ${totals.netPending ? "text-muted-foreground" : "text-foreground"}`}>
+                        <td className={`px-[3px] py-1.5 text-right ${totals.netPending ? "text-muted-foreground" : "text-foreground"}`}>
                           {totals.netPending ? "—" : `${totals.netPctNorm.toFixed(1)}%`}
                         </td>
-                        <td className="px-1.5 py-1.5 text-right" />
-                        <td className="px-1.5 py-1.5 text-right" />
-                        <td className="px-1.5 py-1.5 text-right" />
+                        <td className="px-[3px] py-1.5 text-right" />
+                        <td className="px-[3px] py-1.5 text-right" />
+                        <td className="px-[3px] py-1.5 text-right" />
                       </tr>
                     )}
                   </tbody>

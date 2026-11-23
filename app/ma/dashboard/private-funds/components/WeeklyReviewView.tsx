@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
-import { Download, FileText, Loader2 } from "lucide-react"
+import { Download, FileText, Loader2, RefreshCw } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
 import {
   DEFAULT_WEEKLY_REVIEW_POOLS,
@@ -68,6 +68,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
   description: (scope: string) => string
   excelName: (weekEnd: string, label: string) => string
   previewUrl: (date: string, pools: WeeklyReviewPoolKey[]) => string
+  downloadUrl: (date: string, pools: WeeklyReviewPoolKey[]) => string
   generateUrl: string
   statusUrl: (jobId: string) => string
 }> = {
@@ -76,6 +77,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
     description: (scope) => `按${scope}中的股票策略产品生成周报 Excel：股票市场回顾 + 按团队策略分组的收益 / 超额收益表。同一产品的 A/B/C 份额在同一策略里合并为一行。「周度归因分析」会在同一批赢家上拆分市场贝塔与基金阿尔法，并结合投资笔记 / 路演 / 知识库生成 Word 买入建议。`,
     excelName: (weekEnd, label) => `${label}周度回顾（股票） - ${weekEnd}.xlsx`,
     previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
+    downloadUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/download?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/generate",
     statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/generate?id=${encodeURIComponent(jobId)}`,
   },
@@ -84,6 +86,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
     description: (scope) => `按${scope}中的期货策略生成周报 Excel。量化期货 8 张、主观期货 6 张一律按三级策略标签命中分组；表名括号内文字（时序占比超过50%、按交易频率、按规模、按品种、按因子类型、按方法论、包含 MOM 等）只作展示，不作过滤。量价、商品不进入。MOM 同时计入多板块。同一产品的 A/B/C 份额在同一张表里合并为一行。`,
     excelName: (weekEnd, label) => `${label}周度回顾（期货） - ${weekEnd}.xlsx`,
     previewUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/futures/preview?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
+    downloadUrl: (date, pools) => `/ma/api/tracking-funds/weekly-review/futures/download?week_end=${encodeURIComponent(date)}&pools=${encodeURIComponent(pools.join(","))}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/futures/generate",
     statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/futures/generate?id=${encodeURIComponent(jobId)}`,
   },
@@ -92,6 +95,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
     description: () => "按 Choice 公募增强指数型产品生成周报 Excel：股票市场回顾 + 按跟踪基准分组的超额收益表。同一产品的 A/C 份额合并为一行。债券指数增强和量化选股不进入。",
     excelName: (weekEnd) => `公募指增周度回顾 - ${weekEnd}.xlsx`,
     previewUrl: (date) => `/ma/api/tracking-funds/weekly-review/public-enhanced/preview?week_end=${encodeURIComponent(date)}`,
+    downloadUrl: (date) => `/ma/api/tracking-funds/weekly-review/public-enhanced/download?week_end=${encodeURIComponent(date)}`,
     generateUrl: "/ma/api/tracking-funds/weekly-review/public-enhanced/generate",
     statusUrl: (jobId) => `/ma/api/tracking-funds/weekly-review/public-enhanced/generate?id=${encodeURIComponent(jobId)}`,
   },
@@ -99,7 +103,7 @@ const VARIANT_COPY: Record<WeeklyReviewVariant, {
 
 function weekEndFromSearch(params: { get(name: string): string | null }): string {
   const raw = params.get("week_end")?.slice(0, 10) ?? ""
-  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : defaultWeekEnd()
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ""
 }
 
 export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyReviewVariant }) {
@@ -114,6 +118,7 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState("")
+  const [downloading, setDownloading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState("")
   const [attributing, setAttributing] = useState(false)
@@ -139,6 +144,28 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
   }, [copy])
 
   useEffect(() => {
+    if (weekEndFromSearch(searchParams)) return
+    let cancelled = false
+    const params = new URLSearchParams({ variant })
+    if (variant !== "public-enhanced") params.set("pools", pools.join(","))
+    fetch(`/ma/api/tracking-funds/weekly-review/ready-week?${params}`, { cache: "no-store" })
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(typeof json.error === "string" ? json.error : "ready week failed")
+        const date = typeof json.week_end === "string" ? json.week_end.slice(0, 10) : ""
+        return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : defaultWeekEnd()
+      })
+      .catch(() => defaultWeekEnd())
+      .then((date) => {
+        if (!cancelled) setWeekEnd((prev) => prev || date)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [variant, searchParams, pools])
+
+  useEffect(() => {
+    if (!weekEnd) return
     void loadPreview(weekEnd, pools)
   }, [weekEnd, pools, loadPreview])
 
@@ -186,6 +213,40 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
     a.download = fileName || opts.fallbackName
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  function fileNameFromDisposition(header: string | null, fallback: string): string {
+    if (!header) return fallback
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(header)
+    if (star?.[1]) {
+      try { return decodeURIComponent(star[1]) } catch { return fallback }
+    }
+    const plain = /filename="?([^";]+)"?/i.exec(header)
+    return plain?.[1] || fallback
+  }
+
+  async function handleDownload() {
+    if (!weekEnd) return
+    setDownloading(true)
+    setGenerateError("")
+    try {
+      const res = await fetch(copy.downloadUrl(weekEnd, pools), { cache: "no-store" })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(typeof json.error === "string" ? json.error : "本周 Excel 尚未生成，请点击重新生成")
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = fileNameFromDisposition(res.headers.get("Content-Disposition"), copy.excelName(weekEnd, weeklyReviewPoolFileLabel(pools)))
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : "下载失败")
+    } finally {
+      setDownloading(false)
+    }
   }
 
   async function handleGenerate() {
@@ -252,18 +313,18 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => void handleGenerate()}
-              disabled={generating || attributing || previewLoading || (preview?.fund_count ?? 0) === 0}
+              onClick={() => void handleDownload()}
+              disabled={downloading || generating || attributing || !weekEnd}
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-red-500 px-4 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {generating ? "正在生成…" : "生成本周 Excel"}
+              {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {downloading ? "正在下载…" : "下载本周 Excel"}
             </button>
             {variant === "equity" && (
             <button
               type="button"
               onClick={() => void handleAttribution()}
-              disabled={generating || attributing || previewLoading || (preview?.fund_count ?? 0) === 0}
+              disabled={generating || downloading || attributing || previewLoading || (preview?.fund_count ?? 0) === 0}
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-red-200 bg-background px-4 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed dark:border-red-900/60 dark:hover:bg-red-950/40"
             >
               {attributing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
@@ -307,6 +368,16 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
               placeholder="请选择日期"
               className="w-[11.5rem]"
             />
+            <button
+              type="button"
+              onClick={() => void handleGenerate()}
+              disabled={generating || downloading || attributing || previewLoading || (preview?.fund_count ?? 0) === 0}
+              title="按当前所选周重新生成 Excel"
+              className="inline-flex h-7 items-center gap-1 rounded px-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
+            >
+              {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              {generating ? "正在生成…" : "重新生成"}
+            </button>
           </div>
           <div className="text-xs text-muted-foreground">
             统计区间：<span className="text-foreground font-medium">{rangeLabel}</span>

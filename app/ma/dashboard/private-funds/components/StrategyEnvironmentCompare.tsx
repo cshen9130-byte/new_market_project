@@ -29,6 +29,7 @@ type LinkChart = {
   getHeight: () => number
   getOption: () => { xAxis?: { data?: string[] } | Array<{ data?: string[] }> }
   isDisposed: () => boolean
+  resize: () => void
 }
 
 function pointerDate(chart: LinkChart, payload: PointerPayload): string | null {
@@ -204,6 +205,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
   const unlinkRef = useRef<(() => void) | null>(null)
 
   const connectCharts = useCallback((slot: "alpha" | "beta", chart: LinkChart) => {
+    if (!chart.isDisposed()) chart.resize()
     if (slot === "alpha") alphaChartRef.current = chart
     else betaChartRef.current = chart
     unlinkRef.current?.()
@@ -344,7 +346,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
         {
           type: "inside",
           xAxisIndex: 0,
-          filterMode: "filter",
+          filterMode: "none",
           zoomOnMouseWheel: true,
           moveOnMouseMove: true,
           moveOnMouseWheel: false,
@@ -354,7 +356,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
         {
           type: "slider",
           xAxisIndex: 0,
-          filterMode: "filter",
+          filterMode: "none",
           height: 64,
           bottom: 8,
           startValue: zoom.start,
@@ -451,7 +453,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
         {
           type: "inside",
           xAxisIndex: 0,
-          filterMode: "filter",
+          filterMode: "none",
           zoomOnMouseWheel: true,
           moveOnMouseMove: true,
           moveOnMouseWheel: false,
@@ -461,7 +463,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
         {
           type: "slider",
           xAxisIndex: 0,
-          filterMode: "filter",
+          filterMode: "none",
           height: 64,
           bottom: 8,
           startValue: zoom.start,
@@ -594,7 +596,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
   }
 
   return (
-    <section className="w-full rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+    <section className="relative z-0 w-full shrink-0 rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex flex-wrap items-start gap-3">
         <div className="flex w-full max-w-xs items-center gap-1.5">
           <span className="shrink-0 text-xs text-zinc-500">超额基准</span>
@@ -687,7 +689,7 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
         </div>
       )}
 
-      <div className="mt-3 grid gap-x-4 gap-y-2 lg:grid-cols-2">
+      <div className="mt-3 grid min-w-0 w-full gap-x-4 gap-y-2 lg:grid-cols-2">
         <div>
           <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{strategyName}的分数和{chartSetup(strategyKey).noun}</h2>
           <p className="mt-1 text-xs leading-5 text-zinc-500">
@@ -703,16 +705,16 @@ export function StrategyEnvironmentCompare({ strategyKey, strategyName }: { stra
             实线是近 {chartSetup(strategyKey).span} 日实际涨跌，0 上面是在赚钱，下面是在亏钱。虚线是这段涨跌里跟着基准走的部分。左图黄线是超额，大约等于实线减去虚线。两张图的滚动条连在一起，用的也是同一个基准。
           </p>
         </div>
-        <div>
+        <div className="min-h-[424px] min-w-0 w-full">
           {error && <p className="text-sm text-red-600">{error}</p>}
           {!error && option && (
-            <ReactECharts option={option} style={{ height: 424 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("alpha", chart as LinkChart)} />
+            <ReactECharts option={option} style={{ height: 424, width: "100%" }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("alpha", chart as LinkChart)} />
           )}
           {loading && !payload && <div className="h-80 animate-pulse rounded bg-zinc-50 dark:bg-zinc-900" />}
         </div>
-        <div>
+        <div className="min-h-[424px] min-w-0 w-full">
           {!error && betaOption && (
-            <ReactECharts option={betaOption} style={{ height: 424 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("beta", chart as LinkChart)} />
+            <ReactECharts option={betaOption} style={{ height: 424, width: "100%" }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} onChartReady={(chart) => connectCharts("beta", chart as LinkChart)} />
           )}
           {loading && !payload && <div className="h-80 animate-pulse rounded bg-zinc-50 dark:bg-zinc-900" />}
         </div>

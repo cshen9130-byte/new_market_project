@@ -43,6 +43,7 @@ export type WeeklyReviewInvestedMedian = {
   as_of: string
   fund_count: number
   groups: InvestedMedianGroup[]
+  metrics: FundMetrics[]
 }
 
 function finiteOrNull(value: number | null | undefined): number | null {
@@ -157,5 +158,6 @@ export async function buildWeeklyReviewInvestedMedian(
     as_of: asOf,
     fund_count: funds.length,
     groups: buildInvestedMedianGroups(inputs, bucketOrder),
+    metrics,
   }
 }

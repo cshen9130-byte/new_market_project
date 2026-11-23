@@ -33,6 +33,51 @@ export const INVESTED_MEDIAN_ROW_LABEL = "已投产品中位数"
 const RETURN_KEYS = ["ret_1w", "ret_1m", "ret_3m", "ret_6m", "ret_1y"] as const
 
 /**
+ * Share of the strategy table this return ranks in, from the top.
+ * 1st of 20 → 0.05 (前 5%). Ties share the best rank. Missing values are ignored.
+ */
+export function weekReturnTopShare(
+  value: number | null | undefined,
+  peers: Array<number | null | undefined>,
+): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  const nums = peers.filter((peer): peer is number => peer != null && Number.isFinite(peer))
+  if (nums.length === 0) return null
+  const better = nums.filter((peer) => peer > value).length
+  return (better + 1) / nums.length
+}
+
+export function formatWeekReturnTopShare(share: number | null): string | null {
+  if (share == null || !Number.isFinite(share)) return null
+  const pct = Math.max(1, Math.round(share * 100))
+  return `前${pct}%`
+}
+
+/** Mark tracking-pool rows that we hold, and append held products missing from the table. */
+export function mergeWeeklyReviewInvestedRows<T extends { beian_hao: string }>(
+  poolRows: T[],
+  investedCodes: Iterable<string>,
+  investedRows: T[],
+): Array<{ row: T; invested: boolean }> {
+  const codes = new Set(investedCodes)
+  const byCode = new Map(investedRows.map((row) => [row.beian_hao, row]))
+  const seen = new Set<string>()
+  const out: Array<{ row: T; invested: boolean }> = []
+  for (const row of poolRows) {
+    seen.add(row.beian_hao)
+    out.push({ row, invested: codes.has(row.beian_hao) })
+  }
+  for (const code of codes) {
+    if (seen.has(code)) continue
+    const row = byCode.get(code)
+    if (!row) continue
+    out.push({ row, invested: true })
+    seen.add(code)
+  }
+  return out
+}
+
+/**
  * Where a median sits among values already sorted from high to low.
  * Missing prints sort to the bottom. Returns null when there is no median to place.
  */

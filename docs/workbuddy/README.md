@@ -91,6 +91,7 @@ OAuth 发现地址（通常不必手填）：
 | `ma-fund-compare.zip` | 基金对比：区间收益、年化、波动、夏普、回撤，并给出网站对比页链接 | MA 基金数据（需投资页权限） |
 | `ma-account-overview.zip` | 单账户总览：权益、当日盈亏、保证金、风险度 | MA MOM数据（需开通 MOM数据API） |
 | `ma-investment-review.zip` | FOF底层、周度回顾和外部业绩榜，并生成周报 Excel | MA 基金数据（需投资页或投资池权限） |
+| `ma-jy-weekly-download.zip` | 为当前用户定时下载 JY 跟踪池股票和期货周报 Excel | 本机脚本使用本人的基金数据密钥 |
 
 源文件在 `docs/workbuddy/skills/<技能名>/`。
 
@@ -125,6 +126,7 @@ pe-fund-researcher/
 
 - 私募基金研究员：基金查询、基金对比、跟踪池、知识库观点核验、产品账户对比
 - 周报与FOF分析：FOF底层、股票/期货/公募指增周度回顾、外部业绩榜，以及和网站相同的周报 Excel
+- JY周报定时下载：在当前用户电脑上定时保存 JY 跟踪池股票和期货周报 Excel
 - MOM盘手分析助手：账户筛选、每日核算、持仓成交、历史风险指标、母基金持仓 VaR、单账户总览、MOM底层
 
 ## 5. 权限对照

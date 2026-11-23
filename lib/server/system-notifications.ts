@@ -527,52 +527,62 @@ export async function notifyFeatureLaunches(source: string): Promise<FeatureLaun
   return { sent, pending, reason }
 }
 
-export async function notifyMomVarBudget(source: string): Promise<MomVarNotifyResult> {
-  const { momVarBudgetMessage } = await import("@/lib/mom-var-budget")
-  const { GET: varGet } = await import("@/app/ma/api/mom-analysis/var-sandbox/route")
-  const { GET: navGet } = await import("@/app/ma/api/mom-analysis/product-nav/route")
-  const [varResponse, navResponse] = await Promise.all([
-    varGet(new Request("http://localhost/ma/api/mom-analysis/var-sandbox?confidence=95&volDays=20&corrDays=252&distModel=normal")),
-    navGet(new Request("http://localhost/ma/api/mom-analysis/product-nav")),
-  ])
-  const sandbox = await varResponse.json().catch(() => null) as { ok?: boolean; date?: string | null; totalVar?: number } | null
-  const nav = await navResponse.json().catch(() => null) as { ok?: boolean; data?: { cumCapital?: number }[] } | null
-  const date = sandbox?.date?.slice(0, 10) ?? ""
-  const points = nav?.data ?? []
-  const netCapital = points.length > 0 ? Number(points[points.length - 1]?.cumCapital) || 0 : 0
-  const totalVar = Number(sandbox?.totalVar) || 0
-  if (!sandbox?.ok || !nav?.ok || !date || netCapital <= 0 || totalVar <= 0) {
+type MomVarPolicy = {
+  date: string
+  driver: { driver: "position" | "market" | "flat" | "na" }
+  breaches: Parameters<typeof import("@/lib/mom-var-policy-bell").momVarConcentrationBell>[0]["breaches"]
+  budgetSoft: string | null
+  budgetHard: string | null
+}
+
+async function loadMomVarPolicy(): Promise<MomVarPolicy | null> {
+  const { buildVarMcrSuggestions } = await import("@/lib/server/var-mcr-suggestions")
+  try {
+    const payload = await buildVarMcrSuggestions(new Request(
+      "http://localhost/ma/api/mom-analysis/var-mcr-suggestions?volDays=20&corrDays=252",
+    ))
+    if (!payload.date || payload.date === "—") return null
+    return payload
+  } catch (error) {
+    console.error("[mom-var-bell] policy", error instanceof Error ? error.message : error)
+    return null
+  }
+}
+
+/**
+ * One pass over the same classifier the 处置建议 panel uses, then the
+ * concentration bell and the budget bell each keep their own switch.
+ */
+export async function notifyMomVarPolicy(source: string): Promise<{
+  concentration: MomVarNotifyResult
+  budget: MomVarNotifyResult
+}> {
+  const policy = await loadMomVarPolicy()
+  const concentration = await notifyMomVarConcentration(source, policy)
+  const budget = await notifyMomVarBudget(source, policy)
+  return { concentration, budget }
+}
+
+export async function notifyMomVarBudget(source: string, policy?: MomVarPolicy | null): Promise<MomVarNotifyResult> {
+  const loaded = policy === undefined ? await loadMomVarPolicy() : policy
+  const date = loaded?.date ?? ""
+  if (!loaded) {
     console.log(`[mom-var-budget] no data (${source})`)
     return { sent: 0, reason: "no_data", date }
   }
-  const varPct = (totalVar / netCapital) * 100
-  await ensureTables()
-  const recipients = await rows<{ id: string; config: unknown }>(
-    `SELECT u.id, r.config
-       FROM public.auth_users u
-       LEFT JOIN public.user_notification_rules r
-         ON r.user_id = u.id AND r.rule_key = $1
-      WHERE COALESCE(r.enabled, TRUE) = TRUE
-        AND (u.role = 'admin' OR COALESCE((u.permissions->>'mom')::boolean, FALSE))`,
-    [MOM_VAR_BUDGET_RULE],
-  )
-  let sent = 0
-  let pending = 0
-  for (const recipient of recipients) {
-    const annualPct = momVarBudgetAnnualPct(recipient.config)
-    const message = momVarBudgetMessage({ date, varPct, netCapital, annualPct })
-    if (!message) continue
-    pending += 1
-    const result = await publicQuery(
-      `INSERT INTO public.user_notifications (id, user_id, rule_key, dedupe_key, title, body, href)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (user_id, dedupe_key) DO NOTHING`,
-      [randomUUID(), recipient.id, MOM_VAR_BUDGET_RULE, `mom_var_budget:${date}`, message.title, message.body, message.href],
-    )
-    sent += result.rowCount ?? 0
+  const { momVarBudgetBell } = await import("@/lib/mom-var-policy-bell")
+  const message = momVarBudgetBell({
+    date,
+    budgetSoft: loaded.budgetSoft,
+    budgetHard: loaded.budgetHard,
+  })
+  if (!message) {
+    console.log(`[mom-var-budget] within limits (${source}) ${date}`)
+    return { sent: 0, reason: "within_limits", date }
   }
-  const reason = pending === 0 ? "within_limits" : sent === 0 ? "already_sent" : "sent"
-  console.log(`[mom-var-budget] ${reason} (${source}) ${date} varPct=${varPct.toFixed(2)} sent=${sent}`)
+  const sent = await insertMomNotification(MOM_VAR_BUDGET_RULE, `mom_var_budget:${date}`, message)
+  const reason = sent === 0 ? "already_sent" : "sent"
+  console.log(`[mom-var-budget] ${reason} (${source}) ${date} sent=${sent}`)
   return { sent, reason, date }
 }
 
@@ -865,69 +875,59 @@ export type MomVarNotifyResult = {
 }
 
 /**
- * Latest VaR sandbox day: tell MOM accounts when one variety's marginal
- * contribution is above their variety limit, or one sector is above their
- * sector limit. One message per account per date. Accounts without MOM
- * access are not recipients.
+ * Latest book, classified with the written MOM-lite lines. A soft breach
+ * forbids adding that object. A formal cut is a separate sentence. One
+ * message per account per date. Accounts without MOM access are not recipients.
  */
-export async function notifyMomVarConcentration(source: string): Promise<MomVarNotifyResult> {
-  const { momVarConcentrationMessage, varConcentrationShares } = await import("@/lib/mom-var-concentration")
-  const { GET } = await import("@/app/ma/api/mom-analysis/var-sandbox/route")
-  const response = await GET(new Request(
-    "http://localhost/ma/api/mom-analysis/var-sandbox?confidence=95&volDays=20&corrDays=252&distModel=normal",
-  ))
-  const json = await response.json().catch(() => null) as {
-    ok?: boolean
-    date?: string | null
-    products?: { prod: string; mv: number; sigma: number }[]
-    corrMatrix?: number[][]
-  } | null
-  const date = json?.date?.slice(0, 10) ?? ""
-  const products = json?.products ?? []
-  if (!json?.ok || !date || products.length === 0) {
+export async function notifyMomVarConcentration(source: string, policy?: MomVarPolicy | null): Promise<MomVarNotifyResult> {
+  const loaded = policy === undefined ? await loadMomVarPolicy() : policy
+  const date = loaded?.date ?? ""
+  if (!loaded) {
     console.log(`[mom-var-bell] no data (${source})`)
     return { sent: 0, reason: "no_data", date }
   }
-  const shares = varConcentrationShares(products, json.corrMatrix ?? [])
+  const { momVarConcentrationBell } = await import("@/lib/mom-var-policy-bell")
+  const message = momVarConcentrationBell({
+    date,
+    breaches: loaded.breaches,
+    driver: loaded.driver.driver,
+  })
+  if (!message) {
+    console.log(`[mom-var-bell] within limits (${source}) ${date}`)
+    return { sent: 0, reason: "within_limits", date }
+  }
+  const sent = await insertMomNotification(MOM_VAR_CONCENTRATION_RULE, `mom_var_concentration:${date}`, message)
+  const reason = sent === 0 ? "already_sent" : "sent"
+  console.log(`[mom-var-bell] ${reason} (${source}) ${date} breaches=${loaded.breaches.length} sent=${sent}`)
+  return { sent, reason, date }
+}
+
+async function insertMomNotification(
+  ruleKey: string,
+  dedupeKey: string,
+  message: { title: string; body: string; href: string },
+): Promise<number> {
   await ensureTables()
-  const recipients = await rows<{ id: string; config: unknown }>(
-    `SELECT u.id, r.config
+  const recipients = await rows<{ id: string }>(
+    `SELECT u.id
        FROM public.auth_users u
        LEFT JOIN public.user_notification_rules r
          ON r.user_id = u.id AND r.rule_key = $1
       WHERE COALESCE(r.enabled, TRUE) = TRUE
         AND (u.role = 'admin' OR COALESCE((u.permissions->>'mom')::boolean, FALSE))`,
-    [MOM_VAR_CONCENTRATION_RULE],
+    [ruleKey],
   )
   let sent = 0
-  let pending = 0
   for (const recipient of recipients) {
-    const thresholds = momVarThresholds(recipient.config)
-    const message = momVarConcentrationMessage({
-      date,
-      products: shares.products,
-      sectors: shares.sectors,
-      productPct: thresholds.productPct,
-      sectorPct: thresholds.sectorPct,
-    })
-    if (!message) continue
-    pending += 1
-    const dedupeKey = `mom_var_concentration:${date}`
     const result = await publicQuery(
       `INSERT INTO public.user_notifications (id, user_id, rule_key, dedupe_key, title, body, href)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (user_id, dedupe_key) DO NOTHING`,
-      [randomUUID(), recipient.id, MOM_VAR_CONCENTRATION_RULE, dedupeKey, message.title, message.body, message.href],
+      [randomUUID(), recipient.id, ruleKey, dedupeKey, message.title, message.body, message.href],
     )
     sent += result.rowCount ?? 0
   }
-  const reason = pending === 0 ? "within_limits" : sent === 0 ? "already_sent" : "sent"
-  const topProduct = shares.products[0]
-  const topSector = shares.sectors[0]
-  console.log(
-    `[mom-var-bell] ${reason} (${source}) ${date} product=${topProduct?.name ?? "-"} ${topProduct?.pct.toFixed(1) ?? "-"} sector=${topSector?.name ?? "-"} ${topSector?.pct.toFixed(1) ?? "-"} sent=${sent}`,
-  )
-  return { sent, reason, date }
+  return sent
 }
 
 export type { NotificationRuleKind }

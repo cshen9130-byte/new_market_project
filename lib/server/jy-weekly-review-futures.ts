@@ -8,7 +8,7 @@ import { randomUUID } from "crypto"
 import { mkdir, readFile, writeFile } from "fs/promises"
 import path from "path"
 import { fmtIso, n, query } from "@/lib/db"
-import { INVESTED_MEDIAN_ROW_LABEL, investedMedianInsertIndex } from "@/lib/ma/weekly-review-invested-median"
+import { formatWeekReturnTopShare, mergeWeeklyReviewInvestedRows, weekReturnTopShare } from "@/lib/ma/weekly-review-invested-median"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
 import {
   normalizeWeeklyReviewPools,
@@ -431,8 +431,8 @@ function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsIn
     },
     {
       kind: "pair",
-      label: "已投产品中位数",
-      text: "持仓中的私募 FOF 底层，按本表同一策略取近一周收益中位数。该策略有已投产品、且近一周中位数有数时，按这个数在表中插入一行「已投产品中位数」，用来看它排在跟踪产品的什么位置。没有已投，或近一周没有净值，则不加这一行。",
+      label: "已投产品",
+      text: "持仓中的私募 FOF 底层会自动写入同一策略表：已在跟踪池中的只做标注，不在跟踪池中的按同样口径补进该表。一只产品可以出现在多张表。已投行用浅黄底标出，产品名称前加「已投」。近一周分位数是该行近一周收益在本表全部有数产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。",
     },
     {
       kind: "pair",
@@ -472,6 +472,13 @@ function markerStyle(color?: string, numFmt?: string): CellStyle {
     alignment: { wrapText: true, vertical: "center" },
     numFmt,
   }
+}
+
+function percentileColor(share: number | null): string | undefined {
+  if (share == null || !Number.isFinite(share)) return undefined
+  if (share <= 0.25) return RED
+  if (share > 0.75) return GREEN
+  return undefined
 }
 
 function sheetName(seq: number, title: string): string {
@@ -541,10 +548,6 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
         return null
       }),
   ])
-  const investedMedianByBucket = new Map(
-    (invested?.groups ?? []).map((group) => [group.bucket, group.median.ret_1w] as const),
-  )
-
   const xlsxMod = await import("xlsx-js-style") as {
     default?: typeof import("xlsx")
     utils?: typeof import("xlsx")["utils"]
@@ -632,13 +635,14 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
 
   let seq = 4
   for (const bucket of FUTURES_WEEKLY_CATEGORIES) {
-    const rows = groups.get(bucket) ?? []
-    const headers = ["产品名称", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
-    const sorted = [...rows].sort((a, b) => (b.ret.ret_1w ?? -Infinity) - (a.ret.ret_1w ?? -Infinity))
-    const medianWeek = investedMedianByBucket.get(bucket) ?? null
-    const insertAt = investedMedianInsertIndex(sorted.map((row) => row.ret.ret_1w), medianWeek)
-    const lines: Array<{ kind: "fund"; row: FundMetrics } | { kind: "median" }> = sorted.map((row) => ({ kind: "fund" as const, row }))
-    if (insertAt != null) lines.splice(insertAt, 0, { kind: "median" })
+    const merged = mergeWeeklyReviewInvestedRows(
+      groups.get(bucket) ?? [],
+      (invested?.groups.find((group) => group.bucket === bucket)?.products ?? []).map((product) => product.code),
+      invested?.metrics ?? [],
+    )
+    const headers = ["产品名称", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率", "近一周分位数"]
+    const sorted = [...merged].sort((a, b) => (b.row.ret.ret_1w ?? -Infinity) - (a.row.ret.ret_1w ?? -Infinity))
+    const weekValues = sorted.map((line) => line.row.ret.ret_1w)
     const aoa: unknown[][] = []
     const styles = new Map<string, CellStyle>()
     const set = (r: number, c: number, v: unknown, s?: CellStyle) => {
@@ -646,26 +650,24 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
       aoa[r][c] = v ?? null
       if (s) styles.set(`${r},${c}`, s)
     }
+    const paint = (investedRow: boolean, alt: boolean, color?: string, numFmt?: string): CellStyle =>
+      investedRow ? markerStyle(color, numFmt) : bodyStyle(alt, color, numFmt)
     headers.forEach((h, c) => set(0, c, h, headerStyle()))
-    lines.forEach((line, i) => {
-      if (line.kind === "median") {
-        set(i + 1, 0, INVESTED_MEDIAN_ROW_LABEL, markerStyle())
-        for (let c = 1; c < headers.length; c++) {
-          set(i + 1, c, c === 1 ? medianWeek : null, markerStyle(c === 1 ? signedColor(medianWeek) : undefined, c === 1 ? "0.00%" : undefined))
-        }
-        return
-      }
+    sorted.forEach((line, i) => {
       const row = line.row
       const alt = i % 2 === 0
-      set(i + 1, 0, row.name, bodyStyle(alt))
+      const label = line.invested ? `已投 ${row.name}` : row.name
+      const share = weekReturnTopShare(row.ret.ret_1w, weekValues)
+      set(i + 1, 0, label, paint(line.invested, alt))
       const pcts = [row.ret.ret_1w, row.ret.ret_1m, row.ret.ret_3m, row.ret.ret_6m, row.ret.ret_1y]
-      pcts.forEach((v, ci) => set(i + 1, ci + 1, v, bodyStyle(alt, signedColor(v), "0.00%")))
-      set(i + 1, 6, row.sharpe_1y, bodyStyle(alt, undefined, "0.0000"))
-      set(i + 1, 7, row.calmar_1y, bodyStyle(alt, undefined, "0.0000"))
+      pcts.forEach((v, ci) => set(i + 1, ci + 1, v, paint(line.invested, alt, signedColor(v), "0.00%")))
+      set(i + 1, 6, row.sharpe_1y, paint(line.invested, alt, undefined, "0.0000"))
+      set(i + 1, 7, row.calmar_1y, paint(line.invested, alt, undefined, "0.0000"))
+      set(i + 1, 8, formatWeekReturnTopShare(share), paint(line.invested, alt, percentileColor(share)))
     })
     const name = bucket.slice(0, 31)
-    sheets.push({ name, title: bucket, rows: lines.length, cols: 8, aoa, styles })
-    tocRows.push([seq, name, bucket, lines.length, 8])
+    sheets.push({ name, title: bucket, rows: sorted.length, cols: 9, aoa, styles })
+    tocRows.push([seq, name, bucket, sorted.length, 9])
     seq += 1
   }
 
@@ -779,6 +781,12 @@ export async function runFuturesWeeklyReviewJob(jobId: string, weekEnd: string, 
     console.timeEnd("[jy-weekly-review-futures] generate workbook")
     await mkdir(jobDir(jobId), { recursive: true })
     await writeFile(jobFilePath(jobId), result.buffer)
+    try {
+      const { saveWeeklyReviewExcelCache } = await import("@/lib/server/weekly-review-excel-cache")
+      await saveWeeklyReviewExcelCache("futures", weekEnd, poolsInput, result)
+    } catch (cacheErr) {
+      console.error("[jy-weekly-review-futures] cache save failed:", cacheErr)
+    }
     await writeJobStatus({
       status: "done",
       jobId,

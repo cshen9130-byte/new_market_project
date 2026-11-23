@@ -1,0 +1,4 @@
+name: ma-jy-weekly-download
+version: 1.0.0
+author: MA
+description: 定时下载 JY 跟踪池周报 Excel

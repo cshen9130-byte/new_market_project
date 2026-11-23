@@ -116,7 +116,7 @@ export function StrategyEnvironmentView() {
   const active = strategies.find((item) => item.key === selected) ?? strategies[0] ?? null
 
   return (
-    <div className="flex w-full flex-col gap-3">
+    <div className="w-full shrink-0 space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">策略环境</h1>
@@ -237,7 +237,7 @@ export function StrategyEnvironmentView() {
           </div>
 
           {active && (
-            <section className="rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <section className="relative z-10 rounded border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-zinc-100 pb-3 dark:border-zinc-800">
                 <div>
                   <div className="text-[11px] text-zinc-400">{active.group}{active.asOf ? ` · ${active.asOf}` : ""}</div>
@@ -265,7 +265,7 @@ export function StrategyEnvironmentView() {
                 </div>
               </div>
 
-              <div className="mt-3 grid items-start gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
+              <div className="mt-3 grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
                 {active.factors.length > 0 && (
                   <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-1">
                     {active.factors.map((factor) => (

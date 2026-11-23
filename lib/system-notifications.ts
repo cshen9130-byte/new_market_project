@@ -79,7 +79,7 @@ export const NOTIFICATION_RULES: NotificationRuleDef[] = [
     key: MOM_VAR_CONCENTRATION_RULE,
     kind: "abnormal",
     title: "日间风控集中度",
-    description: "最新交易日，单个品种的边际波动贡献超过设定值，或单个板块超过设定值时通知。只有能看 MOM 的账户会收到。默认品种 30%、板块 50%。",
+    description: "最新交易日按书面 MOM-lite 通知。品种软预警 30%、硬线 50%，板块软预警 50%、硬线 65%。过软线次日起禁止该对象加仓。硬线连续满 3 个交易日，并且持仓是当日 VaR 上升的主因，或 VaR/资本已超过 2.07% 时，才建议把贡献压回软线。市场驱动日冻结硬砍。只有能看 MOM 的账户会收到。同一天只发一次。",
     defaultEnabled: true,
   },
   {
@@ -93,7 +93,7 @@ export const NOTIFICATION_RULES: NotificationRuleDef[] = [
     key: MOM_VAR_BUDGET_RULE,
     kind: "abnormal",
     title: "日间 VaR 预算",
-    description: "最新交易日，1 日 95% VaR 占累计净资本的比例，超过你设的年化风险预算换成的日度上限时通知。默认年化 20%，约等于 1 日 2.07%。只有能看 MOM 的账户会收到。同一天只发一次。",
+    description: "最新交易日，累计净资本不少于 1,000 万元时通知。1 日 95% VaR/资本超过 2.07% 是软预警：当晚沟通，不自动封顶。连续 3 个交易日超过 5% 时，按预算硬闸门于次日起把整本账缩放到 2.07%。只有能看 MOM 的账户会收到。同一天只发一次。",
     defaultEnabled: true,
   },
   {
@@ -270,6 +270,11 @@ export function latestReadyWeeklyStrategyWeek(status: WeeklyCoverageInput): Week
     if (coverage.ready) return coverage
   }
   return null
+}
+
+/** Coverage for each of the last three weeks on the weekly-review status, newest first. */
+export function weeklyStrategyExcelWeeks(status: WeeklyCoverageInput): WeeklyCoverage[] {
+  return status.weeks.map((_, index) => coverageAt(status, index)).filter((week) => Boolean(week.weekEnd))
 }
 
 export function weeklyStrategyExcelDedupeKey(weekEnd: string): string {

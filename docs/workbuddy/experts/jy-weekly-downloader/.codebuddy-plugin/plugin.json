@@ -1,0 +1,51 @@
+{
+  "name": "jy-weekly-downloader",
+  "version": "1.0.0",
+  "description": "Creates a per-user scheduled task that downloads JY weekly Excel files with a local script.",
+  "author": {
+    "name": "MA"
+  },
+  "agents": [
+    "./agents/jy-weekly-downloader.md"
+  ],
+  "expertType": "agent",
+  "agentName": "jy-weekly-downloader",
+  "displayName": {
+    "en": "JY周报定时下载",
+    "zh": "JY周报定时下载"
+  },
+  "profession": {
+    "en": "周报文件下载",
+    "zh": "周报文件下载"
+  },
+  "displayDescription": {
+    "en": "Schedules a local script to save the JY equity and futures weekly workbooks into the current user's own folder.",
+    "zh": "为当前用户定时下载 JY 跟踪池股票和期货周报 Excel，保存到他自己的目录。"
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "Set up a Thursday 16:30 task to download the JY equity and futures weekly Excel files into my Documents folder.",
+    "zh": "帮我建一个每周四 16:30 的定时任务，把 JY 跟踪池股票和期货周报 Excel 下载到我的文档目录。"
+  },
+  "plugin": "jy-weekly-downloader",
+  "tags": [
+    {
+      "en": "Scheduled task",
+      "zh": "定时任务"
+    },
+    {
+      "en": "Weekly Excel",
+      "zh": "周报 Excel"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "en": "Set up a Thursday 16:30 task to download the JY equity and futures weekly Excel files into my Documents folder.",
+      "zh": "帮我建一个每周四 16:30 的定时任务，把 JY 跟踪池股票和期货周报 Excel 下载到我的文档目录。"
+    },
+    {
+      "en": "Save the weekly workbooks to a folder I choose, and skip a file when that week is already there.",
+      "zh": "周报保存到我指定的文件夹，同一周的文件已经在就跳过。"
+    }
+  ]
+}

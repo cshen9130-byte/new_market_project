@@ -34,6 +34,8 @@ author: MA
 
 只要分析、不要文件时，`report=run` 加 `file=0`。用户要 Excel 时不要加 `file=0`。
 
+用户要每周自动把 JY 跟踪池的股票和期货 Excel 下载到他自己的文件夹时，用技能 `ma-jy-weekly-download` 建定时任务。那次运行只执行他本机的脚本，不在对话里调用 `weekly_review`，也不写分析报告。
+
 ## 生成 Excel 与分析
 
 1. `report=run` 马上返回 `job_id` 和 `status=pending`。这是页面红色按钮背后的同一套计算，可能要几分钟。

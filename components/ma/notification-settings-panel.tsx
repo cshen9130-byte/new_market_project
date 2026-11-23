@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Switch } from "@/components/ui/switch"
 import { authService } from "@/lib/auth"
-import { MOM_DECISION_ACTIONS, MOM_DECISION_SIGNAL_RULE, MOM_VAR_BUDGET_RULE, MOM_VAR_CONCENTRATION_RULE } from "@/lib/system-notifications"
-import { dailyVarBudgetPct } from "@/lib/mom-var-budget"
+import { MOM_DECISION_ACTIONS, MOM_DECISION_SIGNAL_RULE } from "@/lib/system-notifications"
 
 type NotificationRule = {
   key: string
@@ -26,10 +25,7 @@ export function NotificationSettingsPanel() {
   const [rules, setRules] = useState<NotificationRule[] | null>(null)
   const [error, setError] = useState("")
   const [savingKey, setSavingKey] = useState("")
-  const [productPct, setProductPct] = useState("30")
-  const [sectorPct, setSectorPct] = useState("50")
   const [actions, setActions] = useState<string[]>(["加码"])
-  const [annualPct, setAnnualPct] = useState("20")
 
   const loadRules = useCallback(async (id: string) => {
     const res = await fetch("/ma/api/notifications/rules", {
@@ -79,15 +75,8 @@ export function NotificationSettingsPanel() {
   }
 
   function applySavedConfig(next: NotificationRule[]) {
-    const concentration = next.find((rule) => rule.key === MOM_VAR_CONCENTRATION_RULE)
-    if (concentration?.config?.productPct != null && concentration.config.sectorPct != null) {
-      setProductPct(String(concentration.config.productPct))
-      setSectorPct(String(concentration.config.sectorPct))
-    }
     const decision = next.find((rule) => rule.key === MOM_DECISION_SIGNAL_RULE)
     if (decision?.config?.actions?.length) setActions(decision.config.actions)
-    const budget = next.find((rule) => rule.key === MOM_VAR_BUDGET_RULE)
-    if (budget?.config?.annualPct != null) setAnnualPct(String(budget.config.annualPct))
   }
 
   async function saveActions(nextActions: string[]) {
@@ -121,66 +110,6 @@ export function NotificationSettingsPanel() {
     }
     setActions(next)
     void saveActions(next)
-  }
-
-  async function saveAnnual() {
-    if (!userId) return
-    const annual = Number(annualPct)
-    if (!(annual > 0 && annual <= 100)) {
-      setError("年化风险预算需要是 0 到 100 之间的数字")
-      return
-    }
-    const current = rules?.find((rule) => rule.key === MOM_VAR_BUDGET_RULE)?.config?.annualPct ?? 20
-    if (current === annual) return
-    setSavingKey(MOM_VAR_BUDGET_RULE)
-    setError("")
-    try {
-      const res = await fetch("/ma/api/notifications/rules", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "x-market-user-id": userId },
-        body: JSON.stringify({ key: MOM_VAR_BUDGET_RULE, config: { annualPct: annual } }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(typeof json.error === "string" ? json.error : "保存失败")
-      const next = Array.isArray(json.rules) ? json.rules as NotificationRule[] : []
-      setRules(next)
-      applySavedConfig(next)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败")
-      loadRules(userId).catch(() => {})
-    } finally {
-      setSavingKey("")
-    }
-  }
-
-  async function saveThresholds() {
-    if (!userId) return
-    const product = Number(productPct)
-    const sector = Number(sectorPct)
-    if (!(product > 0 && product <= 100 && sector > 0 && sector <= 100)) {
-      setError("阈值需要是 0 到 100 之间的数字")
-      return
-    }
-    const current = rules?.find((rule) => rule.key === MOM_VAR_CONCENTRATION_RULE)?.config
-      ?? { productPct: 30, sectorPct: 50 }
-    if (current.productPct === product && current.sectorPct === sector) return
-    setSavingKey(MOM_VAR_CONCENTRATION_RULE)
-    setError("")
-    try {
-      const res = await fetch("/ma/api/notifications/rules", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", "x-market-user-id": userId },
-        body: JSON.stringify({ key: MOM_VAR_CONCENTRATION_RULE, config: { productPct: product, sectorPct: sector } }),
-      })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(typeof json.error === "string" ? json.error : "保存失败")
-      setRules(Array.isArray(json.rules) ? json.rules : [])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败")
-      loadRules(userId).catch(() => {})
-    } finally {
-      setSavingKey("")
-    }
   }
 
   return (
@@ -229,51 +158,6 @@ export function NotificationSettingsPanel() {
                               {action}
                             </label>
                           ))}
-                        </div>
-                      )}
-                      {rule.key === MOM_VAR_BUDGET_RULE && (
-                        <label className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-                          年化风险预算
-                          <input
-                            value={annualPct}
-                            inputMode="decimal"
-                            aria-label="年化风险预算"
-                            onChange={(event) => setAnnualPct(event.target.value)}
-                            onBlur={() => { void saveAnnual() }}
-                            className="h-8 w-20 rounded-md border bg-background px-2"
-                          />
-                          %
-                          <span className="text-muted-foreground">
-                            1 日 95% 上限 {Number(annualPct) > 0 && Number(annualPct) <= 100 ? dailyVarBudgetPct(Number(annualPct)).toFixed(2) : "—"}%
-                          </span>
-                        </label>
-                      )}
-                      {rule.key === MOM_VAR_CONCENTRATION_RULE && (
-                        <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
-                          <label className="flex items-center gap-2">
-                            品种超过
-                            <input
-                              value={productPct}
-                              inputMode="decimal"
-                              aria-label="品种边际波动贡献阈值"
-                              onChange={(event) => setProductPct(event.target.value)}
-                              onBlur={() => { void saveThresholds() }}
-                              className="h-8 w-20 rounded-md border bg-background px-2"
-                            />
-                            %
-                          </label>
-                          <label className="flex items-center gap-2">
-                            板块超过
-                            <input
-                              value={sectorPct}
-                              inputMode="decimal"
-                              aria-label="板块边际波动贡献阈值"
-                              onChange={(event) => setSectorPct(event.target.value)}
-                              onBlur={() => { void saveThresholds() }}
-                              className="h-8 w-20 rounded-md border bg-background px-2"
-                            />
-                            %
-                          </label>
                         </div>
                       )}
                     </li>

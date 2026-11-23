@@ -23,8 +23,9 @@ export async function GET(req: Request) {
     const user = await getRequestUser(req)
     const canExpand = canAccessPfInvestmentPool(user as User | null)
     const body = await buildWeeklyReviewInvestedMedian(variantOf(params.get("variant")), weekEnd)
+    const { metrics: _metrics, ...publicBody } = body
     return NextResponse.json({
-      ...body,
+      ...publicBody,
       can_expand: canExpand,
       groups: canExpand
         ? body.groups
