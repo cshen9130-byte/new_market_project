@@ -356,6 +356,22 @@ def is_xls_bytes(content: bytes, content_type: str) -> bool:
     return head.startswith(b"\xd0\xcf\x11\xe0") or head.startswith(b"PK")
 
 
+def excel_response_kind(content: bytes, content_type: str) -> str:
+    """xls, login, or absent.
+
+    A date with no workbook (today before 结算 is published, or a gap) is a
+    0-byte text/html body. A dead cookie is the full login HTML (~50KB) with
+    the userID field. Those must not be treated as the same failure.
+    """
+    if is_xls_bytes(content, content_type):
+        return "xls"
+    if content and len(content) >= 200:
+        sample = content[:20000].lower()
+        if b"userid" in sample or b"vericode" in sample or b"loginform" in sample:
+            return "login"
+    return "absent"
+
+
 def save_excel_response(dest_dir: Path, user_id: str, date_str: str, excel_resp: req_lib.Response) -> Path | None:
     content_type = excel_resp.headers.get("Content-Type", "")
     content = excel_resp.content
@@ -419,9 +435,14 @@ def download_settlement_day(
         resp = ss.get(EXCEL_DAILY_URL, timeout=30)
     except Exception as exc:  # noqa: BLE001
         return DayFetch("error", detail=str(exc)), token
+    kind = excel_response_kind(resp.content, resp.headers.get("Content-Type", ""))
+    if kind == "login":
+        return DayFetch("login"), token
+    if kind != "xls":
+        return DayFetch("absent"), token
     path = save_excel_response(dest_dir, user_id, date_str, resp)
     if path is None:
-        return DayFetch("empty"), token
+        return DayFetch("absent"), token
     got = extract_xls_trade_date(path)
     if got and got != date_str:
         path.unlink(missing_ok=True)
@@ -440,7 +461,7 @@ def download_settlement_day_retry(
     last = DayFetch("error", detail="no attempt")
     for attempt in range(1, 4):
         last, token = download_settlement_day(ss, token, dest_dir, user_id, day)
-        if last.status in ("saved", "skipped", "mismatch"):
+        if last.status in ("saved", "skipped", "mismatch", "absent", "login"):
             return last, token
         log(f"  {day.isoformat()} {last.status} ({last.detail or 'no xls'}), retry {attempt}/3")
         time.sleep(1.5)
@@ -536,16 +557,16 @@ def download_all_dates(
     return saved, skipped, discarded + purged
 
 
-def excel_session_alive(ss: req_lib.Session, token: str | None, day: dt.date) -> tuple[bool, str | None]:
-    """Hit the excel URL for a day we expect to exist. HTML means the login died."""
+def excel_session_alive(ss: req_lib.Session, token: str | None, day: dt.date) -> tuple[str, str | None]:
+    """Hit the excel URL for a day we already saved. Returns xls, login, absent, or error."""
     date_str = day.strftime("%Y-%m-%d")
     try:
         token = switch_trade_date(ss, date_str, token)
         resp = ss.get(EXCEL_DAILY_URL, timeout=30)
     except Exception as exc:  # noqa: BLE001
         log(f"  session probe {date_str} error: {exc}")
-        return False, token
-    return is_xls_bytes(resp.content, resp.headers.get("Content-Type", "")), token
+        return "error", token
+    return excel_response_kind(resp.content, resp.headers.get("Content-Type", "")), token
 
 
 def download_from_account_begin(
@@ -560,9 +581,10 @@ def download_from_account_begin(
     """Download from the first day this login has a settlement report through today.
 
     Walks backward from the earliest local file (or today). A run of days with
-    no matching 交易日期 is the account begin boundary. An empty HTTP body is
-    either that same gap or a dead session; a known later day is probed so a
-    dropped login is renewed instead of cutting history short.
+    no matching 交易日期 is the account begin boundary. An empty body means that
+    date has no workbook yet (today is often unpublished). Only a login page,
+    or an empty body for a day already saved, renews the session. Probing
+    today itself when nothing is on disk used to abort the whole history.
     """
     disabled = fetch_disabled_dates()
     today = shanghai_today()
@@ -587,12 +609,20 @@ def download_from_account_begin(
     misses = 0
     relogins = 0
 
-    def renew_if_session_dead(when: dt.date) -> bool:
+    def renew_if_session_dead(when: dt.date, fetched: DayFetch) -> bool:
         """Return True when the session was dead and has been replaced. Caller retries `when`."""
         nonlocal ss, token, cookies, relogins
-        known = last_downloaded_date(dest_dir, user_id) or on_or_before_trading_day(today, disabled)
-        alive, token = excel_session_alive(ss, token, known)
-        if alive:
+        dead = fetched.status == "login"
+        if not dead:
+            known = last_downloaded_date(dest_dir, user_id)
+            # Nothing saved yet: the day we just asked for is often today, and
+            # 监控中心 answers with an empty body until 结算 is published.
+            # Using that same day as the liveness probe always looks logged-out.
+            if known is None or known == when:
+                return False
+            kind, token = excel_session_alive(ss, token, known)
+            dead = kind != "xls"
+        if not dead:
             return False
         relogins += 1
         if relogins > 4:
@@ -617,7 +647,13 @@ def download_from_account_begin(
             log(
                 f"  {date_str}  no settlement ({misses}/{INCEPTION_MISS_LIMIT}, inside {fetched.detail})"
             )
-        elif renew_if_session_dead(cursor):
+        elif fetched.status == "absent":
+            if renew_if_session_dead(cursor, fetched):
+                continue
+            misses += 1
+            discarded += 1
+            log(f"  {date_str}  no settlement ({misses}/{INCEPTION_MISS_LIMIT})")
+        elif renew_if_session_dead(cursor, fetched):
             continue
         else:
             misses += 1
@@ -650,8 +686,13 @@ def download_from_account_begin(
             elif fetched.status == "mismatch":
                 discarded += 1
                 log(f"  {label} {date_str}  discarded (inside {fetched.detail})")
+            elif fetched.status == "absent":
+                if renew_if_session_dead(day, fetched):
+                    continue
+                discarded += 1
+                log(f"  {label} {date_str}  no settlement")
             elif fetched.status != "skipped":
-                if renew_if_session_dead(day):
+                if renew_if_session_dead(day, fetched):
                     continue
                 discarded += 1
                 log(f"  {label} {date_str}  no xls")

@@ -28,6 +28,13 @@ const ACCOUNT = { type: "string", description: "资金账号，与 /accounts 返
 
 export const MOM_DATA_MCP_TOOLS: Tool[] = [
   {
+    name: "mom_briefing",
+    description: "下载 MOM 风控简报。不传 date 就是最新交易日。返回 file_name 和 content_base64。把文件保存后交给用户，不要改数字，不要另写报告，不要再用别的工具重算。page_url 是网站上带图表的同一页。需要 MOM数据API。",
+    inputSchema: obj({
+      date: { type: "string", description: "YYYY-MM-DD。不传则用最新交易日" },
+    }),
+  },
+  {
     name: "mom_underlying",
     description: "投资分析「MOM底层」表。每行是一只产品及其对比账户或单账户。返回产品名、备案号、账户、账户说明、策略、最新单位净值、涨跌幅（百分点，-1.48 表示 -1.48%）和最新权益（元）。kind=compare 是 MOM 对比账户，kind=account 是单账户资金账号。q 按产品、备案号、账户或策略筛选。只读，不修改关联。这不是 mom_accounts 的母基金核算列表。",
     inputSchema: obj({
@@ -320,6 +327,8 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<Mo
     if (value != null && value !== "") record[key] = String(value)
   }
   switch (name) {
+    case "mom_briefing":
+      return handleMomDataRequest("briefing", record)
     case "mom_underlying":
       return handleMomDataRequest("underlying", record)
     case "mom_accounts":

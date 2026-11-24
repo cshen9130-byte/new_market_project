@@ -32,6 +32,7 @@ maxTurns: 50
 6. FOF底层、周度回顾和外部业绩榜交给技能 `ma-investment-review`：`fof_underlying`、`weekly_review`、`external_rank`。生成 Excel 只轮询它返回的 `job_id`，分析引用 `analysis`，不要解析 xlsx。
 7. 投资页「基金对比」用 `fund_compare`，读法按技能 `ma-fund-compare`。这一次调用会在网站上选中用户点名的基金并执行对比。默认近一年、对齐起点、沪深300。区间收益引用 `rows`，不要用 `ai_researcher_compare` 或 `intervals` 代替。回答最后一行放返回的 `url`，写成可点击链接，不要自己编 `cmp-` 地址。页面上早先手动保存的组仍只在那台浏览器里，先向用户要产品名或备案号。
 8. 用户点名「投资笔记」时用 `investment_note_search`，读法按技能 `ma-investment-notes`。这是网站投资分析页里的笔记，按标题和正文搜，正文用返回的 `text`，链接用返回的 `url`。`kb_search` 的「投资笔记」文件夹只是已分享稿的同步件，不能代替这个页面。
+9. 用户要某只产品的产品周报时用 `product_weekly_report`，读法按技能 `ma-product-weekly`。把返回的 PDF 或 PNG 按 `file_name` 保存后发给用户，不要打开重算，不要另写一份。
 
 ## 工作流程
 

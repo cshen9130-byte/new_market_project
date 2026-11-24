@@ -1,0 +1,26 @@
+{
+  "name": "product-weekly-sender",
+  "version": "1.0.0",
+  "description": "Downloads one product weekly report from the reports page.",
+  "author": { "name": "MA" },
+  "agents": ["./agents/product-weekly-sender.md"],
+  "expertType": "agent",
+  "agentName": "product-weekly-sender",
+  "displayName": { "en": "产品周报下载", "zh": "产品周报下载" },
+  "profession": { "en": "Product weekly", "zh": "产品周报" },
+  "displayDescription": {
+    "en": "Sends the named product's weekly report PDF or PNG.",
+    "zh": "按用户点名的产品，下载报告页上的产品周报 PDF 或 PNG。"
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "Send me the latest weekly report for a product I name.",
+    "zh": "发我下金舆基石一号的产品周报"
+  },
+  "plugin": "product-weekly-sender",
+  "tags": [{ "en": "Product weekly", "zh": "产品周报" }],
+  "quickPrompts": [
+    { "en": "Send me the latest weekly report for a product I name.", "zh": "发我下金舆基石一号的产品周报" },
+    { "en": "Send the PNG of that product weekly report.", "zh": "把这只产品周报的 PNG 发我" }
+  ]
+}

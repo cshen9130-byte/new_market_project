@@ -74,6 +74,16 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     ),
   },
   {
+    name: "product_weekly_report",
+    area: "managed",
+    description: "下载报告页「产品周报」里某只产品的周报文件。传入产品名或备案号。默认最新一周的 PDF，format=png 为图片。返回 file_name 和 content_base64。把文件交给用户，不要打开重算，不要另写报告。名称对应多只时不会猜。需要投资池权限。",
+    inputSchema: obj({
+      q: { type: "string", description: "产品名或备案号，例如 金舆基石一号" },
+      week_end: { type: "string", description: "报告周结束日 YYYY-MM-DD。不传则用该产品最新一周" },
+      format: { type: "string", description: "pdf（默认）或 png" },
+    }, ["q"]),
+  },
+  {
     name: "managed_products_list",
     area: "managed",
     description:

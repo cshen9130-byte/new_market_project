@@ -134,6 +134,22 @@ export function resolveNextWeeklyReportGap(
   }
 }
 
+/**
+ * True when a live NAV date is newer than the date stored on the last weekly
+ * report. Equal dates need no rebuild. An unknown live date is not a catch-up.
+ * A product with NAV but no stored report date still needs a report.
+ */
+export function weeklyNavCatchUpNeeded(
+  liveNavDate: string | null | undefined,
+  storedLatestNavDate: string | null | undefined,
+): boolean {
+  const live = (liveNavDate || "").slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(live)) return false
+  const stored = (storedLatestNavDate || "").slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(stored)) return true
+  return live > stored
+}
+
 /** Convenience: only the missing trading-day count (null when latest NAV unknown). */
 export function daysBehindNextWeeklyReport(
   latestNavDate: string | null | undefined,

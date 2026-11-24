@@ -482,9 +482,49 @@ cron.schedule("30 18 * * 1-5", () => {
     })()
   })
 
-  // Nightly 22:30 Beijing: system weekly reports, plus 月报 / 季报 / 持有期报告 in the same job.
+  // System weekly reports. Nightly 22:30 also builds 月报 / 季报 / 持有期报告.
+  // Weekday 10:10 / 13:10 / 16:10 / 19:10 only rebuild products whose list-cache
+  // NAV date moved past the date stored on the report. A Friday point that lands
+  // after 22:30 otherwise waits until the next night, and 距下期缺日 stays 缺1日.
   // Idempotent: skips products that already have the latest available-data week.
   // Skipped on Windows->:5433 tunnel unless forced (same as other heavy ETLs).
+  const scheduleAutoWeekly = (expr: string, mode: "full" | "catchup") => {
+    cron.schedule(expr, () => {
+      void (async () => {
+        try {
+          if (mode === "catchup") {
+            const { shouldYieldBackgroundWorkToUsers } = await import("./user-activity-priority")
+            if (shouldYieldBackgroundWorkToUsers({ mutatingOnly: true })) {
+              console.log("[auto-weekly-etl] catch-up deferred: users uploading")
+              return
+            }
+            const { getEmailParseFetchJobStatus, isEmailParseFetchJobLockedElsewhere } = await import(
+              "./email-parse-fetch-job"
+            )
+            const mail = getEmailParseFetchJobStatus()
+            if (
+              mail?.status === "running" ||
+              mail?.status === "queued" ||
+              isEmailParseFetchJobLockedElsewhere()
+            ) {
+              console.log("[auto-weekly-etl] catch-up deferred: email parse in progress")
+              return
+            }
+          }
+          const { runScheduledAutoWeeklyReportsEtl } = await import("./auto-weekly-reports-etl-job")
+          runScheduledAutoWeeklyReportsEtl(mode)
+        } catch (e) {
+          console.error("[auto-weekly-etl] scheduler error:", e)
+        }
+      })()
+    }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+  }
+  scheduleAutoWeekly("10 10 * * 1-5", "catchup")
+  scheduleAutoWeekly("10 13 * * 1-5", "catchup")
+  scheduleAutoWeekly("10 16 * * 1-5", "catchup")
+  scheduleAutoWeekly("10 19 * * 1-5", "catchup")
+  scheduleAutoWeekly("30 22 * * *", "full")
+
   // Daily at 22:45: rebuild 周度回顾 Excel for the last three weeks with >80% NAV coverage.
   cron.schedule("45 22 * * *", () => {
     void (async () => {
@@ -494,17 +534,6 @@ cron.schedule("30 18 * * 1-5", () => {
         console.log(`[weekly-review-excel] daily ${JSON.stringify(generated.items)}`)
       } catch (e) {
         console.error("[weekly-review-excel] daily scheduler error:", e)
-      }
-    })()
-  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
-
-  cron.schedule("30 22 * * *", () => {
-    void (async () => {
-      try {
-        const { runScheduledAutoWeeklyReportsEtl } = await import("./auto-weekly-reports-etl-job")
-        runScheduledAutoWeeklyReportsEtl()
-      } catch (e) {
-        console.error("[auto-weekly-etl] scheduler error:", e)
       }
     })()
   }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })

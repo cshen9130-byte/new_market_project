@@ -278,6 +278,12 @@ metrics = requests.get(f"{BASE}/account/metrics", params={"account": account}, h
 print(account, daily["data"]["rows"][0]["margin_usage_pct"], metrics["data"]["var"]["var_95_loss"])
 ${FENCE}
 
+## MOM 风控简报
+
+\`GET /briefing\`。MCP：\`mom_briefing\`。需要 MOM数据API。
+
+不传 \`date\` 就是最新交易日。指定某日时传 \`YYYY-MM-DD\`。返回的 \`content_base64\` 解码后就是 \`file_name\`（\`MOM风控简报-日期.html\`）。当日预估收益率、当年累计收益率和总规模与网站简报页第一栏同一套净值。\`page_url\` 打开带图表的完整页面。
+
 ## MOM底层
 
 \`GET /underlying\`。MCP：\`mom_underlying\`。
@@ -303,7 +309,7 @@ ${FENCE}
 
 账户没有「MOM数据API」权限时，这个地址直接 403，\`tools/list\` 也不会出现。WorkBuddy 优先用下方的 OAuth 登录。
 
-工具：\`mom_underlying\`、\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\`、\`mom_risk_var_history\`、\`cfmmc_overview\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`mom_underlying\` 是投资分析「MOM底层」表。日间风控工具调用 \`/risk/var\`、\`/risk/margin\`、\`/risk/var-forecast\`、\`/risk/marginal\`、\`/risk/var-history\`。保证金和次日 VaR 的历史要传 \`history=1\` 或日期。板块和品种的 VaR 金额用 \`mom_risk_var_history\`。\`cfmmc_overview\` 是单账户总览表。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
+工具：\`mom_briefing\`、\`mom_underlying\`、\`mom_accounts\`、\`mom_account_daily\`、\`mom_account_trades\`、\`mom_account_positions\`、\`mom_account_closes\`、\`mom_account_orders\`、\`mom_account_products\`、\`mom_account_cashflows\`、\`mom_account_metrics\`、\`mom_risk_var\`、\`mom_risk_margin\`、\`mom_risk_var_forecast\`、\`mom_risk_marginal\`、\`mom_risk_var_history\`、\`cfmmc_overview\`、\`cfmmc_accounts\`、\`cfmmc_account_nav\`、\`cfmmc_account_daily\`、\`cfmmc_account_positions\`、\`cfmmc_account_trades\`、\`cfmmc_account_closes\`、\`cfmmc_rows\`。参数与上面的 query 同名。\`mom_underlying\` 是投资分析「MOM底层」表。日间风控工具调用 \`/risk/var\`、\`/risk/margin\`、\`/risk/var-forecast\`、\`/risk/marginal\`、\`/risk/var-history\`。保证金和次日 VaR 的历史要传 \`history=1\` 或日期。板块和品种的 VaR 金额用 \`mom_risk_var_history\`。\`cfmmc_overview\` 是单账户总览表。\`cfmmc_rows\` 用 \`dataset\` 选择单账户导入表，其中 \`nav\` 是复权净值。返回仍是 \`{ error_code, msg, data }\`。
 
 先 \`mom_underlying\` 看产品挂了哪个对比账户或单账户。母基金核算账号用 \`mom_accounts\`。单账户总览用 \`cfmmc_overview\`，单账户净值用 \`cfmmc_account_nav\`。账号以接口返回为准。
 

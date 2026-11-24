@@ -1,0 +1,26 @@
+{
+  "name": "mom-briefing-sender",
+  "version": "1.0.0",
+  "description": "Downloads the latest MOM daily risk briefing file.",
+  "author": { "name": "MA" },
+  "agents": ["./agents/mom-briefing-sender.md"],
+  "expertType": "agent",
+  "agentName": "mom-briefing-sender",
+  "displayName": { "en": "MOM简报下载", "zh": "MOM简报下载" },
+  "profession": { "en": "MOM briefing", "zh": "MOM简报" },
+  "displayDescription": {
+    "en": "Sends the latest MOM risk briefing file when asked.",
+    "zh": "按用户的要求下载最新日或指定日的 MOM 风控简报文件。"
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "en": "Send me the latest MOM briefing.",
+    "zh": "发我下最新日的 MOM简报"
+  },
+  "plugin": "mom-briefing-sender",
+  "tags": [{ "en": "MOM briefing", "zh": "MOM简报" }],
+  "quickPrompts": [
+    { "en": "Send me the latest MOM briefing.", "zh": "发我下最新日的 MOM简报" },
+    { "en": "Send the MOM briefing for a date I name.", "zh": "发我某一天的 MOM 风控简报" }
+  ]
+}

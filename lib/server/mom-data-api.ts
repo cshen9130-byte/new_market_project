@@ -931,6 +931,7 @@ function catalog() {
     endpoints: [
       { method: "GET", path: "/accounts", description: "账户列表，含最新权益、保证金使用率和风险度" },
       { method: "GET", path: "/underlying", description: "投资分析 MOM底层表：产品、备案号、对比账户或单账户、策略、最新净值、涨跌幅和最新权益" },
+      { method: "GET", path: "/briefing", description: "最新日或指定日的 MOM 风控简报文件。content_base64 解码为 HTML" },
       { method: "GET", path: "/account/daily", description: "单账户每日核算：权益、盈亏、保证金使用率、风险度" },
       { method: "GET", path: "/account/trades", description: "期货成交、期权成交，以及 market=detail 的成交明细原表" },
       { method: "GET", path: "/account/positions", description: "期货持仓、期权持仓，以及 market=detail 的持仓明细原表。默认最近一个交易日" },
@@ -972,6 +973,8 @@ export async function handleMomDataRequest(
         return await listAccounts(record)
       case "underlying":
         return await (await import("@/lib/server/mom-underlying-api")).getMomUnderlying(record)
+      case "briefing":
+        return await (await import("@/lib/server/mom-briefing-file")).getMomBriefingFile(record)
       case "account/daily":
         return await accountDaily(record)
       case "account/trades":

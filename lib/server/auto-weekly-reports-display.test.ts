@@ -4,6 +4,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import {
+  autoWeeklyCatchUpProductNames,
   autoWeeklyReportDedupeKey,
   autoWeeklyWeekGroupKey,
   pickPreferredAutoWeeklyReports,
@@ -89,5 +90,52 @@ describe("pickPreferredAutoWeeklyReports", () => {
       picked.map((item) => item.id),
       ["l1"],
     )
+  })
+})
+
+describe("autoWeeklyCatchUpProductNames", () => {
+  const reports = [
+    {
+      product_name: "金舆稳健增长1号FOF",
+      beian_hao: "SCU622",
+      latestNavDate: "2026-11-19",
+    },
+    {
+      product_name: "金舆稳健增长二号",
+      beian_hao: "S00002",
+      latestNavDate: "2026-11-20",
+    },
+  ]
+
+  it("includes a product when list-cache NAV is past the stored report date", () => {
+    const names = autoWeeklyCatchUpProductNames(
+      [
+        { product_name: "金舆稳健增长1号FOF", beian_hao: "SCU622", nav_date: "2026-11-20" },
+        { product_name: "金舆稳健增长二号", beian_hao: "S00002", nav_date: "2026-11-20" },
+      ],
+      reports,
+    )
+    assert.deepEqual(names, ["金舆稳健增长1号FOF"])
+  })
+
+  it("matches a report by product name when the cache row has no filing code", () => {
+    const behind = autoWeeklyCatchUpProductNames(
+      [{ product_name: "金舆稳健增长1号FOF", beian_hao: null, nav_date: "2026-11-20" }],
+      reports,
+    )
+    assert.deepEqual(behind, ["金舆稳健增长1号FOF"])
+    const caughtUp = autoWeeklyCatchUpProductNames(
+      [{ product_name: "金舆稳健增长1号FOF", beian_hao: null, nav_date: "2026-11-19" }],
+      reports,
+    )
+    assert.deepEqual(caughtUp, [])
+  })
+
+  it("leaves a product alone once the stored date has caught the live date", () => {
+    const names = autoWeeklyCatchUpProductNames(
+      [{ product_name: "金舆稳健增长1号FOF", beian_hao: "SCU622", nav_date: "2026-11-20" }],
+      [{ product_name: "金舆稳健增长1号FOF", beian_hao: "SCU622", latestNavDate: "2026-11-20" }],
+    )
+    assert.deepEqual(names, [])
   })
 })

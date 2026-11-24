@@ -96,7 +96,7 @@ WorkBuddy 优先用下方的 OAuth 登录。Cursor、豆包、Codex、Claude 用
 同一地址还会按当前 API Key 所属账户开放内部工具。权限与网页相同。
 
 - 跟踪池（需投资页）：\`tracking_pools\`、\`tracking_pool_list\`、\`tracking_pool_detail\`、\`fund_compare\`、\`weekly_review\`、\`external_rank\`。detail 里的 \`team_note\` / \`personal_note\` 是跟踪池短备注。基金对比、周度回顾和外部私募业绩排行见文末。
-- 在管产品（需投资池权限）：\`managed_products_list\`、\`fof_underlying\`。FOF底层见文末。
+- 在管产品（需投资池权限）：\`managed_products_list\`、\`product_weekly_report\`、\`fof_underlying\`。产品周报和 FOF 底层见文末。
 - AI 研究员（需 AI 研究员）：\`ai_researcher_compare\`、\`ai_researcher_similar\`、\`ai_researcher_opposite\`、\`ai_researcher_roadshow\`、\`ai_researcher_team_background\`、\`ai_researcher_manager_profile\`。
 - AI 知识库（需 AI 知识库）：问某人观点用 \`kb_ask\`，只要原文片段用 \`kb_search\`，读全文用 \`kb_read\`，看有哪些文件用 \`kb_list\`。见下方「问知识库」。
 - 外部业绩榜（需投资页，并且要有 AI 知识库）：\`external_rank_compare\`。用知识库里的点睛等业绩榜 xlsx，和跟踪池同一策略对比。见下方「外部业绩榜」。
@@ -455,6 +455,8 @@ ${FENCE}
 ### 在管产品
 
 需要投资池（在管产品）权限。没有该权限时，MCP 的 tools/list 里不会出现这个工具。
+
+\`product_weekly_report\` 下载报告页「产品周报」里某一只的周报。\`q\` 是产品名或备案号，默认最新一周 PDF，\`format\` 可改为 \`png\`。返回 \`file_name\` 和 \`content_base64\`。名称对上多只时不会猜。
 
 ${FENCE}json
 {

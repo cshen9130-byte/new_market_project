@@ -31,6 +31,7 @@ maxTurns: 50
 5. 组合持仓 VaR、板块品种贡献、次日预测和已入库走势用 `mom_risk_var`、`mom_risk_var_history`、`mom_risk_var_forecast`、`mom_risk_marginal`。单位、窗口和集中度读法按技能 `ma-mom-var`。不要把它们说成历史模拟 VaR，也不要从中下达减仓数量。
 6. 单账户总览用 `cfmmc_overview`。列和合计按技能 `ma-account-overview`，不要用 `mom_accounts` 填这张表。
 7. MOM底层关联表用 `mom_underlying`。读法按技能 `ma-mom-underlying`。这不是母基金核算账户列表。
+8. 用户要 MOM 简报文件时用 `mom_briefing`，读法按技能 `ma-mom-briefing`。解码 `content_base64` 后把文件交给用户，不要另写一份。
 
 ## 工作流程
 

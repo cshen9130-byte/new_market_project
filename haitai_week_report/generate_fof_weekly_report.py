@@ -550,18 +550,99 @@ def find_cn_font_path() -> str | None:
     return None
 
 
+def _cjk_face_names(path: str) -> list[tuple[int, str]]:
+    """Family name of every face in a font file. A TTC has one face per language."""
+    from matplotlib import ft2font
+
+    try:
+        first = ft2font.FT2Font(path)
+    except Exception:
+        return []
+    count = max(1, int(getattr(first, "num_faces", 1) or 1))
+    names: list[tuple[int, str]] = []
+    for index in range(count):
+        try:
+            face = first if index == 0 else ft2font.FT2Font(path, face_index=index)
+        except Exception:
+            continue
+        name = str(getattr(face, "family_name", "") or "").strip()
+        if name:
+            names.append((index, name))
+    return names
+
+
+def _simplified_family_rank(name: str) -> int:
+    """Prefer a Simplified Chinese face over the Japanese one in the same file.
+
+    Noto Sans CJK and Source Han ship JP, KR, SC, TC, and HK in one collection.
+    Face 0 is Japanese. Shared characters such as 置 and 暴 then use Japanese
+    shapes even though the text is simplified.
+    """
+    low = (name or "").strip().lower()
+    if not low:
+        return 0
+    if any(token in low for token in (" cjk jp", " cjk kr", " cjk tc", " cjk hk", "japanese", "korean")):
+        return 0
+    if low.endswith((" jp", " kr", " tc", " hk")) or " traditional" in low:
+        return 0
+    if "cjk sc" in low or low.endswith(" sc") or "sans sc" in low or "简体" in name:
+        return 100
+    if "yahei" in low and "ui" not in low:
+        return 90
+    if any(token in low for token in ("simhei", "simsun", "pingfang", "wqy", "wenquan", "micro hei", "source han sans cn")):
+        return 80
+    if "yahei" in low:
+        return 70
+    return 0
+
+
+def _best_simplified_family(path: str) -> str | None:
+    ranked = [
+        (_simplified_family_rank(name), name)
+        for _index, name in _cjk_face_names(path)
+        if _simplified_family_rank(name) > 0
+    ]
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[0][1]
+
+
+def _font_for_report(path: str) -> FontProperties:
+    """Open a Chinese font on its Simplified face.
+
+    Pinning the collection path makes Matplotlib load face 0. For Noto CJK
+    that face is Japanese, so the report asks for the SC family by name
+    after every face in the file has been registered.
+    """
+    try:
+        fontManager.addfont(path)
+    except Exception:
+        pass
+    faces = _cjk_face_names(path)
+    best = _best_simplified_family(path)
+    face0 = faces[0][1] if faces else ""
+    if best and best != face0:
+        chosen = FontProperties(family=best)
+        try:
+            found = fontManager.findfont(chosen, fallback_to_default=False)
+            index = int(getattr(found, "face_index", 0) or 0)
+            from matplotlib import ft2font
+            found_name = str(ft2font.FT2Font(str(found), face_index=index).family_name or "")
+        except Exception:
+            found_name = ""
+        if found_name == best:
+            return chosen
+    return FontProperties(fname=path)
+
+
 def configure_cn_font() -> tuple[FontProperties | None, FontProperties | None]:
     path = find_cn_font_path()
     if not path:
         matplotlib.rcParams["axes.unicode_minus"] = False
         return None, None
 
-    try:
-        fontManager.addfont(path)
-    except Exception:
-        pass
-
-    fp = FontProperties(fname=path)
+    fp = _font_for_report(path)
     try:
         family = fp.get_name()
     except Exception:
@@ -571,7 +652,7 @@ def configure_cn_font() -> tuple[FontProperties | None, FontProperties | None]:
     matplotlib.rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
     matplotlib.rcParams["font.family"] = "sans-serif"
 
-    fp_bold = FontProperties(fname=path)
+    fp_bold = fp.copy()
     try:
         fp_bold.set_weight("bold")
     except Exception:
@@ -1268,6 +1349,11 @@ def _is_longview_child_marker(marker: str) -> bool:
     return bool(marker) and marker[:1] in "•·●▪-*—"
 
 
+def _keeps_following_bullets(body: str) -> bool:
+    """A sentence ending in a colon introduces the dashed lines written under it."""
+    return (body or "").rstrip().endswith(("：", ":"))
+
+
 def _explode_longview_lines(text: str) -> list[str]:
     cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     cleaned = _VIEW_HEADING_RE.sub(lambda m: "\n" + m.group(1) + "\n", cleaned)
@@ -1312,6 +1398,8 @@ def _structure_longview_blocks(text: str) -> list[tuple[str, str]]:
     1. 2. 3. even when the numbers were omitted, written as 1、 （1） or -.
     A longer bare line, such as 「下一步 FOF 组合调仓与投资策略」, is a numbered
     subtitle and the following unnamed 「名称：」 lines sit under it.
+    A dashed line under a sentence that already ends with a colon stays with
+    that sentence. 「权益配置：」 keeps its label and does not take the next number.
     """
     rows = _merge_hanging_labels([
         _strip_longview_marker(line) for line in _explode_longview_lines(text)
@@ -1319,12 +1407,14 @@ def _structure_longview_blocks(text: str) -> list[tuple[str, str]]:
     blocks: list[tuple[str, str]] = []
     number = 0
     subtitle_open = False
+    lead_in_open = False
 
     def add_point(body: str, as_title: bool) -> None:
-        nonlocal number, subtitle_open
+        nonlocal number, subtitle_open, lead_in_open
         number += 1
         blocks.append(("item", f"{number}. {body}"))
         subtitle_open = as_title
+        lead_in_open = (not as_title) and _keeps_following_bullets(body)
 
     for marker, body in rows:
         if not body:
@@ -1334,11 +1424,15 @@ def _structure_longview_blocks(text: str) -> list[tuple[str, str]]:
             blocks.append(("heading", heading))
             number = 0
             subtitle_open = False
+            lead_in_open = False
             continue
         if _is_longview_subtitle(body):
             add_point(body, True)
             continue
         if subtitle_open and (not marker or _is_longview_child_marker(marker)):
+            blocks.append(("body", body))
+            continue
+        if lead_in_open and _is_longview_child_marker(marker):
             blocks.append(("body", body))
             continue
         add_point(body, False)
@@ -1389,7 +1483,7 @@ def _longview_runs(text: str, empty_label: str) -> list:
                 runs.append(("line", "item", pieces))
                 for line in wrapped[1:]:
                     runs.append(("line", "item-cont", [("body", line)], marker_label + " "))
-                indent_next = False
+                indent_next = _keeps_following_bullets(body)
             continue
 
         lead, rest = _split_lead_in(chunk)
@@ -2005,10 +2099,9 @@ def draw_strategy_donut(fig, rect: list[float], slices: list[dict], fp) -> None:
 
     fontsize = 6.5
     font_props = None
-    if fp is not None and fp.get_file():
-        font_props = FontProperties(fname=fp.get_file(), size=fontsize)
-    elif fp is not None:
-        font_props = FontProperties(family=fp.get_name(), size=fontsize)
+    if fp is not None:
+        font_props = fp.copy()
+        font_props.set_size(fontsize)
 
     fig_w, fig_h = fig.get_size_inches()
     side_in = min(width * fig_w, height * fig_h)
@@ -2103,8 +2196,10 @@ def ret_color(val: float) -> str:
 
 def draw_text(ax, x, y, text, fp, size=12, color=C_TEXT, weight="normal", ha="left", va="center"):
     if fp is not None:
-        font_file = fp.get_file()
-        font_props = FontProperties(fname=font_file) if font_file else FontProperties(family=fp.get_name())
+        # Copy the selected face. Reopening the file by path loads face 0,
+        # which is Japanese in a Noto CJK collection.
+        font_props = fp.copy()
+        font_props.set_size(size)
         if weight != "normal":
             font_props.set_weight(weight)
         ax.text(

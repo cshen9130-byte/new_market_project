@@ -16,7 +16,9 @@ import {
 import {
   daysBehindNextWeeklyReport,
   resolveLatestAvailableDataWeek,
+  weeklyNavCatchUpNeeded,
 } from "@/lib/server/auto-weekly-report-week"
+import { listCustomFundNavRows } from "@/lib/server/custom-fund-nav"
 import {
   findCustomFundByName,
   getCustomFundByCode,
@@ -502,6 +504,114 @@ function resolveExtraProduct(name: string): AutoWeeklyTargetProduct | null {
     beian_hao: null,
     source: "extra",
   }
+}
+
+function rememberLatestNav(stored: Map<string, string>, key: string, nav: string): void {
+  const prev = stored.get(key)
+  if (!prev || nav > prev) stored.set(key, nav)
+}
+
+/** Newest `latestNavDate` already written for this product, matched by code or name. */
+export function storedAutoWeeklyNavDate(
+  reports: Array<{ product_name: string; beian_hao: string | null; latestNavDate?: string | null }>,
+  product_name: string,
+  beian_hao: string | null,
+): string | null {
+  const stored = new Map<string, string>()
+  for (const row of reports) {
+    const nav = (row.latestNavDate || "").slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nav)) continue
+    rememberLatestNav(stored, autoWeeklyProductKey(row.product_name, row.beian_hao), nav)
+    rememberLatestNav(stored, autoWeeklyProductKey(row.product_name, null), nav)
+    const code = (row.beian_hao || "").trim().toUpperCase()
+    if (code) rememberLatestNav(stored, `code:${code}`, nav)
+  }
+  const keys = [
+    autoWeeklyProductKey(product_name, beian_hao),
+    autoWeeklyProductKey(product_name, null),
+  ]
+  const code = (beian_hao || "").trim().toUpperCase()
+  if (code) keys.push(`code:${code}`)
+  let best: string | null = null
+  for (const key of keys) {
+    const hit = stored.get(key)
+    if (hit && (!best || hit > best)) best = hit
+  }
+  return best
+}
+
+/**
+ * Product names whose live NAV date is ahead of the date stored on their weekly
+ * report. Daytime catch-up uses this so a Friday point that lands after 22:30
+ * does not wait until the next night.
+ */
+export function autoWeeklyCatchUpProductNames(
+  live: Array<{ product_name: string; beian_hao: string | null; nav_date: string | null }>,
+  reports: Array<{ product_name: string; beian_hao: string | null; latestNavDate?: string | null }>,
+): string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (const row of live) {
+    const name = (row.product_name || "").trim()
+    if (!name || seen.has(name)) continue
+    const stored = storedAutoWeeklyNavDate(reports, name, row.beian_hao)
+    if (!weeklyNavCatchUpNeeded(row.nav_date, stored)) continue
+    seen.add(name)
+    names.push(name)
+  }
+  return names
+}
+
+function latestListedCustomFundNavDate(productCode: string): string | null {
+  let latest: string | null = null
+  for (const row of listCustomFundNavRows(productCode)) {
+    const date = row.nav_date?.slice(0, 10)
+    if (!date) continue
+    if (!latest || date > latest) latest = date
+  }
+  return latest
+}
+
+/** Managed products (list cache) plus extras whose NAV moved past the stored report. */
+export async function listAutoWeeklyCatchUpProductNames(): Promise<string[]> {
+  const reports = listAutoWeeklyReports()
+  const rows = await query<{
+    product_name: string
+    beian_hao: string | null
+    nav_date: string | null
+  }>(
+    `SELECT BTRIM(m.product_name) AS product_name,
+            NULLIF(BTRIM(cache.beian_hao), '') AS beian_hao,
+            cache.nav_date::text AS nav_date
+     FROM managed_products m
+     LEFT JOIN ops_managed_products_list_cache cache ON cache.managed_product_id = m.id
+     WHERE m.product_name <> '合计'`,
+  ).catch(() => [] as { product_name: string; beian_hao: string | null; nav_date: string | null }[])
+
+  const live = rows.map((row) => ({
+    product_name: row.product_name,
+    beian_hao: row.beian_hao,
+    nav_date: row.nav_date ? String(row.nav_date).slice(0, 10) : null,
+  }))
+
+  for (const extraName of AUTO_WEEKLY_EXTRA_PRODUCT_NAMES) {
+    const extra = resolveExtraProduct(extraName)
+    if (!extra?.beian_hao) continue
+    if (live.some((row) => row.product_name.trim() === extra.product_name)) continue
+    let nav_date: string | null = null
+    try {
+      nav_date = latestListedCustomFundNavDate(extra.beian_hao)
+    } catch {
+      nav_date = null
+    }
+    live.push({
+      product_name: extra.product_name,
+      beian_hao: extra.beian_hao,
+      nav_date,
+    })
+  }
+
+  return autoWeeklyCatchUpProductNames(live, reports)
 }
 
 export async function listAutoWeeklyTargetProducts(): Promise<AutoWeeklyTargetProduct[]> {

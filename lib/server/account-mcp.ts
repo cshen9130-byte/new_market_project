@@ -590,6 +590,24 @@ export async function callAccountMcpTool(
       return trackingDetail(account, args)
     case "managed_products_list":
       return managedProducts(account, args)
+    case "product_weekly_report": {
+      const { getProductWeeklyReportFile } = await import("@/lib/server/product-weekly-report-file")
+      const result = await getProductWeeklyReportFile(account, {
+        q: str(args, "q") || str(args, "product") || str(args, "name") || str(args, "reg_code"),
+        week_end: str(args, "week_end"),
+        format: str(args, "format"),
+      })
+      if (result.error_code !== 0) {
+        const data = result.data as { products?: string[]; weeks?: string[] } | null
+        const extra = data?.products?.length
+          ? `：${data.products.join("、")}`
+          : data?.weeks?.length
+            ? `。已有周：${data.weeks.join("、")}`
+            : ""
+        throw new Error(`${result.msg}${extra}`)
+      }
+      return result.data
+    }
     case "ai_researcher_compare": {
       const subjects = stringList(args.subjects)
       if (subjects.length === 0) throw new Error("请提供 subjects")

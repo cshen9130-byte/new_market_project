@@ -14,7 +14,8 @@ import {
 import { getUserById } from "@/lib/server/users"
 
 const JOB_KEY = "__autoWeeklyReportsEtl"
-const MIN_RERUN_MS = 6 * 60 * 60 * 1000
+/** Weekday catch-up slots are 3 hours apart. Stay under that so the next slot can run. */
+const MIN_RERUN_MS = 2.5 * 60 * 60 * 1000
 
 export type AutoWeeklyReportsEtlJobStatus = {
   status: "queued" | "running" | "done" | "error"
@@ -50,6 +51,10 @@ export function startAutoWeeklyReportsEtlJob(options?: {
   force?: boolean
   limit?: number
   productNames?: string[]
+  /** Nightly run also builds 月报 / 季报 / 持有期. Daytime catch-up leaves those alone. */
+  includeOfficial?: boolean
+  /** Default: refresh 我的报告 unless this call is limited to named products. */
+  includeMine?: boolean
 }):
   | { ok: true }
   | { ok: false; reason: "already_running" | "recently_ran" | "disabled" | "local_tunnel" } {
@@ -97,12 +102,17 @@ export function startAutoWeeklyReportsEtlJob(options?: {
       // Also refresh per-user 我的报告 tracked products (best-effort).
       let mineCreated = 0
       let mineFailed = 0
-      if (!options?.productNames?.length) {
+      const runMine = options?.includeMine ?? !options?.productNames?.length
+      if (runMine) {
         for (const ownerId of listMineWeeklyOwnerUserIds()) {
           try {
             const owner = await getUserById(ownerId)
             const creator = owner?.name || owner?.email || ownerId
-            const mine = await runMineWeeklyReportsEtl(ownerId, creator)
+            const mine = await runMineWeeklyReportsEtl(
+              ownerId,
+              creator,
+              options?.productNames?.length ? { productNames: options.productNames } : undefined,
+            )
             mineCreated += mine.created
             mineFailed += mine.failed
           } catch (err) {
@@ -116,23 +126,25 @@ export function startAutoWeeklyReportsEtlJob(options?: {
         }
       }
 
-      // 月报 / 季报 / 持有期报告: same nightly script, own templates and cadence.
+      // 月报 / 季报 / 持有期报告: nightly only. Daytime catch-up is weekly reports.
       let officialNote = ""
-      try {
-        const { runAutoOfficialReportsEtl } = await import("./auto-official-reports")
-        const official = await runAutoOfficialReportsEtl()
-        const fmt = (label: string, r: { created: number; existed: number; skipped: number; failed: number }) =>
-          `${label} created=${r.created} existed=${r.existed} skipped=${r.skipped} failed=${r.failed}`
-        officialNote =
-          ` | ${fmt("holding", official.holding)}` +
-          ` | ${fmt("monthly", official.monthly)}` +
-          ` | ${fmt("quarterly", official.quarterly)}`
-        console.log(`[auto-official-etl] ${officialNote.trim()}`)
-      } catch (officialErr) {
-        console.error(
-          "[auto-official-etl] failed:",
-          officialErr instanceof Error ? officialErr.message : officialErr,
-        )
+      if (options?.includeOfficial !== false) {
+        try {
+          const { runAutoOfficialReportsEtl } = await import("./auto-official-reports")
+          const official = await runAutoOfficialReportsEtl()
+          const fmt = (label: string, r: { created: number; existed: number; skipped: number; failed: number }) =>
+            `${label} created=${r.created} existed=${r.existed} skipped=${r.skipped} failed=${r.failed}`
+          officialNote =
+            ` | ${fmt("holding", official.holding)}` +
+            ` | ${fmt("monthly", official.monthly)}` +
+            ` | ${fmt("quarterly", official.quarterly)}`
+          console.log(`[auto-official-etl] ${officialNote.trim()}`)
+        } catch (officialErr) {
+          console.error(
+            "[auto-official-etl] failed:",
+            officialErr instanceof Error ? officialErr.message : officialErr,
+          )
+        }
       }
 
       job.status = "done"
@@ -171,7 +183,35 @@ export function startAutoWeeklyReportsEtlJob(options?: {
 }
 
 /** Cron entry: fire-and-forget with standard guards. */
-export function runScheduledAutoWeeklyReportsEtl(): void {
+export function runScheduledAutoWeeklyReportsEtl(mode: "full" | "catchup" = "full"): void {
+  if (mode === "catchup") {
+    void (async () => {
+      try {
+        const { listAutoWeeklyCatchUpProductNames } = await import("./auto-weekly-reports")
+        const names = await listAutoWeeklyCatchUpProductNames()
+        if (names.length === 0) {
+          console.log("[auto-weekly-etl] catch-up: nav unchanged, skip")
+          return
+        }
+        const listed = names.length <= 12 ? names.join("、") : `${names.slice(0, 12).join("、")}…`
+        console.log(`[auto-weekly-etl] catch-up ${names.length} products: ${listed}`)
+        const result = startAutoWeeklyReportsEtlJob({
+          productNames: names,
+          includeOfficial: false,
+          includeMine: true,
+        })
+        if (!result.ok) {
+          console.log(`[auto-weekly-etl] catch-up skipped: ${result.reason}`)
+        } else {
+          console.log("[auto-weekly-etl] catch-up started")
+        }
+      } catch (e) {
+        console.error("[auto-weekly-etl] catch-up error:", e)
+      }
+    })()
+    return
+  }
+
   const result = startAutoWeeklyReportsEtlJob()
   if (!result.ok) {
     console.log(`[auto-weekly-etl] skipped: ${result.reason}`)
