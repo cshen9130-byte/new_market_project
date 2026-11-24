@@ -432,7 +432,7 @@ function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsIn
     {
       kind: "pair",
       label: "已投产品",
-      text: "持仓中的私募 FOF 底层会自动写入同一策略表：已在跟踪池中的只做标注，不在跟踪池中的按同样口径补进该表。一只产品可以出现在多张表。已投行用浅黄底标出，产品名称前加「已投」。近一周分位数是该行近一周收益在本表全部有数产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。",
+      text: "持仓中的私募 FOF 底层会自动写入同一策略表：已在跟踪池中的只做标注，不在跟踪池中的按同样口径补进该表。一只产品可以出现在多张表。已投行用浅黄底标出，产品名称不加前缀。近一周分位数是该行近一周收益在本表全部有数产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。",
     },
     {
       kind: "pair",
@@ -656,7 +656,7 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
     sorted.forEach((line, i) => {
       const row = line.row
       const alt = i % 2 === 0
-      const label = line.invested ? `已投 ${row.name}` : row.name
+      const label = row.name
       const share = weekReturnTopShare(row.ret.ret_1w, weekValues)
       set(i + 1, 0, label, paint(line.invested, alt))
       const pcts = [row.ret.ret_1w, row.ret.ret_1m, row.ret.ret_3m, row.ret.ret_6m, row.ret.ret_1y]

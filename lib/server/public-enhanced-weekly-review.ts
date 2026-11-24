@@ -218,15 +218,21 @@ function perfPoint(row: FundMetrics, mode: MetricMode): PerfPoint {
   }
 }
 
-export async function buildPublicEnhancedWeeklyPerformance(weekEndRaw: string): Promise<PublicEnhancedWeeklyPerformance> {
-  const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw || defaultWeeklyReviewWeekEnd())
+export async function loadPublicEnhancedFundMetrics(weekEndRaw: string): Promise<FundMetrics[]> {
+  const { asOf } = resolveWeekWindow(weekEndRaw || defaultWeeklyReviewWeekEnd())
   const shares = collapseShares(await loadShares())
+  if (shares.length === 0) return []
   const funds = toFunds(shares)
   const histories = await loadNavHistories(funds.map((fund) => fund.beian_hao), asOf)
-  const metrics = funds.length === 0 ? [] : await computeFundMetrics(funds, asOf, histories, {
+  return computeFundMetrics(funds, asOf, histories, {
     bucketFor: (fund) => fund.l3 || PUBLIC_ENHANCED_ABSOLUTE_BUCKET,
     modeFor: (bucket) => (bucket === PUBLIC_ENHANCED_ABSOLUTE_BUCKET ? "absolute" : "excess"),
   })
+}
+
+export async function buildPublicEnhancedWeeklyPerformance(weekEndRaw: string): Promise<PublicEnhancedWeeklyPerformance> {
+  const { weekStart, weekEnd, asOf } = resolveWeekWindow(weekEndRaw || defaultWeeklyReviewWeekEnd())
+  const metrics = await loadPublicEnhancedFundMetrics(weekEnd)
   const byBucket = new Map<string, FundMetrics[]>()
   for (const row of metrics) {
     const list = byBucket.get(row.bucket) ?? []
@@ -253,7 +259,7 @@ export async function buildPublicEnhancedWeeklyPerformance(weekEndRaw: string): 
     week_start: weekStart,
     week_end: weekEnd,
     as_of: asOf,
-    fund_count: shares.length,
+    fund_count: metrics.length,
     groups,
   }
 }

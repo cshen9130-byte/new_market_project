@@ -46,9 +46,9 @@ export type BarChartSpec = {
 
 const DATA_SHEET = "图表数据"
 const NOTE =
-  "近一周均为绝对收益，与上方指数涨跌幅同一口径。已投产品对比同策略跟踪池中位数。"
+  "近一周均为绝对收益，与上方指数涨跌幅同一口径。各柱是同策略表里近一周指标最好的公募指增（指增组按超额，每组最多 5 只），柱高仍是绝对收益，对照该组跟踪池中位数。整体是两边全部产品的中位数。"
 const NAVY = "1F4E79"
-const GOLD = "C59A00"
+const PUBLIC_BAR = "2E75B6"
 const RED = "C00000"
 const GREEN = "006600"
 const ROW_PT = 22
@@ -110,22 +110,11 @@ function signedColor(value: number | null): string | null {
   return "808080"
 }
 
-function uniqueInvested(rows: ChartFundRow[]): ChartFundRow[] {
-  const seen = new Set<string>()
-  const out: ChartFundRow[] = []
-  for (const row of rows) {
-    const key = row.beian_hao.trim().toUpperCase()
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    out.push(row)
-  }
-  return out
-}
-
 export function buildWeeklyReviewMarketChartTables(
   benches: MarketBenchPoint[],
   poolRows: ChartFundRow[],
-  investedRows: ChartFundRow[],
+  featuredPublic: ChartFundRow[],
+  allPublic: ChartFundRow[],
   tableLastExcelRow: number,
 ): WeeklyReviewMarketChartTables {
   const poolMedian = median(poolRows.map((row) => row.ret_1w))
@@ -147,19 +136,21 @@ export function buildWeeklyReviewMarketChartTables(
     chart1Bench.push(bench.ret != null && Number.isFinite(bench.ret) ? bench.ret : null)
   }
 
-  const invested = uniqueInvested(investedRows)
-  const investedMedian = median(invested.map((row) => row.ret_1w))
-  const chart2Rows: Array<{ label: string; pool: number | null; invested: number | null }> = []
-  if (invested.length > 0) {
-    chart2Rows.push({ label: "整体", pool: poolMedian, invested: investedMedian })
-    const sorted = [...invested].sort((a, b) => (b.ret_1w ?? -Infinity) - (a.ret_1w ?? -Infinity))
-    for (const row of sorted) {
+  const poolBuckets = new Set(poolRows.map((row) => row.bucket))
+  const publicMedian = median(allPublic.filter((row) => poolBuckets.has(row.bucket)).map((row) => row.ret_1w))
+  const featured = [...featuredPublic]
+    .filter((row) => poolBuckets.has(row.bucket))
+    .sort((a, b) => (b.ret_1w ?? -Infinity) - (a.ret_1w ?? -Infinity))
+  const chart2Rows: Array<{ label: string; pool: number | null; compared: number | null }> = []
+  if (featured.length > 0) {
+    chart2Rows.push({ label: "整体", pool: poolMedian, compared: publicMedian })
+    for (const row of featured) {
       const bucketMedian = median(byBucket.get(row.bucket) ?? [])
       const suffix = row.bucket ? `（${row.bucket}）` : ""
       chart2Rows.push({
         label: `${truncateLabel(row.name, 10)}${suffix}`,
         pool: bucketMedian,
-        invested: row.ret_1w != null && Number.isFinite(row.ret_1w) ? row.ret_1w : null,
+        compared: row.ret_1w != null && Number.isFinite(row.ret_1w) ? row.ret_1w : null,
       })
     }
   }
@@ -184,24 +175,24 @@ export function buildWeeklyReviewMarketChartTables(
   if (chart2Rows.length > 0) {
     set(0, 4, "名称")
     set(0, 5, "同策略跟踪池中位数")
-    set(0, 6, "已投")
+    set(0, 6, "公募指增")
     chart2Rows.forEach((row, i) => {
       set(1 + i, 4, row.label)
       set(1 + i, 5, row.pool)
-      set(1 + i, 6, row.invested)
+      set(1 + i, 6, row.compared)
     })
     const chart2Last = 1 + chart2Rows.length
     const many = chart2Rows.length > 8
-    const bounds = valueAxisBounds(chart2Rows.flatMap((row) => [row.pool, row.invested]), many)
+    const bounds = valueAxisBounds(chart2Rows.flatMap((row) => [row.pool, row.compared]), many)
     chart2 = {
-      title: "已投产品 vs 跟踪池（近一周）",
+      title: "公募指增 vs 跟踪池（近一周）",
       barDir: many ? "bar" : "col",
       catRange: dollarRange(4, 2, 4, chart2Last),
       valueMin: bounds.min,
       valueMax: bounds.max,
       series: [
         { titleCell: "F1", valRange: dollarRange(5, 2, 5, chart2Last), color: NAVY, showVal: false },
-        { titleCell: "G1", valRange: dollarRange(6, 2, 6, chart2Last), color: GOLD, showVal: true },
+        { titleCell: "G1", valRange: dollarRange(6, 2, 6, chart2Last), color: PUBLIC_BAR, showVal: true },
       ],
     }
   }
@@ -583,7 +574,7 @@ export async function embedWeeklyReviewMarketCharts(
   if (tables.chart2) {
     drawingCharts.push({
       relId: "rId2",
-      name: "已投对比跟踪池",
+      name: "公募指增对比跟踪池",
       startRow: tables.chart2StartRow ?? tables.chart1StartRow + tables.chart1HeightRows,
       heightRows: tables.chart2HeightRows,
     })

@@ -13,7 +13,6 @@ import {
 } from "@/lib/ma/weekly-review-pools"
 import { WeeklyReviewDataStatus } from "./WeeklyReviewDataStatus"
 import { PublicEnhancedWeeklyPerformance } from "./PublicEnhancedWeeklyPerformance"
-import { WeeklyReviewInvestedMedian } from "./WeeklyReviewInvestedMedian"
 
 type GroupPreview = {
   bucket: string
@@ -403,15 +402,12 @@ export function WeeklyReviewView({ variant = "equity" }: { variant?: WeeklyRevie
       {variant === "public-enhanced" ? (
         <PublicEnhancedWeeklyPerformance weekEnd={weekEnd} />
       ) : (
-      <>
-      <WeeklyReviewInvestedMedian variant={variant} weekEnd={weekEnd} />
       <WeeklyReviewDataStatus
         embedded
         variant={variant}
         pools={pools}
         weekEnd={weekEnd}
       />
-      </>
       )}
     </div>
   )

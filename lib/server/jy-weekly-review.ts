@@ -16,7 +16,8 @@ import {
   weeklyReviewPoolScopePhrase,
   type WeeklyReviewPoolKey,
 } from "@/lib/ma/weekly-review-pools"
-import { formatWeekReturnTopShare, mergeWeeklyReviewInvestedRows, weekReturnTopShare } from "@/lib/ma/weekly-review-invested-median"
+import { formatWeekReturnTopShare, medianOf, mergeWeeklyReviewInvestedRows, weekReturnTopShare } from "@/lib/ma/weekly-review-invested-median"
+import { meanOf, takeBestByWeek } from "@/lib/ma/weekly-review-public-rows"
 import {
   buildWeeklyReviewMarketChartTables,
   embedWeeklyReviewMarketCharts,
@@ -1066,6 +1067,53 @@ function markerStyle(color?: string, numFmt?: string): CellStyle {
   }
 }
 
+const PUBLIC_FILL = "DDEBF7"
+const PUBLIC_SUMMARY_FILL = "BDD7EE"
+
+function publicStyle(summary: boolean, color?: string, numFmt?: string): CellStyle {
+  return {
+    font: { name: FONT_NAME, sz: 11, bold: summary, color: color ? { rgb: color } : undefined },
+    fill: { patternType: "solid", fgColor: { rgb: summary ? PUBLIC_SUMMARY_FILL : PUBLIC_FILL } },
+    alignment: { wrapText: true, vertical: "center" },
+    numFmt,
+  }
+}
+
+function aggregateMetrics(
+  rows: FundMetrics[],
+  bucket: string,
+  mode: MetricMode,
+  how: "median" | "mean",
+): FundMetrics {
+  const pick = how === "median" ? medianOf : meanOf
+  const period = (key: PeriodKey, source: "ret" | "excess") =>
+    pick(rows.map((row) => (source === "ret" ? row.ret[key] : row.excess[key])))
+  return {
+    beian_hao: "",
+    name: how === "median" ? "公募指增中位数" : "公募指增平均数",
+    bucket,
+    mode,
+    ret: {
+      ret_1w: period("ret_1w", "ret"),
+      ret_1m: period("ret_1m", "ret"),
+      ret_3m: period("ret_3m", "ret"),
+      ret_6m: period("ret_6m", "ret"),
+      ret_1y: period("ret_1y", "ret"),
+    },
+    excess: {
+      ret_1w: period("ret_1w", "excess"),
+      ret_1m: period("ret_1m", "excess"),
+      ret_3m: period("ret_3m", "excess"),
+      ret_6m: period("ret_6m", "excess"),
+      ret_1y: period("ret_1y", "excess"),
+    },
+    excess_dd_6m: pick(rows.map((row) => row.excess_dd_6m)),
+    excess_dd_1y: pick(rows.map((row) => row.excess_dd_1y)),
+    sharpe_1y: pick(rows.map((row) => row.sharpe_1y)),
+    calmar_1y: pick(rows.map((row) => row.calmar_1y)),
+  }
+}
+
 function percentileColor(share: number | null): string | undefined {
   if (share == null || !Number.isFinite(share)) return undefined
   if (share <= 0.25) return RED
@@ -1282,7 +1330,12 @@ export function buildWeeklyReviewMethodologyRows(weekStart: string, weekEnd: str
     {
       kind: "pair",
       label: "已投产品",
-      text: "持仓中的私募 FOF 底层会自动写入同一策略表：已在跟踪池中的只做标注，不在跟踪池中的按同样口径补进该表。已投行用浅黄底标出，产品名称前加「已投」。近一周分位数是该行近一周指标在本表全部有数产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。",
+      text: "持仓中的私募 FOF 底层会自动写入同一策略表：已在跟踪池中的只做标注，不在跟踪池中的按同样口径补进该表。已投行用浅黄底标出，产品名称不加前缀。近一周分位数是该行近一周指标在本表跟踪池产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。公募行不计入这个分母。",
+    },
+    {
+      kind: "pair",
+      label: "公募指增",
+      text: "策略名与公募指增周报同一基准分组相同的表，写入该组近一周指标最好的 5 只公募产品（指增组按超额，其余按绝对收益），浅蓝色底。另有该组全部公募产品的中位数和平均数，蓝底加粗。这些公募行和跟踪池产品按同一个近一周指标从高到低排在一起，没有近一周数的排在末尾。中位数和平均数按每一列单独计算，没有数的产品不计入该列。公募产品的近一周分位数只在该组全部公募产品里排名。股票市场回顾图里的「公募指增 vs 跟踪池」用的是这 5 只的绝对收益，对照同策略跟踪池绝对收益中位数。",
     },
     {
       kind: "pair",
@@ -1366,7 +1419,7 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
     throw new Error(`${weeklyReviewPoolScopePhrase(pools)}中没有可导出的股票策略产品`)
   }
 
-  const [metrics, market, invested] = await Promise.all([
+  const [metrics, market, invested, publicMetrics] = await Promise.all([
     computeFundMetrics(funds, asOf),
     buildMarketRows(weekStart, weekEnd),
     import("@/lib/server/weekly-review-invested-median")
@@ -1374,6 +1427,12 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
       .catch((err: unknown) => {
         console.error("[jy-weekly-review] invested median skipped:", err)
         return null
+      }),
+    import("@/lib/server/public-enhanced-weekly-review")
+      .then((mod) => mod.loadPublicEnhancedFundMetrics(weekEnd))
+      .catch((err: unknown) => {
+        console.error("[jy-weekly-review] public enhanced rows skipped:", err)
+        return [] as FundMetrics[]
       }),
   ])
   const xlsxMod = await import("xlsx-js-style") as {
@@ -1398,6 +1457,26 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
     if (!groups.has(group.bucket)) groups.set(group.bucket, [])
   }
   const orderedBuckets = [...groups.keys()].sort((a, b) => groupSortKey(a).localeCompare(groupSortKey(b), "zh"))
+  const publicByBucket = new Map<string, FundMetrics[]>()
+  for (const row of publicMetrics) {
+    const list = publicByBucket.get(row.bucket) ?? []
+    list.push(row)
+    publicByBucket.set(row.bucket, list)
+  }
+  const heldCodes = new Set<string>()
+  for (const row of metrics) heldCodes.add(row.beian_hao.trim().toUpperCase())
+  for (const row of invested?.metrics ?? []) heldCodes.add(row.beian_hao.trim().toUpperCase())
+  const featuredByBucket = new Map<string, FundMetrics[]>()
+  for (const bucket of publicByBucket.keys()) {
+    if (!groups.has(bucket) || WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS.has(bucket)) continue
+    const weekOfBucket = (row: FundMetrics) =>
+      metricModeForBucket(bucket) === "excess" ? row.excess.ret_1w : row.ret.ret_1w
+    const ranked = [...(publicByBucket.get(bucket) ?? [])]
+      .filter((row) => !heldCodes.has(row.beian_hao.trim().toUpperCase()))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh"))
+    featuredByBucket.set(bucket, takeBestByWeek(ranked, weekOfBucket))
+  }
+  const featuredPublic = [...featuredByBucket.values()].flat()
 
   let marketChartTables: ReturnType<typeof buildWeeklyReviewMarketChartTables> | null = null
   let marketSheetName = ""
@@ -1478,20 +1557,17 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
     set(7, 7, "平均上涨家数", bodyStyle(true))
     set(8, 6, market.avgAmount == null ? null : Math.round(market.avgAmount), bodyStyle(false, undefined, "#,##0"))
     set(8, 7, market.avgAdv == null ? null : Math.round(market.avgAdv), bodyStyle(false, undefined, "#,##0"))
+    const toChartRow = (row: FundMetrics) => ({
+      beian_hao: row.beian_hao,
+      name: row.name,
+      bucket: row.bucket,
+      ret_1w: row.ret.ret_1w,
+    })
     const chartTables = buildWeeklyReviewMarketChartTables(
       market.broad,
-      metrics.map((row) => ({
-        beian_hao: row.beian_hao,
-        name: row.name,
-        bucket: row.bucket,
-        ret_1w: row.ret.ret_1w,
-      })),
-      (invested?.metrics ?? []).map((row) => ({
-        beian_hao: row.beian_hao,
-        name: row.name,
-        bucket: row.bucket,
-        ret_1w: row.ret.ret_1w,
-      })),
+      metrics.map(toChartRow),
+      featuredPublic.map(toChartRow),
+      publicMetrics.map(toChartRow),
       2 + nRows,
     )
     marketChartTables = chartTables
@@ -1552,6 +1628,40 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
     const weekOf = (row: FundMetrics) => (mode === "excess" ? row.excess.ret_1w : row.ret.ret_1w)
     const sorted = [...merged].sort((a, b) => (weekOf(b.row) ?? -Infinity) - (weekOf(a.row) ?? -Infinity))
     const weekValues = sorted.map((line) => weekOf(line.row))
+    const allPublic = publicByBucket.get(bucket) ?? []
+    const publicWeekValues = allPublic.map(weekOf)
+    type LineKind = "pool" | "invested" | "public" | "summary"
+    const lines: Array<{ kind: LineKind; alt: boolean; row: FundMetrics; share: number | null }> = sorted.map((line, i) => ({
+      kind: line.invested ? "invested" : "pool",
+      alt: i % 2 === 0,
+      row: line.row,
+      share: weekReturnTopShare(weekOf(line.row), weekValues),
+    }))
+    if (allPublic.length > 0) {
+      for (const row of featuredByBucket.get(bucket) ?? []) {
+        lines.push({
+          kind: "public",
+          alt: false,
+          row,
+          share: weekReturnTopShare(weekOf(row), publicWeekValues),
+        })
+      }
+      lines.push(
+        { kind: "summary", alt: false, row: aggregateMetrics(allPublic, bucket, mode, "median"), share: null },
+        { kind: "summary", alt: false, row: aggregateMetrics(allPublic, bucket, mode, "mean"), share: null },
+      )
+    }
+    const kindRank: Record<LineKind, number> = { pool: 0, invested: 0, public: 1, summary: 2 }
+    lines.sort((a, b) => {
+      const diff = (weekOf(b.row) ?? -Infinity) - (weekOf(a.row) ?? -Infinity)
+      if (diff !== 0) return diff
+      const byKind = kindRank[a.kind] - kindRank[b.kind]
+      if (byKind !== 0) return byKind
+      return a.row.name.localeCompare(b.row.name, "zh")
+    })
+    lines.forEach((line, index) => {
+      line.alt = index % 2 === 0
+    })
     const aoa: unknown[][] = []
     const styles = new Map<string, CellStyle>()
     const set = (r: number, c: number, v: unknown, s?: CellStyle) => {
@@ -1559,15 +1669,16 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
       aoa[r][c] = v ?? null
       if (s) styles.set(`${r},${c}`, s)
     }
-    const paint = (investedRow: boolean, alt: boolean, color?: string, numFmt?: string): CellStyle =>
-      investedRow ? markerStyle(color, numFmt) : bodyStyle(alt, color, numFmt)
+    const paint = (kind: LineKind, alt: boolean, color?: string, numFmt?: string): CellStyle => {
+      if (kind === "invested") return markerStyle(color, numFmt)
+      if (kind === "public") return publicStyle(false, color, numFmt)
+      if (kind === "summary") return publicStyle(true, color, numFmt)
+      return bodyStyle(alt, color, numFmt)
+    }
     headers.forEach((h, c) => set(0, c, h, headerStyle()))
-    sorted.forEach((line, i) => {
+    lines.forEach((line, i) => {
       const row = line.row
-      const alt = i % 2 === 0
-      const label = line.invested ? `已投 ${row.name}` : row.name
-      const share = weekReturnTopShare(weekOf(row), weekValues)
-      set(i + 1, 0, label, paint(line.invested, alt))
+      set(i + 1, 0, row.name, paint(line.kind, line.alt))
       if (mode === "excess") {
         const vals = [
           row.excess.ret_1w, row.excess.ret_1m, row.excess.ret_3m, row.excess.ret_6m,
@@ -1575,19 +1686,19 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
         ]
         vals.forEach((v, ci) => {
           const isDd = ci === 4 || ci === 6
-          set(i + 1, ci + 1, v, paint(line.invested, alt, isDd ? undefined : signedColor(v), "0.00%"))
+          set(i + 1, ci + 1, v, paint(line.kind, line.alt, isDd ? undefined : signedColor(v), "0.00%"))
         })
       } else {
         const pcts = [row.ret.ret_1w, row.ret.ret_1m, row.ret.ret_3m, row.ret.ret_6m, row.ret.ret_1y]
-        pcts.forEach((v, ci) => set(i + 1, ci + 1, v, paint(line.invested, alt, signedColor(v), "0.00%")))
-        set(i + 1, 6, row.sharpe_1y, paint(line.invested, alt, undefined, "0.0000"))
-        set(i + 1, 7, row.calmar_1y, paint(line.invested, alt, undefined, "0.0000"))
+        pcts.forEach((v, ci) => set(i + 1, ci + 1, v, paint(line.kind, line.alt, signedColor(v), "0.00%")))
+        set(i + 1, 6, row.sharpe_1y, paint(line.kind, line.alt, undefined, "0.0000"))
+        set(i + 1, 7, row.calmar_1y, paint(line.kind, line.alt, undefined, "0.0000"))
       }
-      set(i + 1, 8, formatWeekReturnTopShare(share), paint(line.invested, alt, percentileColor(share)))
+      set(i + 1, 8, formatWeekReturnTopShare(line.share), paint(line.kind, line.alt, percentileColor(line.share)))
     })
     const name = sheetName(seq, bucket)
-    sheets.push({ name, title: bucket, rows: sorted.length, cols: 9, aoa, styles })
-    tocRows.push([seq, name, bucket, sorted.length, 9])
+    sheets.push({ name, title: bucket, rows: lines.length, cols: 9, aoa, styles })
+    tocRows.push([seq, name, bucket, lines.length, 9])
     seq += 1
   }
 
@@ -1613,7 +1724,8 @@ export async function generateJyWeeklyReviewWorkbook(weekEndRaw: string, poolsIn
       ]
       ws["!rows"] = Array.from({ length: sheet.aoa.length }, (_, i) => ({ hpt: i === 0 ? 20 : 22 }))
     } else {
-      ws["!cols"] = [{ wch: 22 }, ...Array.from({ length: Math.max(0, maxCol - 1) }, () => ({ wch: 14 }))]
+      const nameWidth = sheet.title === "图表数据" ? 28 : 36
+      ws["!cols"] = [{ wch: nameWidth }, ...Array.from({ length: Math.max(0, maxCol - 1) }, () => ({ wch: 14 }))]
       ws["!rows"] = Array.from({ length: sheet.aoa.length }, () => ({ hpt: 27 }))
     }
     XLSX.utils.book_append_sheet(wb, ws, sheet.name)
