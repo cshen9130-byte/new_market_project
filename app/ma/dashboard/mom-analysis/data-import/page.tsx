@@ -1380,7 +1380,7 @@ export default function DataImportPage() {
             ) : folders.length === 0 ? (
               <div className="py-12 text-center text-sm text-muted-foreground">目录为空</div>
             ) : (
-              <div className="divide-y divide-border/50">
+              <div className="max-h-[calc(2.625rem*10+9px)] divide-y divide-border/50 overflow-y-auto overscroll-contain">
                 {folders.map((folder) => {
                   const isExpanded = expandedFolder === folder.name
                   const files = folderFiles[folder.name] ?? []

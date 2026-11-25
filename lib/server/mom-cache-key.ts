@@ -113,6 +113,55 @@ export function paramKey(params: URLSearchParams): string {
   return "_" + entries.map(([k, v]) => `${k}=${v}`).join("&")
 }
 
+/**
+ * Internal chart builders must send this. A parent route that caches its own
+ * body must not treat a stale child snapshot as today's data: that write keeps
+ * yesterday's as-of under the new freshness key until the next upload.
+ */
+export const MOM_CACHE_REQUIRE_FRESH_HEADER = "x-mom-require-fresh"
+
+export function momCacheMayServeStale(req: Request, allowStale: boolean): boolean {
+  if (!allowStale) return false
+  return req.headers.get(MOM_CACHE_REQUIRE_FRESH_HEADER) !== "1"
+}
+
+function momBodyIsStale(body: unknown): boolean {
+  return Boolean(
+    body
+    && typeof body === "object"
+    && !Array.isArray(body)
+    && (body as { cacheStatus?: unknown }).cacheStatus === "stale",
+  )
+}
+
+/**
+ * Call another MOM route and wait for the current as-of.
+ * If an older server still answers with a stale snapshot, retry once with
+ * nocache so the caller does not publish that day as fresh.
+ */
+export async function readMomCachedJson(
+  get: (req: Request) => Promise<Response>,
+  url: string,
+): Promise<Record<string, unknown>> {
+  const call = async (target: string) => {
+    const res = await get(new Request(target, {
+      headers: { [MOM_CACHE_REQUIRE_FRESH_HEADER]: "1" },
+    }))
+    const body = await res.json()
+    const stale = res.headers.get("X-Mom-Cache") === "stale" || momBodyIsStale(body)
+    return { body, stale }
+  }
+  let { body, stale } = await call(url)
+  if (stale) {
+    const sep = url.includes("?") ? "&" : "?"
+    ;({ body } = await call(`${url}${sep}nocache=1`))
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "empty response" }
+  }
+  return body as Record<string, unknown>
+}
+
 /** Drop today's cached account-risk (source=account) responses so charts pick up a fresh ETL. */
 export function clearAccountSourceCache(): void {
   try {

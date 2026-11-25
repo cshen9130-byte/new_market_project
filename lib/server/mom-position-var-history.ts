@@ -254,7 +254,10 @@ export async function computeMomPositionVarHistory(opts: {
       }
     }
 
-    const grouped = correlationExposureByGroup(prodMvs, corrMat)
+    const grouped = correlationExposureByGroup(
+      prodMvs.map((product, index) => ({ ...product, sigma: sigmas[index] })),
+      corrMat,
+    )
     const avgCorr = averagePairCorrelationByGroup(prodMvs, corrMat)
     const day = assemblePositionVarDay({
       date,

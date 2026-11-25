@@ -16,6 +16,7 @@ import { parseSourceFromRequest, riskSourceAls } from "@/lib/server/risk-data-so
 import {
   findStaleCache,
   freshnessCacheSuffix,
+  momCacheMayServeStale,
   paramKey,
   readCache,
   todayStr,
@@ -153,7 +154,7 @@ export function withMomCache(
         if (cached !== null) {
           return wrapLight(cached, "hit")
         }
-        if (allowStale) {
+        if (momCacheMayServeStale(req, allowStale)) {
           const stale = findStaleCache(source, routeKey, paramSuffix, freshSuffix)
           if (stale) {
             // Today's file under an aliased param suffix (no ids vs default ids)
@@ -169,7 +170,7 @@ export function withMomCache(
 
       // If the freshness probe failed, still try a stale snapshot so the tab
       // is not stuck on 加载中 while the recompute waits on a busy DB.
-      if (!noCache && allowStale && !cacheable) {
+      if (!noCache && momCacheMayServeStale(req, allowStale) && !cacheable) {
         const stale = findStaleCache(source, routeKey, paramSuffix, freshSuffix)
         if (stale) {
           scheduleBackgroundRefresh(key, handler, req, options?.transform)

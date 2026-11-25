@@ -120,11 +120,18 @@ export function zeroRolloverSpikes(rets: number[]): number[] {
 /**
  * 多空相关轧差市值.
  * Magnitude is √(MV′ R MV) on the selected products. Same-product longs and shorts
- * are already netted in MV. ρ = 1 for every pair collapses this to the direct net.
- * The sign follows the direct net, so the column still shows long versus short.
- * A zero direct net keeps a positive magnitude: the hedge is not a zero exposure.
+ * are already netted in MV. ρ = 1 for every pair makes the magnitude the absolute direct net.
+ * The sign follows which side contributes more absolute marginal variance
+ * (long |mvc| − short |mvc|), the same split as the risk-contribution bars.
+ * A tie, or a call without that split, falls back to the direct net.
+ * A zero direct net on a tie keeps a positive magnitude: the hedge is not a zero exposure.
  */
-export function signedCorrelationExposure(mvs: number[], corr: number[][], indices?: number[]): number {
+export function signedCorrelationExposure(
+  mvs: number[],
+  corr: number[][],
+  indices?: number[],
+  riskBias?: number,
+): number {
   const idx = indices ?? mvs.map((_, i) => i)
   let quad = 0
   let net = 0
@@ -135,7 +142,34 @@ export function signedCorrelationExposure(mvs: number[], corr: number[][], indic
   }
   const mag = Math.sqrt(Math.max(0, quad))
   if (!Number.isFinite(mag)) return 0
-  return Math.round(net < 0 ? -mag : mag)
+  const negative = riskBias != null && riskBias !== 0 ? riskBias < 0 : net < 0
+  return Math.round(negative ? -mag : mag)
+}
+
+/** mvc_i = dv_i · (R dv)_i, with dv_i = σ_i × MV_i. Same definition as position VaR. */
+export function marginalVariances(mvs: number[], sigmas: number[], corr: number[][]): number[] {
+  const dv = mvs.map((mv, i) => (sigmas[i] ?? 0) * mv)
+  const mvc = new Array<number>(mvs.length).fill(0)
+  for (let i = 0; i < mvs.length; i++) {
+    if (dv[i] === 0) continue
+    let covSum = 0
+    for (let j = 0; j < mvs.length; j++) covSum += dv[j] * (corr[i]?.[j] ?? 0)
+    mvc[i] = dv[i] * covSum
+  }
+  return mvc
+}
+
+/** Long absolute marginal variance minus short. Positive means the long side carries more risk. */
+export function riskSideBias(mvs: number[], mvc: number[], indices?: number[]): number {
+  const idx = indices ?? mvs.map((_, i) => i)
+  let longSide = 0
+  let shortSide = 0
+  for (const i of idx) {
+    const share = Math.abs(mvc[i] ?? 0)
+    if ((mvs[i] ?? 0) >= 0) longSide += share
+    else shortSide += share
+  }
+  return longSide - shortSide
 }
 
 /**
@@ -196,7 +230,7 @@ export function averagePairCorrelationByGroup(
 }
 
 export function correlationExposureByGroup(
-  products: { prod: string; mv: number }[],
+  products: { prod: string; mv: number; sigma?: number }[],
   corr: number[][],
 ): { category: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> } {
   const category = new Map<string, number[]>()
@@ -214,9 +248,16 @@ export function correlationExposureByGroup(
     push(sub, labels.subSector)
   })
   const mvs = products.map((product) => product.mv)
+  const haveSigma = products.length > 0 && products.every((product) => product.sigma != null && Number.isFinite(product.sigma))
+  const mvc = haveSigma
+    ? marginalVariances(mvs, products.map((product) => product.sigma ?? 0), corr)
+    : null
   const pack = (map: Map<string, number[]>) => {
     const out: Record<string, number> = {}
-    for (const [name, indices] of map) out[name] = signedCorrelationExposure(mvs, corr, indices)
+    for (const [name, indices] of map) {
+      const bias = mvc ? riskSideBias(mvs, mvc, indices) : undefined
+      out[name] = signedCorrelationExposure(mvs, corr, indices, bias)
+    }
     return out
   }
   return { category: pack(category), sector: pack(sector), sub: pack(sub) }

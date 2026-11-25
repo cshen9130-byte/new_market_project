@@ -1,6 +1,32 @@
 # MCP 百炼 token cost
 
-Handoff from the 22 November 2026 bill check. Next week’s job is to see whether MCP calls to 百炼 are reasonable, and to keep new API design cheap.
+Handoff from the 22 November 2026 bill check, updated 25 November with the Aliyun consume-detail file.
+
+## Bill detail, 25 Nov 2026
+
+Source: `tmp/1788691702541967-20261125093248_202611_consumedetailbillv2.csv`, downloaded 25 Nov 09:32. It contains only 大模型服务平台百炼, 31,524 rows, 1 Nov 09:50 through 25 Nov 09:30. Payable total **¥169.86**, which matches the console line ¥169.83. 云效 Codeup (¥35.49 on the month bill) and 共享流量包 are not in this file.
+
+One Bailian workspace, `ws-1re4jkri1tsi79qm`. The file does not name the API key. Two billing resource ids: `3563509` (qwen-plus, embedding, qwen-flash, qwen-max) and `6385185` (qwen3-vl-plus, 26 rows).
+
+| Meter | Payable | Tokens |
+| --- | ---: | ---: |
+| qwen-plus input, cache miss | ¥153.57 | 192.0M |
+| qwen-plus output | ¥10.88 | 5.44M |
+| qwen-plus input, cache hit | ¥4.95 | 30.9M |
+| text-embedding-v4 | ¥0.36 | 0.71M |
+| qwen3-vl-plus | ¥0.08 | 73k in, 900 out |
+| qwen-max | ¥0.02 | 6.3k in |
+| qwen-flash | ¥0.01 | 36k in |
+
+1–9 Nov together are **¥0.69**. From 10 Nov the account spends about ¥9–17 every day. Peak is 21 Nov, ¥16.91 (19.5M uncached input tokens). 25 Nov is already ¥5.98 by 09:30.
+
+The shape is a loop. On 24 Nov and 25 Nov, each hour from midnight through 08:00 is about ¥0.45–¥0.75. That is not someone at a keyboard, and it is not the nightly ETL (those jobs are at 01:00, 03:15, 04:45, and 19:30, and they do not call DashScope).
+
+The website chat log still cannot explain it: November chat-page use is 73k tokens. qwen-max and vision are not the bill.
+
+Checked again at 10:00 on 25 Nov against the live worker log. This is not an outside copy of the key, and it is not MCP. `new-market-project-worker` calls qwen-plus itself, on the contract-element cron (`*/10 * * * *`). The 9 Nov change looked up the job after the model call and skipped the save when `Number.isFinite("92")` was false (`BIGSERIAL` comes back as a string). The row stayed `extracting`, and the next drain sent the same contract again. That lookup was removed. The save path is the one from before 9 Nov: extract, then write `needs_review` or apply. The 45 stuck rows were marked `失败` on the server at 10:17 so the running worker stops claiming them. The nightly 01:00 step still retries `失败` jobs, and the server process is still the old code until the worker is rebuilt.
+
+## Original note, 22 Nov 2026
 
 百炼 is billed per token. A knowledge-base answer that resends a long note is the expensive case. Data tools that only read Postgres are free on this line.
 

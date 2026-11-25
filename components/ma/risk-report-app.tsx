@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { holdingPortfolioCorrelations } from "@/lib/ma/holding-portfolio-corr"
 import { getActiveCfmmcAccount, getActiveMomSubAccount, setActiveMomSubAccount, useRiskSourceFetch, type RiskReportVariant } from "@/lib/ma/risk-report-source"
 import { AccountRiskAccountSwitcher, IDLE_CFMMC_SCOPE, IDLE_MOM_SUB_SCOPE, MomSubAccountSwitcher, useCfmmcAccountScope, useMomSubAccountScope, type CfmmcAccountScope, type MomSubAccountScope } from "@/components/ma/account-risk-account-switcher"
 import { AccountRiskProfileButton } from "@/components/ma/account-risk-profile-button"
@@ -21,6 +22,7 @@ const SectorPositionCharts     = dynamic(() => import("@/components/ma/sector-po
 const SectorDailyPnlChart      = dynamic(() => import("@/components/ma/sector-daily-pnl-chart"),      { ssr: false })
 const ProductDailyPnlChart     = dynamic(() => import("@/components/ma/product-daily-pnl-chart"),     { ssr: false })
 const SandboxProductMcrPieChart = dynamic(() => import("@/components/ma/sandbox-product-mcr-pie-chart"), { ssr: false })
+const SandboxVolMvLinkChart = dynamic(() => import("@/components/ma/sandbox-vol-mv-link-chart"), { ssr: false })
 const VarMcrTimeseriesCharts   = dynamic(() => import("@/components/ma/var-mcr-timeseries-charts"), { ssr: false })
 const VarMcrRegimeTable       = dynamic(() => import("@/components/ma/var-mcr-event-tables").then((mod) => mod.VarMcrRegimeTable), { ssr: false })
 const VarMcrSuggestionsPanel  = dynamic(() => import("@/components/ma/var-mcr-suggestions-panel"), { ssr: false })
@@ -1124,6 +1126,49 @@ function VarSandboxContent({
       .sort((a, b) => b.value - a.value)
   }, [prodMcrData])
 
+  // Live sandbox positions: x = daily vol, y = signed market value, z = corr(holding P&L, book P&L).
+  // Correlation uses the whole book, then the category / sector / direction filters pick which points to draw.
+  const scatterPoints = useMemo(() => {
+    if (sbProds.length === 0 || sbCorrMatrix.length < sbProds.length) return []
+    const corrs = holdingPortfolioCorrelations(sbProds, sbCorrMatrix)
+    const visible = new Set(displayProds.map((p) => p.prod))
+    const mcrByProd = new Map(prodMcrData.map((d) => [d.name, d.value]))
+    const totalMcr = prodMcrData.reduce((sum, d) => sum + d.value, 0)
+    return sbProds.flatMap((p, i) => {
+      if (!visible.has(p.prod) || p.mv === 0) return []
+      const corr = corrs[i]
+      if (!Number.isFinite(corr)) return []
+      const mcr = mcrByProd.get(p.prod) ?? 0
+      return [{
+        prod: p.prod,
+        name: PROD_NAMES[p.prod] ?? "",
+        sector: PROD_SECTOR[p.prod] ?? "其他",
+        volPct: p.sigma * 100,
+        mv: p.mv,
+        corr,
+        riskPct: totalMcr > 0 ? (mcr / totalMcr) * 100 : 0,
+      }]
+    })
+  }, [sbProds, sbCorrMatrix, displayProds, prodMcrData])
+
+  // Pairwise return correlation from the sandbox matrix. A line is drawn when it is above 0.5.
+  const volLinks = useMemo(() => {
+    const index = new Map(sbProds.map((p, i) => [p.prod, i]))
+    const codes = scatterPoints.map((point) => point.prod)
+    const links: { source: string; target: string; corr: number }[] = []
+    for (let a = 0; a < codes.length; a++) {
+      const i = index.get(codes[a])
+      if (i == null) continue
+      for (let b = a + 1; b < codes.length; b++) {
+        const j = index.get(codes[b])
+        if (j == null) continue
+        const corr = sbCorrMatrix[i]?.[j] ?? 0
+        if (corr > 0.5) links.push({ source: codes[a], target: codes[b], corr })
+      }
+    }
+    return links
+  }, [scatterPoints, sbProds, sbCorrMatrix])
+
   const handleDragMove = useCallback((e: PointerEvent) => {
     const drag = barDragRef.current
     if (!drag) return
@@ -1239,7 +1284,8 @@ function VarSandboxContent({
   }
 
   return (
-    <div ref={fsRef} className={`${showPies ? "flex gap-4 items-stretch" : ""}${isFs ? " bg-background p-4 overflow-auto" : ""}`}>
+    <div ref={fsRef} className={isFs ? "bg-background p-4 overflow-auto" : ""}>
+    <div className={showPies ? "flex gap-4 items-stretch" : ""}>
       {/* Left: sandbox card */}
       <div className="flex-1 min-w-0">
       <Card className="h-full">
@@ -1674,6 +1720,20 @@ function VarSandboxContent({
           </div>{/* end right */}
         </>
       )}
+    </div>
+    {showPies && scatterPoints.length > 0 && (
+      <Card className="mt-4">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">轧差市值与风险贡献</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            左图是多头和空头市值，轧差是两边之差。右图是风险贡献占比，多头和空头叠在同一边。点一个板块可以看里面每个品种为什么轧差小、风险仍然大。
+          </p>
+        </CardHeader>
+        <CardContent className="p-2 pb-3">
+          <SandboxVolMvLinkChart points={scatterPoints} links={volLinks} />
+        </CardContent>
+      </Card>
+    )}
     </div>
   )
 }
@@ -7420,7 +7480,7 @@ const SECTOR_BAR_FORMULAS: Record<string, string> = {
   netPctNorm: "多空直接轧差占比 = |多空直接轧差市值| ÷ 总规模",
 }
 
-const SECTOR_BAR_CORR_NET = "多空相关轧差市值 = 符号(各品种净市值之和) × √(Σᵢ Σⱼ 净市值ᵢ × 净市值ⱼ × ρᵢⱼ)。同一品种的多空先轧掉。ρ 用最近 252 个交易日收益率。ρ 全为 1 时等于直接轧差。合计 = 各行绝对值之和，板块之间不再轧一次。"
+const SECTOR_BAR_CORR_NET = "多空相关轧差市值 = 符号(多头边际方差 − 空头边际方差) × √(Σᵢ Σⱼ 净市值ᵢ × 净市值ⱼ × ρᵢⱼ)。同一品种的多空先轧掉。边际方差按全组合计算，再按持仓方向把绝对值加总。两边相等时符号退回净市值之和。ρ 用最近 252 个交易日收益率。ρ 全为 1 时绝对值等于直接轧差。合计 = 各行绝对值之和，板块之间不再轧一次。"
 const SECTOR_BAR_CORR_PCT = "多空相关轧差占比 = |多空相关轧差市值| ÷ 总规模"
 
 function RiskReportAppAccount({ embedBriefing = false }: { embedBriefing?: boolean }) {

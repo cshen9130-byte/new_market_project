@@ -11,6 +11,7 @@ import {
   type PositionHoldStats,
 } from "@/lib/ma/position-hold"
 import { getFuturesMultiplier } from "@/lib/server/futures-multipliers"
+import { readMomCachedJson } from "@/lib/server/mom-cache-key"
 import { getPrefix } from "@/lib/server/prod-utils"
 import {
   BOOK_CAP_MIN,
@@ -171,10 +172,7 @@ function floorIndex(arr: string[], target: string): number {
 
 async function readRoute(loader: () => Promise<(req: Request) => Promise<Response>>, url: string): Promise<Record<string, unknown>> {
   const GET = await loader()
-  const res = await GET(new Request(url))
-  const body = await res.json()
-  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "empty response" }
-  return body as Record<string, unknown>
+  return readMomCachedJson(GET, url)
 }
 
 type ContractPos = {

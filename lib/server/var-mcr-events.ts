@@ -1,5 +1,6 @@
 import { query } from "@/lib/db"
 import { PROD_SECTOR } from "@/lib/ma/prod-sector"
+import { readMomCachedJson } from "@/lib/server/mom-cache-key"
 import {
   BOOK_CAP_MIN,
   MV_MIN,
@@ -214,10 +215,7 @@ async function loadMarket(codes: string[]): Promise<MarketPack> {
 
 async function readRoute(loader: () => Promise<(req: Request) => Promise<Response>>, url: string): Promise<Record<string, unknown>> {
   const GET = await loader()
-  const res = await GET(new Request(url))
-  const body = await res.json()
-  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "empty response" }
-  return body as Record<string, unknown>
+  return readMomCachedJson(GET, url)
 }
 
 async function loadCumCapitalSeries(): Promise<Array<{ date: string; capital: number }>> {

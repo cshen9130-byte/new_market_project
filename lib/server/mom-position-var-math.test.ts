@@ -34,6 +34,44 @@ test("correlation-adjusted exposure equals the direct net only when correlation 
   assert.equal(signedCorrelationExposure([-50], [[1]]), -50)
 })
 
+test("correlation exposure points at the side with more marginal risk when notional is the other way", () => {
+  const corr = [
+    [1, 0.5],
+    [0.5, 1],
+  ]
+  const byNotional = signedCorrelationExposure([100, -101], corr)
+  assert.equal(byNotional, -101)
+  const grouped = correlationExposureByGroup(
+    [
+      { prod: "MA", mv: 100, sigma: 0.04 },
+      { prod: "L", mv: -101, sigma: 0.01 },
+    ],
+    corr,
+  )
+  assert.equal(grouped.sector["能源化工"], 101)
+})
+
+test("equal volatility keeps the direct-net sign when correlation is 1", () => {
+  const corr = [
+    [1, 1],
+    [1, 1],
+  ]
+  assert.equal(correlationExposureByGroup(
+    [
+      { prod: "MA", mv: 100, sigma: 0.02 },
+      { prod: "L", mv: -80, sigma: 0.02 },
+    ],
+    corr,
+  ).sector["能源化工"], 20)
+  assert.equal(correlationExposureByGroup(
+    [
+      { prod: "MA", mv: 80, sigma: 0.02 },
+      { prod: "L", mv: -100, sigma: 0.02 },
+    ],
+    corr,
+  ).sector["能源化工"], -20)
+})
+
 test("correlation-adjusted exposure is computed inside each sector, not across sectors", () => {
   const grouped = correlationExposureByGroup(
     [

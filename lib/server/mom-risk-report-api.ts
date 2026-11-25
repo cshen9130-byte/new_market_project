@@ -6,6 +6,7 @@
 
 import { PROD_NAMES, PROD_SECTOR } from "@/lib/ma/prod-sector"
 import { momDataErr, momDataOk, type MomDataEnvelope } from "@/lib/server/mom-data-api"
+import { readMomCachedJson } from "@/lib/server/mom-cache-key"
 import { MOM_POSITION_VAR_SPEC } from "@/lib/server/mom-position-var-math"
 import { varConcentrationShares } from "@/lib/mom-var-concentration"
 
@@ -70,12 +71,7 @@ function windowByDate<T extends { date: string | null }>(
 
 async function readRoute(loader: () => Promise<(req: Request) => Promise<Response>>, url: string): Promise<Record<string, unknown>> {
   const GET = await loader()
-  const res = await GET(new Request(url))
-  const body = await res.json()
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return { ok: false, error: "empty response" }
-  }
-  return body as Record<string, unknown>
+  return readMomCachedJson(GET, url)
 }
 
 export async function getMomRiskVar(record: Record<string, string | undefined>): Promise<MomDataEnvelope<unknown>> {

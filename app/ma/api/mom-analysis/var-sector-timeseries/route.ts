@@ -49,4 +49,4 @@ async function _GET(req: Request) {
   }
 }
 
-export const GET = withMomCache("var-sector-timeseries-avgcorr", _GET)
+export const GET = withMomCache("var-sector-timeseries-risksign", _GET)

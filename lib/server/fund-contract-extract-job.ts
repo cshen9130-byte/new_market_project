@@ -307,11 +307,6 @@ async function processOneJob(
           }
         : null)
     const extracted = adoptMatchedRegisterNumber(stripped, matched)
-    const stillThere = await getElementExtractJobById(job.id)
-    if (!stillThere) {
-      console.log(`[contract-extract] job ${job.id} was deleted before write, skipping`)
-      return "failed"
-    }
     if (!matched) {
       await updateElementExtractJob(job.id, {
         status: "needs_review",

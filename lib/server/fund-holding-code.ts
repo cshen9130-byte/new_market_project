@@ -151,6 +151,10 @@ export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
   // 藤创藤达CTA1号A类: 金舆基石一号 估值表科目 110906011ABFJ9 parses as ABFJ9A.
   // That custodian ticker is the same A share as 备案号 BJN16A (parent SBJN16).
   ABFJ9A: "BJN16A",
+  // 象上容成多策略A类: 金舆锡泰一号 华泰科目 11083501SAMR32OTC, name ends 基金A
+  // (not A类). 基石/守安 store the same share as AMR32A.
+  SAMR32: "AMR32A",
+  SAMR32A: "AMR32A",
 }
 
 /** Canonical 备案号 plus every custodian/估值表 code that points at the same product. */
@@ -633,10 +637,16 @@ function overrideCodeFromName(subjectName: string): string | null {
   return appendShareClass(code, shareFromName)
 }
 
-/** Share class letter from fund name, e.g. "B类" → "B". */
+/**
+ * Share class letter from a fund name.
+ * `A类`, or Huatai's bare letter glued on 基金 (`…私募证券投资基金A`).
+ */
 export function shareClassFromFundName(name: string): string {
-  const m = String(name ?? "").match(/([ABC])类/u)
-  return m ? m[1].toUpperCase() : ""
+  const n = stripValuationSubjectPathPrefix(String(name ?? "").trim()) || String(name ?? "").trim()
+  const labeled = n.match(/([ABC])类/u)
+  if (labeled) return labeled[1].toUpperCase()
+  const bare = n.match(/基金([ABC])$/u)
+  return bare ? bare[1].toUpperCase() : ""
 }
 
 /** Valid codes: uppercase letters + digits only (e.g. ALF51B, 512000). */

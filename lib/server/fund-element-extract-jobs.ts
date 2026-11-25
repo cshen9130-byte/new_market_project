@@ -227,9 +227,18 @@ export async function ensureElementExtractJobsTable(): Promise<void> {
   await tableReady
 }
 
+/** BIGSERIAL arrives from node-pg as a string. Number.isFinite("92") is false. */
+function numericJobId(id: number | string | null | undefined): number | null {
+  const numericId = typeof id === "number" ? id : Number(id)
+  if (!Number.isFinite(numericId) || numericId <= 0) return null
+  return numericId
+}
+
 function mapJobRow(row: ElementExtractJobRow): ElementExtractJobRow {
+  const id = numericJobId(row.id as number | string) ?? row.id
   return {
     ...row,
+    id,
     file_size: Number(row.file_size) || 0,
     content_hash:
       (row.content_hash || "").trim().toLowerCase() ||
@@ -637,12 +646,13 @@ export async function listAppliedExtractJobsByBeiAns(beiAns: string[]): Promise<
 /** Remove one extract task and its uploaded file. Product elements already written stay. */
 export async function deleteElementExtractJob(id: number): Promise<boolean> {
   await ensureElementExtractJobsTable()
-  if (!Number.isFinite(id) || id <= 0) return false
+  const numericId = numericJobId(id as number | string)
+  if (numericId == null) return false
   const doomed = await query<{ storage_filename: string }>(
     `DELETE FROM ops_element_extract_jobs
      WHERE id = $1
      RETURNING storage_filename`,
-    [id],
+    [numericId],
   )
   const row = doomed[0]
   if (!row) return false
@@ -655,10 +665,11 @@ export async function deleteElementExtractJob(id: number): Promise<boolean> {
 
 export async function getElementExtractJobById(id: number): Promise<ElementExtractJobRow | null> {
   await ensureElementExtractJobsTable()
-  if (!Number.isFinite(id)) return null
+  const numericId = numericJobId(id as number | string)
+  if (numericId == null) return null
   const rows = await query<ElementExtractJobRow>(
     `SELECT ${JOB_SELECT_COLS} FROM ops_element_extract_jobs WHERE id = $1 LIMIT 1`,
-    [id],
+    [numericId],
   )
   return rows[0] ? mapJobRow(rows[0]) : null
 }

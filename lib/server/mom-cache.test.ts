@@ -10,8 +10,11 @@ import { QUANT_ACCOUNT_IDS } from "../ma/quant-accounts"
 import {
   beijingDateStr,
   findStaleCache,
+  MOM_CACHE_REQUIRE_FRESH_HEADER,
+  momCacheMayServeStale,
   paramKey,
   quantIdsParamAliases,
+  readMomCachedJson,
 } from "./mom-cache-key"
 
 const DEFAULT_IDS = [...QUANT_ACCOUNT_IDS].sort((a, b) => a - b).join(",")
@@ -105,4 +108,37 @@ test("findStaleCache falls back to yesterday when today is missing", () => {
     else process.env.MOM_CACHE_DIR = prev
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test("a nested chart read does not accept a stale snapshot", () => {
+  const plain = new Request("http://localhost/ma/api/mom-analysis/var-mcr-timeseries")
+  const nested = new Request("http://localhost/ma/api/mom-analysis/var-mcr-timeseries", {
+    headers: { [MOM_CACHE_REQUIRE_FRESH_HEADER]: "1" },
+  })
+  assert.equal(momCacheMayServeStale(plain, true), true)
+  assert.equal(momCacheMayServeStale(nested, true), false)
+  assert.equal(momCacheMayServeStale(nested, false), false)
+})
+
+test("readMomCachedJson retries with nocache when the first body is stale", async () => {
+  const seen: string[] = []
+  const get = async (req: Request) => {
+    seen.push(req.url)
+    assert.equal(req.headers.get(MOM_CACHE_REQUIRE_FRESH_HEADER), "1")
+    if (seen.length === 1) {
+      return Response.json({ ok: true, selectedDate: "2026-11-23", cacheStatus: "stale" }, {
+        headers: { "X-Mom-Cache": "stale" },
+      })
+    }
+    return Response.json({ ok: true, selectedDate: "2026-11-24" }, {
+      headers: { "X-Mom-Cache": "miss" },
+    })
+  }
+  const body = await readMomCachedJson(get, "http://localhost/ma/api/mom-analysis/var-mcr-timeseries?volDays=20")
+  assert.deepEqual(seen, [
+    "http://localhost/ma/api/mom-analysis/var-mcr-timeseries?volDays=20",
+    "http://localhost/ma/api/mom-analysis/var-mcr-timeseries?volDays=20&nocache=1",
+  ])
+  assert.equal(body.selectedDate, "2026-11-24")
+  assert.equal(body.cacheStatus, undefined)
 })
