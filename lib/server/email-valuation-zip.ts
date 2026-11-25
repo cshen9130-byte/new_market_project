@@ -29,23 +29,37 @@ export function isValuationZipFilename(filename: string): boolean {
   return /\.zip$/i.test(filename.trim())
 }
 
-export function expandValuationZipBuffer(buffer: Buffer, archiveFilename: string): ZipSpreadsheetEntry[] {
-  const zip = new AdmZip(buffer)
+const MAX_NESTED_ZIP_DEPTH = 3
+
+function spreadsheetEntriesFromZip(buffer: Buffer, depth: number): ZipSpreadsheetEntry[] {
+  if (depth > MAX_NESTED_ZIP_DEPTH) return []
+  let zip: AdmZip
+  try {
+    zip = new AdmZip(buffer)
+  } catch {
+    return []
+  }
   const out: ZipSpreadsheetEntry[] = []
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) continue
-    if (!/\.xlsx?$/i.test(entry.entryName)) continue
     const filename = entry.entryName.split(/[/\\]/).pop() ?? entry.entryName
+    // 兴证 补发 packs a zip inside a zip (`SJY381_20261110-20261124.zip` → the same name again).
+    if (/\.zip$/i.test(filename)) {
+      out.push(...spreadsheetEntriesFromZip(entry.getData(), depth + 1))
+      continue
+    }
+    if (!/\.xlsx?$/i.test(filename)) continue
     out.push({
       entryName: entry.entryName,
       filename,
       buffer: entry.getData(),
     })
   }
-  if (out.length === 0 && archiveFilename) {
-    // Some archives use a single nested folder; adm-zip already flattens entry names.
-  }
   return out
+}
+
+export function expandValuationZipBuffer(buffer: Buffer, _archiveFilename: string): ZipSpreadsheetEntry[] {
+  return spreadsheetEntriesFromZip(buffer, 0)
 }
 
 /** Prefer 历史净值 / NAV workbooks inside a manager 产品材料 / 尽调材料 zip. */
@@ -82,13 +96,10 @@ export function extractSpreadsheetFromZipBuffer(
 ): { buffer: Buffer; filename: string } | null {
   const target = innerFilename.trim().toLowerCase()
   if (!target) return null
-  const zip = new AdmZip(zipBuffer)
-  for (const entry of zip.getEntries()) {
-    if (entry.isDirectory) continue
-    const base = (entry.entryName.split(/[/\\]/).pop() ?? entry.entryName).toLowerCase()
+  for (const entry of expandValuationZipBuffer(zipBuffer, "")) {
+    const base = entry.filename.toLowerCase()
     if (base !== target && !entry.entryName.toLowerCase().endsWith(target)) continue
-    if (!/\.xlsx?$/i.test(entry.entryName)) continue
-    return { buffer: entry.getData(), filename: entry.entryName.split(/[/\\]/).pop() ?? entry.entryName }
+    return { buffer: entry.buffer, filename: entry.filename }
   }
   return null
 }

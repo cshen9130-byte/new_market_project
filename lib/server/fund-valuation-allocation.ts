@@ -1344,7 +1344,10 @@ export function buildBalancedMajorAllocation(
   }
 
   const bankRows = cashComponentRows(holdings, "bank_deposit")
-  const bank = custodyBalance > 0 ? custodyBalance : aggregateMajorKind(holdings, "bank_deposit")
+  // 托管户余额 is often only 活期存款. Accrued deposit interest is a separate
+  // bank leaf; using the header alone leaves that interest as 其他.
+  const bankFromLeaves = aggregateMajorKind(holdings, "bank_deposit")
+  const bank = Math.max(custodyBalance, bankFromLeaves)
   add("bank_deposit", bank)
   remember("bank_deposit", bankRows)
   const settlementRows = cashComponentRows(holdings, "settlement_reserve")
