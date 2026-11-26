@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { ChevronDown } from "lucide-react"
-import { TEAM_BENCHMARK_OPTIONS } from "@/lib/ma/team-benchmark"
+import { TEAM_BENCHMARK_OPTIONS, teamBenchmarkOptionsForStrategy } from "@/lib/ma/team-benchmark"
 import { StrategyL3MultiSelect } from "./StrategyL3MultiSelect"
 
 export type BatchStrategyMode = "both" | "strategy" | "benchmark"
@@ -190,7 +190,7 @@ export function BatchAddStrategyDialog({
                 value={benchmark}
                 onChange={setBenchmark}
                 placeholder="请选择团队策略"
-                options={TEAM_BENCHMARK_OPTIONS}
+                options={teamBenchmarkOptionsForStrategy(l1)}
               />
             </div>
           )}

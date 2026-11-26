@@ -1,3 +1,16 @@
+/** Bond benchmarks. Shown first when 一级策略 is 债券策略. */
+export const BOND_TEAM_BENCHMARK_OPTIONS = [
+  "中债综合财富",
+  "中债国债财富",
+  "中债信用债财富",
+  "中证全债",
+  "中证国债",
+  "中证转债",
+  "上证国债",
+  "上证企债",
+  "十年国债ETF",
+] as const
+
 export const TEAM_BENCHMARK_OPTIONS = [
   "沪深300",
   "中证500",
@@ -8,7 +21,22 @@ export const TEAM_BENCHMARK_OPTIONS = [
   "中证商品指数",
   "上证50",
   "中证2000",
+  ...BOND_TEAM_BENCHMARK_OPTIONS,
 ] as const
+
+const BOND_TEAM_BENCHMARK_SET = new Set<string>(BOND_TEAM_BENCHMARK_OPTIONS)
+
+/** Bond names lead the list when the selected 一级策略 is a bond strategy. */
+export function teamBenchmarkOptionsForStrategy(strategyL1: string): string[] {
+  const all = [...TEAM_BENCHMARK_OPTIONS]
+  if (strategyL1 !== "债券策略" && strategyL1 !== "固定收益" && strategyL1 !== "固收策略") {
+    return all
+  }
+  return [
+    ...BOND_TEAM_BENCHMARK_OPTIONS,
+    ...all.filter((name) => !BOND_TEAM_BENCHMARK_SET.has(name)),
+  ]
+}
 
 /** Map a stored 团队基准 / 业绩基准 label to the product-page dropdown key. */
 export function normalizeBenchmarkKey(raw: string | null | undefined): string {
@@ -30,6 +58,12 @@ export function normalizeBenchmarkKey(raw: string | null | undefined): string {
   if (text.includes("中证100") || text.includes("中证A100")) return "000903.SH"
   if (text.includes("中证全指")) return "000985.SH"
   if (text.includes("中证流通")) return "000902.SH"
+  if (text.includes("中债综合") || text.includes("CBA00201")) return "CBA00201.CS"
+  if (text.includes("中债国债") || text.includes("CBA00601")) return "CBA00601.CS"
+  if (text.includes("中债信用") || text.includes("CBA02701")) return "CBA02701.CS"
+  if (text.includes("中证全债") || text.includes("H11001")) return "H11001.CSI"
+  if (text.includes("上证国债")) return "000012.SH"
+  if (text.includes("上证企债") || text.includes("上证企业债")) return "000013.SH"
   if (text.includes("中证转债") || text.includes("中证可转债")) return "000832.SH"
   if (text.includes("中证国债")) return "H11006.CSI"
   if (text.includes("国证2000")) return "399303.SZ"
@@ -41,6 +75,7 @@ export function normalizeBenchmarkKey(raw: string | null | undefined): string {
   if (text.includes("上证50")) return "IH"
   if (text.includes("中证商品")) return "100001.CCI"
   if (text.includes("南华商品")) return "NHCI.NH"
+  if (text.includes("十年国债")) return "511260.SH"
   if (text.includes("国债")) return "511010.SH"
   if (text.includes("黄金")) return "518880.SH"
   return ""
@@ -49,6 +84,12 @@ export function normalizeBenchmarkKey(raw: string | null | undefined): string {
 function strategyDefaultBenchmarkKey(parts: Array<string | null | undefined>): string {
   const text = parts.filter(Boolean).join("").replace(/\s+/g, "")
   if (!text) return ""
+  if (/债券策略|固定收益|固收策略|利率债|信用债/.test(text)) {
+    if (/转债/.test(text)) return "000832.SH"
+    if (/信用债|城投债|地产债|中资美元债/.test(text)) return "CBA02701.CS"
+    if (/利率债|国债期货|国债收益互换/.test(text)) return "CBA00601.CS"
+    return "CBA00201.CS"
+  }
   if (/商品|期货|CTA|cta|管理期货/.test(text)) return "NHCI.NH"
   // Match the index in the strategy label before the generic equity fallback.
   // Otherwise 1000指增 / 500指增 all resolve to 沪深300.

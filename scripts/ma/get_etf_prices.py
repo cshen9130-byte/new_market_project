@@ -89,6 +89,11 @@ ETF_TICKERS = [
     "518880.SH",  # 黄金 ETF
 ]
 
+# Benchmark ETFs outside the PCA column order. Appended after ETF_TICKERS.
+EXTRA_ETF_TICKERS = [
+    "511260.SH",  # 十年国债ETF
+]
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -181,7 +186,7 @@ def main() -> None:
     records = []
 
     try:
-        for ticker in ETF_TICKERS:
+        for ticker in ETF_TICKERS + EXTRA_ETF_TICKERS:
             try:
                 data = c.csd(
                     ticker,

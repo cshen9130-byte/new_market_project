@@ -8,6 +8,7 @@ import { readFile } from "fs/promises"
 import * as XLSX from "xlsx"
 import {
   EXTERNAL_RANK_FOLDER,
+  IMA_DIANJING_RANK_FOLDER,
   type ExternalRankDetectedWeek,
   type ExternalRankWeekFile,
   type ExternalRankWeekGroup,
@@ -195,6 +196,19 @@ export function extractRankFileDates(fileName: string): RankFileDates {
     markUsed(used, start, end)
   }
 
+  // ima 点睛 week folders: （1116-1120） means Nov 16–Nov 20, year filled in later.
+  const compactWeekRe = /(?<!\d)(\d{2})(\d{2})\s*[-~～]\s*(\d{2})(\d{2})(?!\d)/g
+  for (const match of fileName.matchAll(compactWeekRe)) {
+    const start = match.index ?? 0
+    const end = start + match[0].length
+    if (overlapsUsed(used, start, end)) continue
+    const left = toIso(2020, Number(match[1]), Number(match[2])) ? { month: Number(match[1]), day: Number(match[2]) } : null
+    const right = toIso(2020, Number(match[3]), Number(match[4])) ? { month: Number(match[3]), day: Number(match[4]) } : null
+    if (!left || !right) continue
+    shorts.push(left, right)
+    markUsed(used, start, end)
+  }
+
   return { spans, shorts }
 }
 
@@ -288,21 +302,34 @@ async function parseCached(relativePath: string, size: number, updatedAt: string
   }
 }
 
-async function loadCatalog(today = shanghaiToday()): Promise<CatalogFile[]> {
+export type ExternalRankFileSource = "files" | "ima"
+
+function isImaDianjingPath(relativePath: string): boolean {
+  const norm = relativePath.replace(/\\/g, "/")
+  return norm === IMA_DIANJING_RANK_FOLDER || norm.startsWith(`${IMA_DIANJING_RANK_FOLDER}/`)
+}
+
+async function loadCatalog(today = shanghaiToday(), source: ExternalRankFileSource = "files"): Promise<CatalogFile[]> {
   if (process.platform === "win32") {
     const { ensureDevRemoteRankFolder } = await import("./dev-remote-rank-folder")
     await ensureDevRemoteRankFolder()
   }
+  const folder = source === "ima" ? IMA_DIANJING_RANK_FOLDER : EXTERNAL_RANK_FOLDER
   let listed: { relativePath: string; size: number }[]
   try {
-    listed = await listKnowledgeBaseIndexableFiles(EXTERNAL_RANK_FOLDER)
+    listed = await listKnowledgeBaseIndexableFiles(folder)
   } catch (err) {
     if (isMissingPath(err)) {
+      if (source === "ima") return []
       throw new Error(`知识库里还没有「${EXTERNAL_RANK_FOLDER}」文件夹。请先在 AI 知识库上传榜单文件。`)
     }
     throw err
   }
-  const spreadsheets = listed.filter((file) => /\.xlsx?$/i.test(file.relativePath))
+  const spreadsheets = listed.filter((file) => {
+    if (!/\.xlsx?$/i.test(file.relativePath)) return false
+    if (source === "files" && isImaDianjingPath(file.relativePath)) return false
+    return true
+  })
   const partial: Array<Omit<CatalogFile, "spans">> = []
   for (const item of spreadsheets) {
     try {
@@ -431,12 +458,12 @@ function weekFiles(catalog: CatalogFile[], weekStart: string, weekEnd: string): 
   return files
 }
 
-async function collectWeek(weekEndRaw: string): Promise<ExternalRankWeekPreview> {
+async function collectWeek(weekEndRaw: string, source: ExternalRankFileSource = "files"): Promise<ExternalRankWeekPreview> {
   const { weekStart, weekEnd } = externalRankWeekWindow(weekEndRaw)
-  const catalog = await loadCatalog()
+  const catalog = await loadCatalog(undefined, source)
   const files = weekFiles(catalog, weekStart, weekEnd)
   return {
-    folder: EXTERNAL_RANK_FOLDER,
+    folder: source === "ima" ? IMA_DIANJING_RANK_FOLDER : EXTERNAL_RANK_FOLDER,
     week_start: weekStart,
     week_end: weekEnd,
     scanned: catalog.length,
@@ -446,8 +473,20 @@ async function collectWeek(weekEndRaw: string): Promise<ExternalRankWeekPreview>
   }
 }
 
-export async function buildExternalRankWeekPreview(weekEndRaw: string): Promise<ExternalRankWeekPreview> {
-  const full = await collectWeek(weekEndRaw)
+/** Full parsed rows for one week. The preview caps each file; this does not. */
+export async function loadExternalRankWeekFiles(
+  weekEndRaw: string,
+  source: ExternalRankFileSource = "files",
+): Promise<ExternalRankWeekFile[]> {
+  const preview = await collectWeek(weekEndRaw, source)
+  return preview.files
+}
+
+export async function buildExternalRankWeekPreview(
+  weekEndRaw: string,
+  source: ExternalRankFileSource = "files",
+): Promise<ExternalRankWeekPreview> {
+  const full = await collectWeek(weekEndRaw, source)
   return {
     ...full,
     files: full.files.map((file) => ({
@@ -586,8 +625,11 @@ export function buildExternalRankWeekWorkbook(preview: Pick<ExternalRankWeekPrev
   return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer
 }
 
-export async function buildExternalRankWeekFile(weekEndRaw: string): Promise<{ buffer: Buffer; fileName: string }> {
-  const preview = await collectWeek(weekEndRaw)
+export async function buildExternalRankWeekFile(
+  weekEndRaw: string,
+  source: ExternalRankFileSource = "files",
+): Promise<{ buffer: Buffer; fileName: string }> {
+  const preview = await collectWeek(weekEndRaw, source)
   const parsedRows = preview.files.reduce((sum, file) => sum + (file.parsed ? file.row_count : 0), 0)
   if (parsedRows === 0) {
     throw new Error(preview.files.length === 0

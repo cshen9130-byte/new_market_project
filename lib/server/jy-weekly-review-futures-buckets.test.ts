@@ -9,6 +9,7 @@ import {
   previewFuturesWeeklyReview,
 } from "./jy-weekly-review-futures"
 import type { WeeklyReviewFund } from "./jy-weekly-review"
+import { futuresExternalFamily } from "./futures-weekly-external-rows"
 
 function fund(l3: string, extra: Partial<WeeklyReviewFund> = {}): WeeklyReviewFund {
   return {
@@ -155,4 +156,14 @@ test("preview always lists quant and subjective sheets", () => {
     groups.map((group) => group.count),
     [2, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1],
   )
+})
+
+test("external CTA labels map onto futures families and stock labels do not", () => {
+  assert.equal(futuresExternalFamily("量化CTA"), "量化期货")
+  assert.equal(futuresExternalFamily("量化CTA3.87"), "量化期货")
+  assert.equal(futuresExternalFamily("主观CTA"), "主观期货")
+  assert.equal(futuresExternalFamily("管理期货"), "量化期货")
+  assert.equal(futuresExternalFamily("主观多头"), null)
+  assert.equal(futuresExternalFamily("500指增"), null)
+  assert.equal(futuresExternalFamily("宏观"), null)
 })

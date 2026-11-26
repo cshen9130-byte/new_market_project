@@ -480,13 +480,17 @@ export async function getExternalRank(
 async function externalRank(record: Record<string, string | undefined>): Promise<FundDataEnvelope<unknown>> {
   const source = (record.source || "files").trim().toLowerCase()
   if (source === "yingmi" || source === "盈米") return yingmiRank(record)
+  const fileSource = source === "ima" || source === "点睛" || source === "ima点睛" ? "ima" : "files"
   try {
     const { buildExternalRankWeekPreview } = await import("@/lib/server/external-rank-week")
     const { defaultWeeklyReviewWeekEnd } = await import("@/lib/server/jy-weekly-review")
-    const preview = await buildExternalRankWeekPreview(record.week_end || defaultWeeklyReviewWeekEnd())
+    const preview = await buildExternalRankWeekPreview(record.week_end || defaultWeeklyReviewWeekEnd(), fileSource)
+    const note = fileSource === "ima"
+      ? `${NOTE} 这是 ima 知识库「点睛焱究所」每周三拉进「外部私募业绩排行/ima点睛」的榜单。ytd_pct、ret_1w_pct、ytd_drawdown_pct 是百分点。`
+      : `${NOTE} 这是知识库「外部私募业绩排行」里对上所选周的榜单。ytd_pct、ret_1w_pct、ytd_drawdown_pct 是百分点。和跟踪池对名次用 external_rank_compare。生成本周 Excel 用 weekly_review，variant=external，report=run。盈米代销用 source=yingmi。ima 点睛用 source=ima。`
     return fundDataOk({
       ...shapeExternalPreview(preview, record.q, record.strategy),
-      note: `${NOTE} 这是知识库「外部私募业绩排行」里对上所选周的榜单。ytd_pct、ret_1w_pct、ytd_drawdown_pct 是百分点。和跟踪池对名次用 external_rank_compare。生成本周 Excel 用 weekly_review，variant=external，report=run。盈米代销用 source=yingmi。`,
+      note,
     })
   } catch (err) {
     return fundDataErr(3, messageOf(err))
@@ -609,6 +613,6 @@ async function yingmiRank(record: Record<string, string | undefined>): Promise<F
     seed_as_of: json.seedAsOf ?? null,
     strategies: json.strategies ?? [],
     rows: products,
-    note: `${NOTE} 盈米代销私募。ret_1y_pct 是近一年收益。没有业绩时看 note。这不是知识库周报文件。`,
+    note: `${NOTE} 盈米代销私募。ret_1y_pct 是近一年收益。没有业绩时看 note。这不是小荷公众号榜单。`,
   })
 }

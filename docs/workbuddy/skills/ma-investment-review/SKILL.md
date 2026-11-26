@@ -26,7 +26,7 @@ author: MA
 | 周度回顾(股票) 的收益、超额，或生成周报 Excel | `weekly_review`，`report=run`，`variant=equity` |
 | 周度回顾(期货) | `report=run`，`variant=futures` |
 | 公募指增 · 周度回顾 | `report=run`，`variant=public` |
-| 外部私募业绩排行里的周报文件 | `external_rank`，`source=files` |
+| 外部私募业绩排行里的小荷公众号 | `external_rank`，`source=files` |
 | 盈米代销 | `external_rank`，`source=yingmi` |
 | 把本周外部榜合成一份 Excel | `weekly_review`，`report=run`，`variant=external` |
 

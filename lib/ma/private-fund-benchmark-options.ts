@@ -3,6 +3,7 @@ export const PRIVATE_FUND_BENCHMARK_GROUP_ORDER = [
   "宽基指数",
   "风格指数",
   "大类指数",
+  "债券指数",
   "其他",
 ] as const
 
@@ -51,17 +52,26 @@ export const PRIVATE_FUND_BENCHMARK_OPTIONS = [
   { key: "801276.SI", label: "金融地产", source: "ashare", tsCode: "801276.SI", group: "大类指数" },
   { key: "801274.SI", label: "医药医疗", source: "ashare", tsCode: "801274.SI", group: "大类指数" },
 
+  // 债券指数. ChinaBond wealth closes are CBA00xxx.CS; CSI / SSE bond indexes use their exchange codes.
+  { key: "CBA00201.CS", label: "中债综合财富", source: "ashare", tsCode: "CBA00201.CS", group: "债券指数" },
+  { key: "CBA00601.CS", label: "中债国债财富", source: "ashare", tsCode: "CBA00601.CS", group: "债券指数" },
+  { key: "CBA02701.CS", label: "中债信用债财富", source: "ashare", tsCode: "CBA02701.CS", group: "债券指数" },
+  { key: "H11001.CSI", label: "中证全债", source: "ashare", tsCode: "H11001.CSI", group: "债券指数" },
+  { key: "H11006.CSI", label: "中证国债", source: "ashare", tsCode: "H11006.CSI", group: "债券指数" },
+  { key: "000012.SH", label: "上证国债", source: "ashare", tsCode: "000012.SH", group: "债券指数" },
+  { key: "000013.SH", label: "上证企债", source: "ashare", tsCode: "000013.SH", group: "债券指数" },
+  { key: "000832.SH", label: "中证转债", source: "ashare", tsCode: "000832.SH", group: "债券指数" },
+  { key: "511010.SH", label: "国债ETF", source: "etf", ticker: "511010.SH", group: "债券指数" },
+  { key: "511260.SH", label: "十年国债ETF", source: "etf", ticker: "511260.SH", group: "债券指数" },
+
   // Existing options not on the Excel sheet.
   { key: "000902.SH", label: "中证流通", source: "ashare", tsCode: "000902.SH", group: "其他" },
-  { key: "000832.SH", label: "中证转债", source: "ashare", tsCode: "000832.SH", group: "其他" },
-  { key: "H11006.CSI", label: "中证国债", source: "ashare", tsCode: "H11006.CSI", group: "其他" },
   { key: "399303.SZ", label: "国证2000", source: "ashare", tsCode: "399303.SZ", group: "其他" },
   { key: "000922.SH", label: "中证红利", source: "ashare", tsCode: "000922.SH", group: "其他" },
   { key: "H00300.CSI", label: "沪深300全收益", source: "ashare", tsCode: "H00300.CSI", group: "其他" },
   { key: "NHCI.NH", label: "南华商品指数", source: "nanhua", code: "NHCI.NH", group: "其他" },
   { key: "100001.CCI", label: "中证商品指数", source: "ccidx", group: "其他" },
   { key: "CI011001.REBUILD", label: "全天候指数", source: "ci011001_rebuild", group: "其他" },
-  { key: "511010.SH", label: "国债ETF", source: "etf", ticker: "511010.SH", group: "其他" },
   { key: "518880.SH", label: "黄金ETF", source: "etf", ticker: "518880.SH", group: "其他" },
 ] as const
 

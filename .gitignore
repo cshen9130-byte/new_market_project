@@ -102,6 +102,11 @@ mom_data/
 emailpass.txt
 fof99_api/api_key.txt
 fof99_api/zjf_api_key.txt
+ima_api/api_key.txt
+ima_api/downloads/
+ima_api/skills/
+ima_api/*.zip
+ima_api/*.cjs
 
 # Downloaded settlement xlsx files — only at repo root (one-off download scripts)
 /*.xlsx

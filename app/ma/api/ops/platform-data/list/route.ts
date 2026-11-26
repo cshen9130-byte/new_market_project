@@ -60,6 +60,8 @@ export async function GET(req: Request) {
         : "all"
     const inPoolRaw = (searchParams.get("in_pool") || "").trim().toLowerCase()
     const inPoolFilter = inPoolRaw === "in" || inPoolRaw === "out" ? inPoolRaw : "all"
+    const nameDupRaw = (searchParams.get("name_dup") || "").trim().toLowerCase()
+    const nameDupFilter = inPoolFilter === "in" && nameDupRaw === "dup" ? "dup" : "all"
     const navFrequencyFilter = parseNavFrequencyFilter(searchParams.get("nav_frequency") || "")
     const sort = (searchParams.get("sort") || "").trim()
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
@@ -86,6 +88,7 @@ export async function GET(req: Request) {
       navPresenceFilter,
       navDateFilter,
       inPoolFilter,
+      nameDupFilter,
       navFrequencyFilter,
       sort,
       sortDir,
@@ -112,6 +115,7 @@ export async function GET(req: Request) {
         navPresenceFilter,
         navDateFilter,
         inPoolFilter,
+        nameDupFilter,
         navFrequencyFilter,
         sort,
         sortDir,

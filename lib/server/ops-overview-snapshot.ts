@@ -94,12 +94,19 @@ function scheduleRefresh<T>(key: string, build: () => Promise<T>): void {
   pumpRefresh()
 }
 
+export type ServeOpsSnapshotOptions = {
+  /** Persist to ops_overview_snapshot. Defaults to true. */
+  persist?: boolean
+}
+
 /** Return the saved payload immediately. Rebuild only when it is missing or the caller asked to refresh. */
 export async function serveOpsSnapshot<T>(
   key: string,
   refresh: boolean,
   build: () => Promise<T>,
+  options?: ServeOpsSnapshotOptions,
 ): Promise<T> {
+  const persist = options?.persist !== false
   if (!refresh) {
     const mem = getListResponseCache(key)
     if (mem) return mem as T
@@ -107,7 +114,7 @@ export async function serveOpsSnapshot<T>(
       const snap = await readSnapshot<T>(key)
       if (snap) {
         setListResponseCache(key, snap.body)
-        if (Date.now() - snap.updatedAt > FRESH_MS) scheduleRefresh(key, build)
+        if (persist && Date.now() - snap.updatedAt > FRESH_MS) scheduleRefresh(key, build)
         return snap.body
       }
     } catch (err) {
@@ -117,10 +124,12 @@ export async function serveOpsSnapshot<T>(
 
   const body = await build()
   setListResponseCache(key, body)
-  try {
-    await writeSnapshot(key, body)
-  } catch (err) {
-    console.error("[ops-snapshot] write failed:", err)
+  if (persist) {
+    try {
+      await writeSnapshot(key, body)
+    } catch (err) {
+      console.error("[ops-snapshot] write failed:", err)
+    }
   }
   return body
 }

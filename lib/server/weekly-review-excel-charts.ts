@@ -46,9 +46,105 @@ export type BarChartSpec = {
 
 const DATA_SHEET = "图表数据"
 const NOTE =
-  "近一周均为绝对收益，与上方指数涨跌幅同一口径。各柱是同策略表里近一周指标最好的公募指增（指增组按超额，每组最多 5 只），柱高仍是绝对收益，对照该组跟踪池中位数。整体是两边全部产品的中位数。"
+  "上一图近一周是绝对收益，与上方指数涨跌幅同一口径。下一图每个策略用该策略表的近一周口径：指增为超额，其余为绝对收益。同一产品出现在多个来源时，计入每一个来源的中位数。没有近一周数的产品不计入。各来源的中位数、平均数、最大值、最小值、产品数和分化程度见「来源统计」。分化程度是该策略该来源下各产品本周收益的标准差，产品数少于 2 时不计算。"
 const NAVY = "1F4E79"
+const POOL_BAR = "C00000"
 const PUBLIC_BAR = "2E75B6"
+const XIAOHE_BAR = "7030A0"
+const IMA_BAR = "548235"
+const HELD_BAR = "C65911"
+
+export const SOURCE_MEDIAN_SERIES = [
+  { key: "pool", label: "跟踪池", color: POOL_BAR },
+  { key: "xiaohe", label: "小荷公众号", color: XIAOHE_BAR },
+  { key: "public", label: "公募指增", color: PUBLIC_BAR },
+  { key: "ima", label: "ima点睛", color: IMA_BAR },
+  { key: "held", label: "已投", color: HELD_BAR },
+] as const
+
+export type SourceMedianKey = (typeof SOURCE_MEDIAN_SERIES)[number]["key"]
+
+export type SourceMedianMembership = {
+  bucket: string
+  week: number | null
+} & Partial<Record<SourceMedianKey, boolean>>
+
+/** One median per source. A product flagged on several sources is counted in each. */
+export function sourceMedianRows(
+  rows: SourceMedianMembership[],
+): Array<{ bucket: string; values: Array<number | null> }> {
+  const buckets: string[] = []
+  const seen = new Set<string>()
+  for (const row of rows) {
+    if (!row.bucket || seen.has(row.bucket)) continue
+    seen.add(row.bucket)
+    buckets.push(row.bucket)
+  }
+  return buckets
+    .map((bucket) => ({
+      bucket,
+      values: SOURCE_MEDIAN_SERIES.map((series) => median(
+        rows.filter((row) => row.bucket === bucket && row[series.key]).map((row) => row.week),
+      )),
+    }))
+    .filter((row) => row.values.some((value) => value != null))
+}
+
+export const SOURCE_WEEK_STATS = [
+  { key: "median", label: "中位数" },
+  { key: "mean", label: "平均数" },
+  { key: "max", label: "最大值" },
+  { key: "min", label: "最小值" },
+  { key: "count", label: "产品数" },
+  { key: "stdev", label: "分化程度" },
+] as const
+
+export type SourceWeekStatKey = (typeof SOURCE_WEEK_STATS)[number]["key"]
+
+export type SourceWeekStat = Record<SourceWeekStatKey, number | null> & { count: number }
+
+/** Sample standard deviation (n-1). Blank when fewer than 2 finite values. */
+export function sampleStdev(values: Array<number | null | undefined>): number | null {
+  const xs = values.filter((value): value is number => value != null && Number.isFinite(value))
+  if (xs.length < 2) return null
+  const mean = xs.reduce((sum, value) => sum + value, 0) / xs.length
+  const ss = xs.reduce((sum, value) => sum + (value - mean) ** 2, 0)
+  return Math.sqrt(ss / (xs.length - 1))
+}
+
+function summarizeWeek(values: Array<number | null | undefined>): SourceWeekStat {
+  const xs = values.filter((value): value is number => value != null && Number.isFinite(value))
+  if (xs.length === 0) return { count: 0, median: null, mean: null, max: null, min: null, stdev: null }
+  return {
+    count: xs.length,
+    median: median(xs),
+    mean: xs.reduce((sum, value) => sum + value, 0) / xs.length,
+    max: Math.max(...xs),
+    min: Math.min(...xs),
+    stdev: sampleStdev(xs),
+  }
+}
+
+/** One stat block per source. A product flagged on several sources is counted in each. */
+export function sourceWeekStatRows(
+  rows: SourceMedianMembership[],
+): Array<{ bucket: string; sources: SourceWeekStat[] }> {
+  const buckets: string[] = []
+  const seen = new Set<string>()
+  for (const row of rows) {
+    if (!row.bucket || seen.has(row.bucket)) continue
+    seen.add(row.bucket)
+    buckets.push(row.bucket)
+  }
+  return buckets
+    .map((bucket) => ({
+      bucket,
+      sources: SOURCE_MEDIAN_SERIES.map((series) => summarizeWeek(
+        rows.filter((row) => row.bucket === bucket && row[series.key]).map((row) => row.week),
+      )),
+    }))
+    .filter((row) => row.sources.some((stat) => stat.count > 0))
+}
 const RED = "C00000"
 const GREEN = "006600"
 const ROW_PT = 22
@@ -96,13 +192,6 @@ function dollarRange(c1: number, r1: number, c2: number, r2: number): string {
   return `${dollarA1(c1, r1)}:${dollarA1(c2, r2)}`
 }
 
-function truncateLabel(name: string, max = 18): string {
-  const text = name.replace(/\s+/g, " ").trim()
-  if (text.length <= max) return text
-  return `${text.slice(0, max - 1)}…`
-}
-
-
 function signedColor(value: number | null): string | null {
   if (value == null || !Number.isFinite(value)) return null
   if (value > 0) return RED
@@ -110,21 +199,20 @@ function signedColor(value: number | null): string | null {
   return "808080"
 }
 
+export type WeeklyReviewMarketChartOptions = {
+  chart1Title?: string
+  benchSeriesLabel?: string
+  note?: string
+}
+
 export function buildWeeklyReviewMarketChartTables(
   benches: MarketBenchPoint[],
   poolRows: ChartFundRow[],
-  featuredPublic: ChartFundRow[],
-  allPublic: ChartFundRow[],
+  sourceMedians: Array<{ bucket: string; values: Array<number | null> }>,
   tableLastExcelRow: number,
+  options?: WeeklyReviewMarketChartOptions,
 ): WeeklyReviewMarketChartTables {
   const poolMedian = median(poolRows.map((row) => row.ret_1w))
-  const byBucket = new Map<string, number[]>()
-  for (const row of poolRows) {
-    if (row.ret_1w == null || !Number.isFinite(row.ret_1w)) continue
-    const list = byBucket.get(row.bucket) ?? []
-    list.push(row.ret_1w)
-    byBucket.set(row.bucket, list)
-  }
 
   const chart1Cats: string[] = ["跟踪池中位数"]
   const chart1Pool: Array<number | null> = [poolMedian]
@@ -136,24 +224,7 @@ export function buildWeeklyReviewMarketChartTables(
     chart1Bench.push(bench.ret != null && Number.isFinite(bench.ret) ? bench.ret : null)
   }
 
-  const poolBuckets = new Set(poolRows.map((row) => row.bucket))
-  const publicMedian = median(allPublic.filter((row) => poolBuckets.has(row.bucket)).map((row) => row.ret_1w))
-  const featured = [...featuredPublic]
-    .filter((row) => poolBuckets.has(row.bucket))
-    .sort((a, b) => (b.ret_1w ?? -Infinity) - (a.ret_1w ?? -Infinity))
-  const chart2Rows: Array<{ label: string; pool: number | null; compared: number | null }> = []
-  if (featured.length > 0) {
-    chart2Rows.push({ label: "整体", pool: poolMedian, compared: publicMedian })
-    for (const row of featured) {
-      const bucketMedian = median(byBucket.get(row.bucket) ?? [])
-      const suffix = row.bucket ? `（${row.bucket}）` : ""
-      chart2Rows.push({
-        label: `${truncateLabel(row.name, 10)}${suffix}`,
-        pool: bucketMedian,
-        compared: row.ret_1w != null && Number.isFinite(row.ret_1w) ? row.ret_1w : null,
-      })
-    }
-  }
+  const chart2Rows = sourceMedians.filter((row) => row.bucket && row.values.some((value) => value != null))
 
   const dataAoa: unknown[][] = []
   const set = (r: number, c: number, v: unknown) => {
@@ -163,7 +234,7 @@ export function buildWeeklyReviewMarketChartTables(
 
   set(0, 0, "名称")
   set(0, 1, "跟踪池")
-  set(0, 2, "宽基指数")
+  set(0, 2, options?.benchSeriesLabel ?? "宽基指数")
   chart1Cats.forEach((label, i) => {
     set(1 + i, 0, label)
     set(1 + i, 1, chart1Pool[i])
@@ -173,32 +244,32 @@ export function buildWeeklyReviewMarketChartTables(
 
   let chart2: BarChartSpec | null = null
   if (chart2Rows.length > 0) {
-    set(0, 4, "名称")
-    set(0, 5, "同策略跟踪池中位数")
-    set(0, 6, "公募指增")
+    const nameCol = 4
+    set(0, nameCol, "策略")
+    SOURCE_MEDIAN_SERIES.forEach((series, i) => set(0, nameCol + 1 + i, series.label))
     chart2Rows.forEach((row, i) => {
-      set(1 + i, 4, row.label)
-      set(1 + i, 5, row.pool)
-      set(1 + i, 6, row.compared)
+      set(1 + i, nameCol, row.bucket)
+      row.values.forEach((value, c) => set(1 + i, nameCol + 1 + c, value))
     })
     const chart2Last = 1 + chart2Rows.length
-    const many = chart2Rows.length > 8
-    const bounds = valueAxisBounds(chart2Rows.flatMap((row) => [row.pool, row.compared]), many)
+    const bounds = valueAxisBounds(chart2Rows.flatMap((row) => row.values), true)
     chart2 = {
-      title: "公募指增 vs 跟踪池（近一周）",
-      barDir: many ? "bar" : "col",
-      catRange: dollarRange(4, 2, 4, chart2Last),
+      title: "各策略来源近一周中位数",
+      barDir: "bar",
+      catRange: dollarRange(nameCol, 2, nameCol, chart2Last),
       valueMin: bounds.min,
       valueMax: bounds.max,
-      series: [
-        { titleCell: "F1", valRange: dollarRange(5, 2, 5, chart2Last), color: NAVY, showVal: false },
-        { titleCell: "G1", valRange: dollarRange(6, 2, 6, chart2Last), color: PUBLIC_BAR, showVal: true },
-      ],
+      series: SOURCE_MEDIAN_SERIES.map((series, i) => ({
+        titleCell: dollarA1(nameCol + 1 + i, 1),
+        valRange: dollarRange(nameCol + 1 + i, 2, nameCol + 1 + i, chart2Last),
+        color: series.color,
+        showVal: false,
+      })),
     }
   }
 
   const chart1: BarChartSpec = {
-    title: "跟踪池 vs 宽基指数（近一周）",
+    title: options?.chart1Title ?? "跟踪池 vs 宽基指数（近一周）",
     barDir: "col",
     catRange: dollarRange(0, 2, 0, chart1Last),
     series: [
@@ -216,7 +287,7 @@ export function buildWeeklyReviewMarketChartTables(
   const chart1StartRow = noteExcelRow + 1
   const chart1HeightRows = heightRows(10)
   const chart2HeightCm = chart2
-    ? Math.max(8, 3.2 + chart2Rows.length * (chart2.barDir === "bar" ? 0.88 : 0.45))
+    ? Math.max(9, 2.6 + chart2Rows.length * 1.35)
     : 0
   const chart2HeightRows = chart2 ? heightRows(chart2HeightCm) : 0
   const chart2StartRow = chart2 ? chart1StartRow + chart1HeightRows : null
@@ -226,7 +297,7 @@ export function buildWeeklyReviewMarketChartTables(
   return {
     dataAoa,
     dataSheetName: DATA_SHEET,
-    note: NOTE,
+    note: options?.note ?? NOTE,
     chart1StartRow,
     chart2StartRow,
     chart1HeightRows,
@@ -532,6 +603,34 @@ async function openZip(buffer: Buffer): Promise<ZipAdapter> {
   }
 }
 
+function headerFreezePane(splitRows: number): string {
+  const next = splitRows + 1
+  return `<pane ySplit="${splitRows}" topLeftCell="A${next}" activePane="bottomLeft" state="frozen"/>` +
+    `<selection pane="bottomLeft" activeCell="A${next}" sqref="A${next}"/>`
+}
+
+/** Keep the header rows on screen. xlsx-js-style does not write freeze panes. */
+export async function freezeWorksheetHeaderRows(buffer: Buffer, sheetNames: string[], splitRows = 1): Promise<Buffer> {
+  const names = [...new Set(sheetNames.filter(Boolean))]
+  if (names.length === 0) return buffer
+  const zip = await openZip(buffer)
+  const workbookXml = await zip.read("xl/workbook.xml")
+  const relsXml = await zip.read("xl/_rels/workbook.xml.rels")
+  if (!workbookXml || !relsXml) return buffer
+  for (const name of names) {
+    const path = sheetPathFromWorkbook(workbookXml, relsXml, name)
+    if (!path) continue
+    const xml = await zip.read(path)
+    if (!xml || xml.includes('state="frozen"')) continue
+    const frozen = xml.replace(
+      /<sheetViews>\s*<sheetView([^>]*?)\/>\s*<\/sheetViews>/,
+      `<sheetViews><sheetView$1>${headerFreezePane(splitRows)}</sheetView></sheetViews>`,
+    )
+    if (frozen !== xml) zip.write(path, frozen)
+  }
+  return zip.toBuffer()
+}
+
 export async function embedWeeklyReviewMarketCharts(
   buffer: Buffer,
   tables: WeeklyReviewMarketChartTables,
@@ -574,7 +673,7 @@ export async function embedWeeklyReviewMarketCharts(
   if (tables.chart2) {
     drawingCharts.push({
       relId: "rId2",
-      name: "公募指增对比跟踪池",
+      name: "各策略来源中位数",
       startRow: tables.chart2StartRow ?? tables.chart1StartRow + tables.chart1HeightRows,
       heightRows: tables.chart2HeightRows,
     })

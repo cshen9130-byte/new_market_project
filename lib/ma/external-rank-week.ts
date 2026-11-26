@@ -2,6 +2,9 @@
 
 export const EXTERNAL_RANK_FOLDER = "外部私募业绩排行"
 
+/** Files pulled from the ima knowledge base 点睛焱究所. Kept out of 小荷公众号. */
+export const IMA_DIANJING_RANK_FOLDER = `${EXTERNAL_RANK_FOLDER}/ima点睛`
+
 export type ExternalRankWeekRow = {
   rank: number
   strategy: string

@@ -161,3 +161,18 @@ export async function buildWeeklyReviewInvestedMedian(
     metrics,
   }
 }
+
+/** Currently held private FOF underlyings, by 备案号. */
+export async function listHeldFofUnderlyingCodes(): Promise<string[]> {
+  const funds = await loadHeldFofUnderlyings()
+  const codes: string[] = []
+  const seen = new Set<string>()
+  for (const fund of funds) {
+    const code = fund.beian_hao.trim()
+    const key = code.toUpperCase()
+    if (!code || seen.has(key)) continue
+    seen.add(key)
+    codes.push(code)
+  }
+  return codes
+}

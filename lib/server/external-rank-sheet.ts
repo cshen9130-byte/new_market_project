@@ -194,7 +194,7 @@ function headerKind(cell: string): HeaderKind | null {
   if (/管理规模|^规模$/.test(s)) return "aum"
   if (/净值日期|截止日期|统计截止/.test(s)) return "nav_date"
   if (/今年以来收益率|今年来收益率|今年以来收益|今年来收益|近一年收益率|过去一年收益率|^今年$|^20\d{2}年$/.test(s)) return "ytd"
-  if (/今年以来最大回撤|今年来最大回撤|今年最大回撤/.test(s)) return "ytd_dd"
+  if (/今年以来最大回撤|今年来最大回撤|今年最大回撤|今年以来动态回撤|今年来动态回撤/.test(s)) return "ytd_dd"
   if (/近一周收益率|近1周收益率|一周收益率|近一周收益|^近1周$|^近一周$/.test(s)) return "ret_1w"
   return null
 }

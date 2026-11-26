@@ -1,14 +1,19 @@
 /**
- * Average NAV of each 周度回顾 strategy, using every fund in the database
- * that classifies into that strategy. Share classes of one product count once.
+ * Average NAV of each 周度回顾 strategy, using funds in the selected universe
+ * that classify into that strategy. Share classes of one product count once.
  */
 
 import { query, queryUnbounded } from "@/lib/db"
 import {
   STRATEGY_NAV_MIN_PRINTS,
+  STRATEGY_NAV_UNIVERSE_LABEL,
+  STRATEGY_NAV_UNIVERSES,
+  assembleStrategyNavCompare,
   buildWeeklyReviewStrategyNav,
   type WeeklyReviewStrategyNav,
+  type WeeklyReviewStrategyNavMode,
   type WeeklyReviewStrategyNavStat,
+  type WeeklyReviewStrategyNavUniverse,
   type WeeklyReviewStrategyNavVariant,
 } from "@/lib/ma/weekly-review-strategy-nav"
 import { beianFamilyKey } from "@/lib/server/share-class-product"
@@ -21,6 +26,7 @@ import { shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import { WEEKLY_REVIEW_STATUS_HIDDEN_BUCKETS } from "@/lib/weekly-review-data-status"
 import {
   bucketForFund,
+  defaultWeeklyReviewWeekEnd,
   isEquityFund,
   type WeeklyReviewFund,
 } from "@/lib/server/jy-weekly-review"
@@ -28,6 +34,7 @@ import {
   futuresWeeklyCategories,
   isFuturesWeeklyFund,
 } from "@/lib/server/jy-weekly-review-futures"
+import { loadStrategyNavUniverseCodes } from "@/lib/server/weekly-review-strategy-nav-universes"
 
 const LOOKBACK_YEARS = 3
 const MAX_WEEKLY_MOVE = 0.2
@@ -38,6 +45,13 @@ type Member = {
   bucket: string
   family: string
   rank: number
+}
+
+export type WeeklyReviewStrategyNavQuery = {
+  universe?: WeeklyReviewStrategyNavUniverse
+  mode?: WeeklyReviewStrategyNavMode
+  strategy?: string
+  weekEnd?: string
 }
 
 function addYears(iso: string, years: number): string {
@@ -58,8 +72,17 @@ function familyOf(code: string): string {
   return beianFamilyKey(code) || code.trim().toUpperCase()
 }
 
-async function loadFunds(since: string): Promise<WeeklyReviewFund[]> {
+function weekOf(raw?: string): string {
+  const text = (raw ?? "").slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : defaultWeeklyReviewWeekEnd()
+}
+
+async function loadFunds(since: string, codes?: ReadonlySet<string>): Promise<WeeklyReviewFund[]> {
+  if (codes && codes.size === 0) return []
   const expr = sqlResolvedStrategyExprs("t6", "i")
+  const codeFilter = codes ? "AND UPPER(BTRIM(i.beian_hao)) = ANY($2::text[])" : ""
+  const params: unknown[] = [since]
+  if (codes) params.push([...codes])
   const rows = await query<{
     beian_hao: string
     product_name: string | null
@@ -75,8 +98,9 @@ async function loadFunds(since: string): Promise<WeeklyReviewFund[]> {
      FROM private_fund_info i
      ${sqlType6LatestStrategyJoin("i.beian_hao", "t6")}
      WHERE i.latest_nav_date >= $1::date
-       AND NULLIF(BTRIM(i.beian_hao), '') IS NOT NULL`,
-    [since],
+       AND NULLIF(BTRIM(i.beian_hao), '') IS NOT NULL
+       ${codeFilter}`,
+    params,
   )
   const seen = new Set<string>()
   const funds: WeeklyReviewFund[] = []
@@ -84,6 +108,7 @@ async function loadFunds(since: string): Promise<WeeklyReviewFund[]> {
     const code = row.beian_hao.trim()
     const key = code.toUpperCase()
     if (!code || seen.has(key)) continue
+    if (codes && !codes.has(key)) continue
     seen.add(key)
     funds.push({
       beian_hao: code,
@@ -126,6 +151,25 @@ function membersFor(variant: WeeklyReviewStrategyNavVariant, funds: WeeklyReview
   for (const fund of funds) {
     if (!isEquityFund(fund)) continue
     pushMember(out, seen, fund, bucketForFund(fund))
+  }
+  return out
+}
+
+function relabelMembers(members: Member[], label: string, strategy?: string): Member[] {
+  const out: Member[] = []
+  const seen = new Set<string>()
+  for (const row of members) {
+    if (strategy && row.bucket !== strategy) continue
+    const code = row.code.trim()
+    const key = `${label}\0${code.toUpperCase()}`
+    if (!code || seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      code,
+      bucket: label,
+      family: `${label}\u001f${familyOf(code)}`,
+      rank: row.rank,
+    })
   }
   return out
 }
@@ -226,24 +270,176 @@ async function loadWeekStats(members: Member[], since: string, until: string): P
   return out
 }
 
+async function membersForUniverse(
+  variant: WeeklyReviewStrategyNavVariant,
+  universe: WeeklyReviewStrategyNavUniverse,
+  since: string,
+  weekEnd: string,
+): Promise<Member[]> {
+  if (universe === "market") {
+    return membersFor(variant, await loadFunds(since))
+  }
+  const codes = await loadStrategyNavUniverseCodes(universe, variant, weekEnd)
+  return membersFor(variant, await loadFunds(since, codes))
+}
+
 export async function buildWeeklyReviewStrategyNavReport(
   variant: WeeklyReviewStrategyNavVariant,
   today = shanghaiTodayIsoDate(),
+  options: WeeklyReviewStrategyNavQuery = {},
 ): Promise<WeeklyReviewStrategyNav> {
   const since = addYears(today, -LOOKBACK_YEARS)
-  console.time(`[weekly-strategy-nav] ${variant}`)
-  const funds = await loadFunds(since)
-  const members = membersFor(variant, funds)
+  const universe = options.universe ?? "market"
+  const mode = options.mode === "compare" ? "compare" : "universe"
+  const weekEnd = weekOf(options.weekEnd)
+  const strategy = (options.strategy ?? "").trim()
+
+  if (mode === "compare") {
+    console.time(`[weekly-strategy-nav] ${variant} compare ${strategy}`)
+    const allFunds = await loadFunds(since)
+    const labeled: Member[] = []
+    for (const row of STRATEGY_NAV_UNIVERSES) {
+      let funds = allFunds
+      if (row.key !== "market") {
+        const codes = await loadStrategyNavUniverseCodes(row.key, variant, weekEnd)
+        funds = allFunds.filter((fund) => codes.has(fund.beian_hao.trim().toUpperCase()))
+      }
+      labeled.push(...relabelMembers(membersFor(variant, funds), STRATEGY_NAV_UNIVERSE_LABEL[row.key], strategy))
+    }
+    const stats = await loadWeekStats(labeled, since, today)
+    console.timeEnd(`[weekly-strategy-nav] ${variant} compare ${strategy}`)
+    console.log(`[weekly-strategy-nav] ${variant} compare strategy=${strategy} members=${labeled.length} weeks=${stats.length}`)
+    return buildWeeklyReviewStrategyNav(variant, stats, { mode, universe, strategy, weekEnd })
+  }
+
+  console.time(`[weekly-strategy-nav] ${variant} ${universe}`)
+  const members = await membersForUniverse(variant, universe, since, weekEnd)
   const stats = await loadWeekStats(members, since, today)
-  console.timeEnd(`[weekly-strategy-nav] ${variant}`)
-  console.log(`[weekly-strategy-nav] ${variant} funds=${funds.length} members=${members.length} weeks=${stats.length}`)
-  return buildWeeklyReviewStrategyNav(variant, stats)
+  console.timeEnd(`[weekly-strategy-nav] ${variant} ${universe}`)
+  console.log(`[weekly-strategy-nav] ${variant} ${universe} members=${members.length} weeks=${stats.length}`)
+  return buildWeeklyReviewStrategyNav(variant, stats, { mode, universe, weekEnd })
+}
+
+function persistOpsSnapshots(): boolean {
+  return !(process.platform === "win32" && (process.env.DATABASE_URL || "").includes(":5433/"))
+}
+
+export function weeklyReviewStrategyNavSnapshotKey(
+  variant: WeeklyReviewStrategyNavVariant,
+  options: WeeklyReviewStrategyNavQuery = {},
+): string {
+  const universe = options.universe ?? "market"
+  const weekEnd = weekOf(options.weekEnd)
+  if (universe === "market") return `weekly-review-strategy-nav:v3:${variant}`
+  if (universe === "xiaohe" || universe === "ima") {
+    return `weekly-review-strategy-nav:v4:${variant}:${universe}:${weekEnd}`
+  }
+  return `weekly-review-strategy-nav:v4:${variant}:${universe}`
+}
+
+async function loadUniverseSnapshot(
+  variant: WeeklyReviewStrategyNavVariant,
+  universe: WeeklyReviewStrategyNavUniverse,
+  refresh: boolean,
+  weekEnd: string,
+): Promise<WeeklyReviewStrategyNav> {
+  const options: WeeklyReviewStrategyNavQuery = { universe, mode: "universe", weekEnd }
+  const key = weeklyReviewStrategyNavSnapshotKey(variant, options)
+  const build = () => buildWeeklyReviewStrategyNavReport(variant, shanghaiTodayIsoDate(), options)
+  const body = await serveOpsSnapshot(key, refresh, build, { persist: persistOpsSnapshots() })
+  if (body.mode && body.universe) return body
+  return { ...body, mode: "universe", universe }
 }
 
 export async function getWeeklyReviewStrategyNav(
   variant: WeeklyReviewStrategyNavVariant,
   refresh = false,
+  options: WeeklyReviewStrategyNavQuery = {},
 ): Promise<WeeklyReviewStrategyNav> {
-  const key = `weekly-review-strategy-nav:v3:${variant}`
-  return serveOpsSnapshot(key, refresh, () => buildWeeklyReviewStrategyNavReport(variant))
+  const universe = options.universe ?? "market"
+  const mode = options.mode === "compare" ? "compare" : "universe"
+  const weekEnd = weekOf(options.weekEnd)
+  if (mode === "compare") {
+    const strategy = (options.strategy ?? "").trim()
+    const sources: Array<{ universe: WeeklyReviewStrategyNavUniverse; body: WeeklyReviewStrategyNav }> = []
+    for (const row of STRATEGY_NAV_UNIVERSES) {
+      const body = await loadUniverseSnapshot(variant, row.key, refresh, weekEnd)
+      sources.push({ universe: row.key, body })
+    }
+    return assembleStrategyNavCompare(variant, strategy, weekEnd, sources)
+  }
+  return loadUniverseSnapshot(variant, universe, refresh, weekEnd)
+}
+
+export type WeeklyReviewStrategyNavDailyItem = {
+  variant: WeeklyReviewStrategyNavVariant
+  universe: WeeklyReviewStrategyNavUniverse
+  week_end: string
+  key: string
+  series: number
+  ms: number
+}
+
+export type WeeklyReviewStrategyNavDailyResult = {
+  skipped?: boolean
+  items: WeeklyReviewStrategyNavDailyItem[]
+}
+
+async function reportWeekEnd(variant: WeeklyReviewStrategyNavVariant): Promise<string> {
+  try {
+    const { getLatestReadyWeeklyReviewWeek } = await import("@/lib/server/weekly-review-excel-cache")
+    const ready = await getLatestReadyWeeklyReviewWeek(variant)
+    const weekEnd = ready?.weekEnd?.slice(0, 10) ?? ""
+    if (/^\d{4}-\d{2}-\d{2}$/.test(weekEnd)) return weekEnd
+  } catch (err) {
+    console.error(`[weekly-strategy-nav] ready week for ${variant} skipped:`, err)
+  }
+  return defaultWeeklyReviewWeekEnd()
+}
+
+/** Rebuild every source-universe snapshot the 策略平均净值 chart reads. */
+export async function refreshWeeklyReviewStrategyNavDaily(): Promise<WeeklyReviewStrategyNavDailyResult> {
+  if (!persistOpsSnapshots()) {
+    console.log("[weekly-strategy-nav] skipped: Windows against tunneled production DB")
+    return { skipped: true, items: [] }
+  }
+  const variants: WeeklyReviewStrategyNavVariant[] = ["equity", "futures"]
+  const items: WeeklyReviewStrategyNavDailyItem[] = []
+  for (const variant of variants) {
+    const weekEnd = await reportWeekEnd(variant)
+    for (const row of STRATEGY_NAV_UNIVERSES) {
+      const started = Date.now()
+      const key = weeklyReviewStrategyNavSnapshotKey(variant, { universe: row.key, weekEnd })
+      const body = await getWeeklyReviewStrategyNav(variant, true, { universe: row.key, weekEnd })
+      items.push({
+        variant,
+        universe: row.key,
+        week_end: weekEnd,
+        key,
+        series: body.series.length,
+        ms: Date.now() - started,
+      })
+      console.log(
+        `[weekly-strategy-nav] ${variant} ${row.key} week=${weekEnd} series=${body.series.length} in ${Date.now() - started}ms`,
+      )
+    }
+  }
+  return { items }
+}
+
+let running: Promise<void> | null = null
+
+export function runScheduledWeeklyReviewStrategyNav(): void {
+  if (running) {
+    console.log("[weekly-strategy-nav] daily snapshot already running")
+    return
+  }
+  running = refreshWeeklyReviewStrategyNavDaily()
+    .then((result) => {
+      console.log(`[weekly-strategy-nav] daily ${JSON.stringify(result)}`)
+    })
+    .catch((err) => console.error("[weekly-strategy-nav] daily snapshot failed", err))
+    .finally(() => {
+      running = null
+    })
 }

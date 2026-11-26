@@ -126,6 +126,10 @@ PCA_ETF_TICKERS = [
     "511880.SH",
     "518880.SH",
 ]
+# Kept out of the PCA column order. Still refreshed with the nightly ETF fetch.
+BENCHMARK_ETF_TICKERS = [
+    "511260.SH",  # 十年国债ETF
+]
 
 
 def _python_path_ok(exe: str) -> bool:
@@ -3226,7 +3230,8 @@ _ASHARE_INDEX_UNIVERSE = [
     "399006.SZ", "000985.SH", "000001.SH", "000510.SH", "HSI.HI", "HSTECH.HI",
     "000688.SH", "899050.BJ", "399372.SZ", "399373.SZ", "399374.SZ", "399375.SZ",
     "399376.SZ", "399377.SZ", "000015.SH", "399997.SZ", "399808.SZ", "399303.SZ",
-    "000902.SH", "000832.SH", "H11006.CSI", "000922.SH",
+    "000902.SH", "000832.SH", "H11006.CSI", "H11001.CSI", "000012.SH", "000013.SH", "000922.SH",
+    "CBA00201.CS", "CBA00601.CS", "CBA02701.CS",
     "BK0999.EM", "BK1000.EM", "BK1158.EM",
     "801271.SI", "801272.SI", "801273.SI", "801274.SI", "801275.SI", "801276.SI",
 ]
@@ -4392,11 +4397,12 @@ def step_compute_basis_cont_daily(conn, *, force: bool = False) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
-    """Fetch ORIGINALUNIT prices for the 6 model-input ETFs through trade_date.
+    """Fetch ORIGINALUNIT prices for the model-input ETFs and benchmark ETFs.
 
-    Gap-fills from the day after the oldest PCA-ETF max date so a missed nightly
+    Gap-fills from the day after the oldest tracked ETF max date so a missed nightly
     run does not leave multi-day holes that block predict_market_cluster.
     """
+    tracked = PCA_ETF_TICKERS + BENCHMARK_ETF_TICKERS
     if not force:
         with conn.cursor() as cur:
             cur.execute(
@@ -4405,11 +4411,11 @@ def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
                 WHERE trade_date = %s AND field = 'ORIGINALUNIT'
                   AND ticker = ANY(%s)
                 """,
-                (trade_date, PCA_ETF_TICKERS),
+                (trade_date, tracked),
             )
             count = cur.fetchone()[0]
-        if count >= 6:
-            log.info("ETF prices for %s already in DB (%d PCA tickers), skipping.", trade_date, count)
+        if count >= len(tracked):
+            log.info("ETF prices for %s already in DB (%d tickers), skipping.", trade_date, count)
             return 0
 
     start = trade_date
@@ -4423,7 +4429,7 @@ def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
                 GROUP BY ticker
             ) t
             """,
-            (PCA_ETF_TICKERS,),
+            (tracked,),
         )
         row = cur.fetchone()
         cur_max = row[0] if row else None

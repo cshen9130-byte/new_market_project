@@ -9,14 +9,21 @@ import { mkdir, readFile, writeFile } from "fs/promises"
 import path from "path"
 import { fmtIso, n, query } from "@/lib/db"
 import { formatWeekReturnTopShare, mergeWeeklyReviewInvestedRows, weekReturnTopShare } from "@/lib/ma/weekly-review-invested-median"
+import { takeBestByWeek } from "@/lib/ma/weekly-review-public-rows"
+import { joinWeeklyRowSources, WEEKLY_ROW_SOURCE, xiaoheNameKey, type WeeklyRowSource } from "@/lib/ma/xiaohe-weekly-rows"
 import { parseStrategyLevel3 } from "@/lib/ma/strategy-level3"
+import { beianFamilyKey } from "@/lib/server/share-class-product"
+import { loadFuturesExternalRows, type FuturesExternalRow } from "@/lib/server/futures-weekly-external-rows"
 import {
   normalizeWeeklyReviewPools,
   weeklyReviewPoolFileLabel,
   weeklyReviewPoolScopePhrase,
 } from "@/lib/ma/weekly-review-pools"
 import {
+  aggregateMetrics,
+  buildSourceStatSheet,
   collapseWeeklyReviewFunds,
+  collectSourceMedianMemberships,
   computeFundMetrics,
   isValidWeeklyReviewJobId,
   loadJyTrackingPoolFunds,
@@ -29,6 +36,14 @@ import {
   type WeeklyReviewJobStatus,
   type WeeklyReviewPreview,
 } from "@/lib/server/jy-weekly-review"
+import {
+  buildWeeklyReviewMarketChartTables,
+  embedWeeklyReviewMarketCharts,
+  freezeWorksheetHeaderRows,
+  SOURCE_MEDIAN_SERIES,
+  sourceMedianRows,
+  sourceWeekStatRows,
+} from "@/lib/server/weekly-review-excel-charts"
 
 const HEADER_FILL = "1F4E79"
 const ALT_FILL = "F2F2F2"
@@ -421,18 +436,33 @@ function buildFuturesMethodologyRows(weekStart: string, weekEnd: string, poolsIn
     },
     {
       kind: "pair",
-      label: "期货市场回顾",
-      text: "南华商品板块和股指期货的涨跌幅，是截止日收盘相对约 7 个自然日前收盘的涨跌幅，两端都取当日或之前最近收盘。商品板块来自南华指数日行情，股指期货来自 IH、IF、IC、IM 主力连续行情。",
-    },
-    {
-      kind: "pair",
       label: "排序与颜色",
-      text: "各策略表按近一周收益从高到低排列。正收益为红色，负收益为绿色。夏普、卡玛不按涨跌着色。百分比单元格存的是小数（1% 为 0.01）。",
+      text: "各策略表按近一周收益从高到低排列。正收益为红色，负收益为绿色。夏普、卡玛不按涨跌着色。百分比单元格存的是小数（1% 为 0.01）。浅黄、浅紫、浅绿、浅蓝底从产品名称铺到「来源」。「是否在跟踪池」为是或否。「来源」把该产品出现过的地方都写上，用斜杠隔开，例如跟踪池/小荷公众号。顺序是跟踪池、公募指增、小荷公众号、ima点睛。",
     },
     {
       kind: "pair",
-      label: "已投产品",
-      text: "持仓中的私募 FOF 底层会自动写入同一策略表：已在跟踪池中的只做标注，不在跟踪池中的按同样口径补进该表。一只产品可以出现在多张表。已投行用浅黄底标出，产品名称不加前缀。近一周分位数是该行近一周收益在本表全部有数产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。",
+      label: "近一周分位数",
+      text: "近一周分位数是该行近一周收益在本表跟踪池产品中从高到低的名次占比，1/20 记为前 5%；同分并列取最好名次。前 25% 为红色，后 25% 为绿色。小荷公众号、ima点睛和公募指增补进的行不计入这个分母。",
+    },
+    {
+      kind: "pair",
+      label: "小荷公众号",
+      text: "同一周小荷公众号业绩榜里，策略写成量化CTA或主观CTA、并且能在库里对上量化期货或主观期货产品的，按该产品的三级标签写入对应策略表。已经在这张表里的不另起一行，只在「来源」里加上小荷公众号。优先用库内净值，缺的列用榜上同一窗口的绝对收益补上。对不上三级标签的不写入这些表。宏观、债券、套利和股票策略不写入期货周报。一只产品可以出现在多张表。",
+    },
+    {
+      kind: "pair",
+      label: "ima点睛",
+      text: "同一周 ima点睛 的量化CTA、主观CTA 管理人，在库里对上其量化期货或主观期货产品后，按该产品的三级标签写入对应表。已经在表里的不另起一行。优先用库内净值，近一周没有数时用榜上的近一周收益率。今年以来不当作近一年。",
+    },
+    {
+      kind: "pair",
+      label: "公募指增",
+      text: "公募指增产品只有策略分组和某张期货表相同才写入该表，浅蓝色底。另有该组全部公募产品的中位数和平均数。这些公募行按近一周绝对收益和跟踪池产品排在一起。公募指增是股票指数增强，对不上期货三级标签时这一列留空。",
+    },
+    {
+      kind: "pair",
+      label: "期货市场回顾",
+      text: "南华商品板块和股指期货的涨跌幅，是截止日收盘相对约 7 个自然日前收盘的涨跌幅，两端都取当日或之前最近收盘。商品板块来自南华指数日行情，股指期货来自 IH、IF、IC、IM 主力连续行情。另有两张图：跟踪池近一周绝对收益中位数对照这些市场涨跌；各策略来源近一周中位数，按跟踪池、小荷公众号、公募指增、ima点睛、已投分列。同一产品出现在多个来源时，每一个来源都算它。没有近一周数的不计入。「来源统计」用同一批产品列出每个来源的中位数、平均数、最大值、最小值、产品数和分化程度。分化程度是该策略该来源下各产品本周收益的标准差，产品数少于 2 时不计算。",
     },
     {
       kind: "pair",
@@ -469,6 +499,20 @@ function markerStyle(color?: string, numFmt?: string): CellStyle {
   return {
     font: { name: FONT_NAME, sz: 11, bold: true, color: color ? { rgb: color } : undefined },
     fill: { patternType: "solid", fgColor: { rgb: "FFF2CC" } },
+    alignment: { wrapText: true, vertical: "center" },
+    numFmt,
+  }
+}
+
+const PUBLIC_FILL = "DDEBF7"
+const PUBLIC_SUMMARY_FILL = "BDD7EE"
+const XIAOHE_FILL = "F3E8FF"
+const IMA_FILL = "E2EFDA"
+
+function filledStyle(fill: string, bold: boolean, color?: string, numFmt?: string): CellStyle {
+  return {
+    font: { name: FONT_NAME, sz: 11, bold, color: color ? { rgb: color } : undefined },
+    fill: { patternType: "solid", fgColor: { rgb: fill } },
     alignment: { wrapText: true, vertical: "center" },
     numFmt,
   }
@@ -535,7 +579,13 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
   }
   const categoriesByCode = new Map(classified.map((fund) => [fund.beian_hao, futuresWeeklyCategories(fund)]))
 
-  const [metrics, market, invested] = await Promise.all([
+  const poolFamilies = new Set<string>()
+  for (const fund of classified) {
+    const family = beianFamilyKey(fund.beian_hao)
+    if (family) poolFamilies.add(family)
+  }
+
+  const [metrics, market, invested, publicMetrics, externalRows] = await Promise.all([
     computeFundMetrics(classified, asOf, undefined, {
       bucketFor: () => FUTURES_WEEKLY_CATEGORIES[0],
       modeFor: () => "absolute",
@@ -547,6 +597,16 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
         console.error("[jy-weekly-review-futures] invested median skipped:", err)
         return null
       }),
+    import("@/lib/server/public-enhanced-weekly-review")
+      .then((mod) => mod.loadPublicEnhancedFundMetrics(weekEnd))
+      .catch((err: unknown) => {
+        console.error("[jy-weekly-review-futures] public rows skipped:", err)
+        return [] as FundMetrics[]
+      }),
+    loadFuturesExternalRows(weekEnd, poolFamilies).catch((err: unknown) => {
+      console.error("[jy-weekly-review-futures] external rows skipped:", err)
+      return [] as FuturesExternalRow[]
+    }),
   ])
   const xlsxMod = await import("xlsx-js-style") as {
     default?: typeof import("xlsx")
@@ -566,6 +626,24 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
     }
   }
 
+  const externalByBucket = new Map<string, Array<{ source: "xiaohe" | "ima"; nameKey: string; metrics: FundMetrics }>>()
+  for (const row of externalRows) {
+    for (const category of futuresWeeklyCategories({ l2: row.l2, l3: row.l3 ?? "" })) {
+      const list = externalByBucket.get(category) ?? []
+      list.push({ source: row.source, nameKey: row.nameKey, metrics: { ...row.metrics, bucket: category } })
+      externalByBucket.set(category, list)
+    }
+  }
+  const publicByBucket = new Map<string, FundMetrics[]>()
+  for (const row of publicMetrics) {
+    if (!FUTURES_WEEKLY_CATEGORIES.includes(row.bucket as FuturesWeeklyCategory)) continue
+    const list = publicByBucket.get(row.bucket) ?? []
+    list.push(row)
+    publicByBucket.set(row.bucket, list)
+  }
+
+  let marketChartTables: ReturnType<typeof buildWeeklyReviewMarketChartTables> | null = null
+  let marketSheetName = ""
   const tocRows: unknown[][] = [["页码", "工作表", "标题", "行数", "列数"]]
   const sheets: Array<{
     name: string
@@ -625,24 +703,170 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
         set(2 + i, 5, fut.ret, bodyStyle(alt, signedColor(fut.ret), "0.00%"))
       }
     }
-    const commentRow = 2 + nRows + 1
+    const heldCodesByBucket = new Map<string, Set<string>>()
+    const poolCodes = new Set<string>()
+    for (const [bucket, rows] of groups) {
+      for (const row of rows) poolCodes.add(`${bucket}\0${row.beian_hao}`)
+    }
+    for (const group of invested?.groups ?? []) {
+      heldCodesByBucket.set(group.bucket, new Set(group.products.map((product) => product.code)))
+    }
+    const heldOnly = (invested?.metrics ?? []).filter((row) => !poolCodes.has(`${row.bucket}\0${row.beian_hao}`))
+    const xiaoheRows = [...externalByBucket.entries()].flatMap(([bucket, rows]) =>
+      rows.filter((row) => row.source === "xiaohe").map((row) => ({ bucket, nameKey: row.nameKey, metrics: row.metrics })),
+    )
+    const imaRows = [...externalByBucket.entries()].flatMap(([bucket, rows]) =>
+      rows.filter((row) => row.source === "ima").map((row) => ({ bucket, nameKey: row.nameKey, metrics: row.metrics })),
+    )
+    const memberships = collectSourceMedianMemberships({
+      pool: groups,
+      heldCodes: heldCodesByBucket,
+      heldOnly,
+      xiaohe: xiaoheRows,
+      ima: imaRows,
+      publicRows: [...publicByBucket.values()].flat(),
+    })
+    const order = new Map<string, number>(FUTURES_WEEKLY_CATEGORIES.map((category, index) => [category, index]))
+    memberships.sort((a, b) => (order.get(a.bucket) ?? 99) - (order.get(b.bucket) ?? 99))
+    const chartTables = buildWeeklyReviewMarketChartTables(
+      [...market.commodity, ...market.indexFutures].map((row) => ({ name: row.name, ret: row.ret })),
+      metrics.map((row) => ({
+        beian_hao: row.beian_hao,
+        name: row.name,
+        bucket: categoriesByCode.get(row.beian_hao)?.[0] ?? row.bucket,
+        ret_1w: row.ret.ret_1w,
+      })),
+      sourceMedianRows(memberships),
+      2 + nRows,
+      {
+        chart1Title: "跟踪池 vs 商品与股指期货（近一周）",
+        benchSeriesLabel: "市场涨跌",
+        note: "上一图近一周是绝对收益，与上方商品指数、股指期货涨跌幅同一口径。下一图每个策略用近一周绝对收益。同一产品出现在多个来源时，计入每一个来源的中位数。没有近一周数的产品不计入。各来源的中位数、平均数、最大值、最小值、产品数和分化程度见「来源统计」。分化程度是该策略该来源下各产品本周收益的标准差，产品数少于 2 时不计算。",
+      },
+    )
+    marketChartTables = chartTables
+    const noteStyle: CellStyle = {
+      font: { name: FONT_NAME, sz: 9, color: { rgb: "666666" } },
+      alignment: { wrapText: true, vertical: "center", horizontal: "left" },
+    }
+    const noteRow = chartTables.chart1StartRow - 2
+    set(noteRow, 0, chartTables.note, noteStyle)
+    const commentRow = chartTables.commentRow - 1
     set(commentRow, 0, "原文评述", undefined)
     set(commentRow + 1, 0, "", undefined)
     const name = sheetName(3, "期货市场回顾")
-    sheets.push({ name, title: "期货市场回顾", rows: nRows, cols: 6, aoa, styles })
+    marketSheetName = name
+    sheets.push({
+      name,
+      title: "期货市场回顾",
+      rows: commentRow + 2,
+      cols: 6,
+      aoa,
+      styles,
+      merges: [{ s: { r: noteRow, c: 0 }, e: { r: noteRow, c: 5 } }],
+    })
     tocRows.push([3, name, "期货市场回顾", nRows, 6])
+    const statSheet = buildSourceStatSheet(sourceWeekStatRows(memberships))
+    sheets.push(statSheet)
+    tocRows.push(["—", statSheet.name, statSheet.title, Math.max(0, statSheet.aoa.length - 3), statSheet.cols])
+    const dataStyles = new Map<string, CellStyle>()
+    chartTables.dataAoa.forEach((row, r) => {
+      (row ?? []).forEach((value, c) => {
+        dataStyles.set(`${r},${c}`, r === 0
+          ? { font: { name: FONT_NAME, sz: 10, bold: true } }
+          : typeof value === "number"
+            ? { font: { name: FONT_NAME, sz: 10 }, numFmt: "0.00%" }
+            : { font: { name: FONT_NAME, sz: 10 } })
+      })
+    })
+    sheets.push({
+      name: chartTables.dataSheetName,
+      title: chartTables.dataSheetName,
+      rows: chartTables.dataAoa.length,
+      cols: 10,
+      aoa: chartTables.dataAoa,
+      styles: dataStyles,
+    })
   }
 
   let seq = 4
+  const strategySheetNames: string[] = []
   for (const bucket of FUTURES_WEEKLY_CATEGORIES) {
     const merged = mergeWeeklyReviewInvestedRows(
       groups.get(bucket) ?? [],
       (invested?.groups.find((group) => group.bucket === bucket)?.products ?? []).map((product) => product.code),
       invested?.metrics ?? [],
     )
-    const headers = ["产品名称", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率", "近一周分位数"]
+    const headers = ["产品名称", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率", "近一周分位数", "是否在跟踪池", "来源"]
     const sorted = [...merged].sort((a, b) => (b.row.ret.ret_1w ?? -Infinity) - (a.row.ret.ret_1w ?? -Infinity))
     const weekValues = sorted.map((line) => line.row.ret.ret_1w)
+    const poolSource = groups.get(bucket) ?? []
+    const bucketFamilies = new Set<string>()
+    const presentNames = new Set<string>()
+    for (const row of poolSource) {
+      const family = beianFamilyKey(row.beian_hao)
+      if (family) bucketFamilies.add(family)
+    }
+    for (const line of merged) {
+      const family = beianFamilyKey(line.row.beian_hao)
+      if (family) bucketFamilies.add(family)
+      presentNames.add(xiaoheNameKey(line.row.name))
+    }
+    const externalHere = externalByBucket.get(bucket) ?? []
+    const namesFor = (source: "xiaohe" | "ima") => {
+      const names = new Set<string>()
+      const families = new Set<string>()
+      for (const row of externalHere) {
+        if (row.source !== source) continue
+        if (row.nameKey) names.add(row.nameKey)
+        const family = beianFamilyKey(row.metrics.beian_hao)
+        if (family) families.add(family)
+      }
+      return { names, families }
+    }
+    const xiaoheListed = namesFor("xiaohe")
+    const imaListed = namesFor("ima")
+    const listed = (row: FundMetrics, book: { names: Set<string>; families: Set<string> }) => {
+      const family = beianFamilyKey(row.beian_hao)
+      if (family && book.families.has(family)) return true
+      const key = xiaoheNameKey(row.name)
+      return key.length > 0 && book.names.has(key)
+    }
+    const fresh = (source: "xiaohe" | "ima") => externalHere.filter((row) => {
+      if (row.source !== source) return false
+      const family = beianFamilyKey(row.metrics.beian_hao)
+      if (family && bucketFamilies.has(family)) return false
+      return !presentNames.has(row.nameKey)
+    })
+    const allPublic = publicByBucket.get(bucket) ?? []
+    const featuredPublic = takeBestByWeek(allPublic, (row) => row.ret.ret_1w)
+    type LineKind = "pool" | "invested" | "xiaohe" | "ima" | "public" | "summary"
+    const lines: Array<{ kind: LineKind; row: FundMetrics; share: number | null }> = sorted.map((line) => ({
+      kind: line.invested ? "invested" : "pool",
+      row: line.row,
+      share: weekReturnTopShare(line.row.ret.ret_1w, weekValues),
+    }))
+    for (const row of fresh("xiaohe")) {
+      lines.push({ kind: "xiaohe", row: row.metrics, share: weekReturnTopShare(row.metrics.ret.ret_1w, weekValues) })
+    }
+    for (const row of fresh("ima")) {
+      lines.push({ kind: "ima", row: row.metrics, share: weekReturnTopShare(row.metrics.ret.ret_1w, weekValues) })
+    }
+    for (const row of featuredPublic) {
+      lines.push({ kind: "public", row, share: weekReturnTopShare(row.ret.ret_1w, allPublic.map((item) => item.ret.ret_1w)) })
+    }
+    if (allPublic.length > 0) {
+      lines.push(
+        { kind: "summary", row: aggregateMetrics(allPublic, bucket, "absolute", "median"), share: null },
+        { kind: "summary", row: aggregateMetrics(allPublic, bucket, "absolute", "mean"), share: null },
+      )
+    }
+    const kindRank: Record<LineKind, number> = { pool: 0, invested: 0, xiaohe: 0, ima: 0, public: 2, summary: 3 }
+    lines.sort((a, b) => {
+      const diff = (b.row.ret.ret_1w ?? -Infinity) - (a.row.ret.ret_1w ?? -Infinity)
+      if (diff !== 0) return diff
+      return kindRank[a.kind] - kindRank[b.kind]
+    })
     const aoa: unknown[][] = []
     const styles = new Map<string, CellStyle>()
     const set = (r: number, c: number, v: unknown, s?: CellStyle) => {
@@ -650,24 +874,44 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
       aoa[r][c] = v ?? null
       if (s) styles.set(`${r},${c}`, s)
     }
-    const paint = (investedRow: boolean, alt: boolean, color?: string, numFmt?: string): CellStyle =>
-      investedRow ? markerStyle(color, numFmt) : bodyStyle(alt, color, numFmt)
+    const paint = (kind: LineKind, alt: boolean, color?: string, numFmt?: string): CellStyle => {
+      if (kind === "invested") return markerStyle(color, numFmt)
+      if (kind === "xiaohe") return filledStyle(XIAOHE_FILL, false, color, numFmt)
+      if (kind === "ima") return filledStyle(IMA_FILL, false, color, numFmt)
+      if (kind === "public") return filledStyle(PUBLIC_FILL, false, color, numFmt)
+      if (kind === "summary") return filledStyle(PUBLIC_SUMMARY_FILL, true, color, numFmt)
+      return bodyStyle(alt, color, numFmt)
+    }
+    const originOf = (kind: LineKind, row: FundMetrics): { inPool: string; source: string } => {
+      if (kind === "summary") return { inPool: "", source: "" }
+      const sources: WeeklyRowSource[] = []
+      const family = beianFamilyKey(row.beian_hao)
+      const inPool = kind === "pool" || (family != null && bucketFamilies.has(family))
+      if (inPool) sources.push(WEEKLY_ROW_SOURCE.pool)
+      if (kind === "public") sources.push(WEEKLY_ROW_SOURCE.public)
+      if (kind === "xiaohe" || listed(row, xiaoheListed)) sources.push(WEEKLY_ROW_SOURCE.xiaohe)
+      if (kind === "ima" || listed(row, imaListed)) sources.push(WEEKLY_ROW_SOURCE.ima)
+      const source = joinWeeklyRowSources(sources)
+      return inPool ? { inPool: "是", source } : { inPool: "否", source }
+    }
     headers.forEach((h, c) => set(0, c, h, headerStyle()))
-    sorted.forEach((line, i) => {
+    lines.forEach((line, i) => {
       const row = line.row
       const alt = i % 2 === 0
-      const label = row.name
-      const share = weekReturnTopShare(row.ret.ret_1w, weekValues)
-      set(i + 1, 0, label, paint(line.invested, alt))
+      set(i + 1, 0, row.name, paint(line.kind, alt))
       const pcts = [row.ret.ret_1w, row.ret.ret_1m, row.ret.ret_3m, row.ret.ret_6m, row.ret.ret_1y]
-      pcts.forEach((v, ci) => set(i + 1, ci + 1, v, paint(line.invested, alt, signedColor(v), "0.00%")))
-      set(i + 1, 6, row.sharpe_1y, paint(line.invested, alt, undefined, "0.0000"))
-      set(i + 1, 7, row.calmar_1y, paint(line.invested, alt, undefined, "0.0000"))
-      set(i + 1, 8, formatWeekReturnTopShare(share), paint(line.invested, alt, percentileColor(share)))
+      pcts.forEach((v, ci) => set(i + 1, ci + 1, v, paint(line.kind, alt, signedColor(v), "0.00%")))
+      set(i + 1, 6, row.sharpe_1y, paint(line.kind, alt, undefined, "0.0000"))
+      set(i + 1, 7, row.calmar_1y, paint(line.kind, alt, undefined, "0.0000"))
+      set(i + 1, 8, formatWeekReturnTopShare(line.share), paint(line.kind, alt, percentileColor(line.share)))
+      const origin = originOf(line.kind, row)
+      set(i + 1, 9, origin.inPool, paint(line.kind, alt))
+      set(i + 1, 10, origin.source, paint(line.kind, alt))
     })
     const name = bucket.slice(0, 31)
-    sheets.push({ name, title: bucket, rows: sorted.length, cols: 9, aoa, styles })
-    tocRows.push([seq, name, bucket, sorted.length, 9])
+    strategySheetNames.push(name)
+    sheets.push({ name, title: bucket, rows: lines.length, cols: headers.length, aoa, styles })
+    tocRows.push([seq, name, bucket, lines.length, headers.length])
     seq += 1
   }
 
@@ -690,14 +934,28 @@ export async function generateJyFuturesWeeklyReviewWorkbook(weekEndRaw: string, 
         { wch: 14 }, { wch: 10 }, { wch: 10 },
       ]
       ws["!rows"] = Array.from({ length: sheet.aoa.length }, (_, i) => ({ hpt: i === 0 ? 20 : 22 }))
+    } else if (sheet.title === "来源统计") {
+      const widths: Array<{ wch: number }> = [{ wch: 28 }]
+      for (let i = 0; i < SOURCE_MEDIAN_SERIES.length; i++) {
+        widths.push({ wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 10 })
+      }
+      ws["!cols"] = widths
+      ws["!rows"] = (sheet.rowHeights ?? sheet.aoa.map(() => 22)).map((hpt) => ({ hpt }))
     } else {
-      ws["!cols"] = [{ wch: 36 }, ...Array.from({ length: Math.max(0, maxCol - 1) }, () => ({ wch: 14 }))]
+      const cols = [{ wch: 36 }, ...Array.from({ length: Math.max(0, maxCol - 1) }, () => ({ wch: 14 }))]
+      if (sheet.aoa[0]?.[maxCol - 1] === "来源" && cols.length > 0) cols[cols.length - 1] = { wch: 28 }
+      ws["!cols"] = cols
       ws["!rows"] = Array.from({ length: sheet.aoa.length }, () => ({ hpt: 27 }))
     }
     XLSX.utils.book_append_sheet(wb, ws, sheet.name)
   }
 
-  const buffer = XLSX.write(wb, { bookType: "xlsx", type: "buffer", cellStyles: true }) as unknown as Buffer
+  let buffer = XLSX.write(wb, { bookType: "xlsx", type: "buffer", cellStyles: true }) as unknown as Buffer
+  if (marketChartTables && marketSheetName) {
+    buffer = await embedWeeklyReviewMarketCharts(buffer, marketChartTables, marketSheetName)
+  }
+  buffer = await freezeWorksheetHeaderRows(buffer, strategySheetNames)
+  buffer = await freezeWorksheetHeaderRows(buffer, ["来源统计"], 3)
   const yy = weekEnd.slice(2, 4)
   const mm = weekEnd.slice(5, 7)
   const dd = weekEnd.slice(8, 10)

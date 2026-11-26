@@ -5,6 +5,7 @@ import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import * as XLSX from "xlsx"
 import type { ExternalRankWeekFile } from "@/lib/ma/external-rank-week"
+import { parseExternalRankWorkbook } from "./external-rank-sheet"
 import {
   buildExternalRankWeekWorkbook,
   concreteDateSpans,
@@ -41,6 +42,15 @@ describe("filename dates", () => {
     assert.equal(matchRankWeek(spans, null, WEEK_OCT9.start, WEEK_OCT9.end), null)
   })
 
+  it("reads an ima week tag like （1116-1120）", () => {
+    const dates = extractRankFileDates("点睛业绩放送_量化股票策略业绩榜（1116-1120）.xlsx")
+    assert.deepEqual(dates.spans, [])
+    assert.deepEqual(dates.shorts, [{ month: 11, day: 16 }, { month: 11, day: 20 }])
+    const spans = concreteDateSpans(dates, 2026)
+    assert.equal(matchRankWeek(spans, "2026-11-20", "2026-11-16", "2026-11-20"), "both")
+    assert.equal(matchRankWeek(spans, "2026-11-20", "2026-11-09", "2026-11-13"), null)
+  })
+
   it("leaves an issue-number file without a filename date", () => {
     const dates = extractRankFileDates("第470次.xlsx")
     assert.deepEqual(dates.spans, [])
@@ -53,6 +63,26 @@ describe("filename dates", () => {
     assert.equal(matchRankWeek([{ start: "2026-10-09", end: "2026-10-09" }], "2026-10-09", WEEK_OCT9.start, WEEK_OCT9.end), "both")
     assert.equal(matchRankWeek([{ start: "2026-09-30", end: "2026-09-30" }], "2026-10-09", WEEK_OCT2.start, WEEK_OCT2.end), null)
     assert.equal(matchRankWeek([{ start: "2026-09-30", end: "2026-09-30" }], "2026-10-09", WEEK_OCT9.start, WEEK_OCT9.end), "as_of")
+  })
+})
+
+describe("ima workbook columns", () => {
+  it("reads 今年以来动态回撤 as the drawdown", () => {
+    const book = XLSX.utils.book_new()
+    const sheet = XLSX.utils.aoa_to_sheet([
+      [],
+      ["点睛业绩放送_宏观策略周度业绩榜（1116-1120）"],
+      ["序号", "策略类型", "基金管理人", "管理规模", "净值日期", "近一周收益率", "今年以来收益率", "今年以来动态回撤"],
+      [1, "宏观", "量客私募", "50-100亿", "2026-11-20", 0.0653, -0.0542, 0.3454],
+    ])
+    XLSX.utils.book_append_sheet(book, sheet, "宏观")
+    const buffer = XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer
+    const parsed = parseExternalRankWorkbook(buffer, "点睛业绩放送_宏观管理人业绩榜（1116-1120）.xlsx")
+    assert.equal(parsed.as_of, "2026-11-20")
+    assert.equal(parsed.rows[0]?.manager, "量客私募")
+    assert.equal(parsed.rows[0]?.class_key, "宏观")
+    assert.equal(parsed.rows[0]?.ytd_drawdown, 0.3454)
+    assert.equal(parsed.rows[0]?.ret_1w, 0.0653)
   })
 })
 

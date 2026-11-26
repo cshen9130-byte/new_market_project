@@ -3,10 +3,13 @@
  */
 import assert from "node:assert/strict"
 import test from "node:test"
+import { meanOf } from "./weekly-review-public-rows"
 import {
   buildInvestedMedianGroups,
+  formatWeekReturnTopShare,
   investedMedianInsertIndex,
   medianOf,
+  weekReturnTopShare,
   type InvestedMedianInput,
 } from "./weekly-review-invested-median"
 
@@ -37,6 +40,18 @@ test("a holding in two strategies counts in both medians, and empty strategies s
   assert.equal(cross.count, 2)
   assert.equal(cross.median.ret_1w, 0.01)
   assert.equal(cross.median.ret_1m, 0.03)
+})
+
+test("a column median and mean take a top-share rank among the same products", () => {
+  const weeks = [0.05, 0.03, null, 0.01]
+  const median = medianOf(weeks)
+  const mean = meanOf(weeks)
+  assert.equal(median, 0.03)
+  assert.equal(mean, 0.03)
+  assert.equal(weekReturnTopShare(median, weeks), 2 / 3)
+  assert.equal(formatWeekReturnTopShare(weekReturnTopShare(mean, weeks)), "前67%")
+  assert.equal(weekReturnTopShare(0.05, weeks), 1 / 3)
+  assert.equal(formatWeekReturnTopShare(weekReturnTopShare(0.05, weeks)), "前33%")
 })
 
 test("the median row slots in after higher weekly returns and before missing prints", () => {

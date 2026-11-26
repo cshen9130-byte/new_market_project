@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Download, ExternalLink, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
-import { EXTERNAL_RANK_FOLDER, type ExternalRankWeekFile, type ExternalRankWeekPreview, type ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
+import { EXTERNAL_RANK_FOLDER, IMA_DIANJING_RANK_FOLDER, type ExternalRankWeekFile, type ExternalRankWeekPreview, type ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
 import { YingmiPrivateFundPanel } from "./YingmiPrivateFundPanel"
 
 function shanghaiToday(): string {
@@ -101,8 +101,16 @@ function compareRows(a: ExternalRankWeekRow, b: ExternalRankWeekRow, key: SortKe
   return (av - bv) * sign || a.rank - b.rank
 }
 
+type RankSource = "week" | "ima" | "yingmi"
+
+function rankSourceOf(value: string | null): RankSource {
+  if (value === "yingmi") return "yingmi"
+  if (value === "ima") return "ima"
+  return "week"
+}
+
 export function ExternalRankWeekView() {
-  const [source, setSource] = useState<"week" | "yingmi">("week")
+  const [source, setSource] = useState<RankSource>("week")
   const [yingmiNotice, setYingmiNotice] = useState("")
   const [weekEnd, setWeekEnd] = useState(defaultWeekEnd)
   const [preview, setPreview] = useState<ExternalRankWeekPreview | null>(null)
@@ -117,11 +125,14 @@ export function ExternalRankWeekView() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
   const autoJumped = useRef(false)
 
-  const loadPreview = useCallback(async (date: string, cancelled: () => boolean) => {
+  const loadPreview = useCallback(async (date: string, rankSource: RankSource, cancelled: () => boolean) => {
     setPreviewLoading(true)
+    setPreview(null)
     setPreviewError("")
     try {
-      const res = await fetch(`/ma/api/tracking-funds/external-rank/preview?week_end=${encodeURIComponent(date)}`, {
+      const params = new URLSearchParams({ week_end: date })
+      if (rankSource === "ima") params.set("source", "ima")
+      const res = await fetch(`/ma/api/tracking-funds/external-rank/preview?${params.toString()}`, {
         cache: "no-store",
       })
       const json = await res.json().catch(() => ({}))
@@ -144,28 +155,35 @@ export function ExternalRankWeekView() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    if (params.get("rank_source") === "yingmi") setSource("yingmi")
+    const rankSource = rankSourceOf(params.get("rank_source"))
+    if (rankSource !== "week") setSource(rankSource)
     if (params.get("yingmi") === "connected") setYingmiNotice("盈米账号已连到这台服务器，周日和周一早上会自动拉取。")
     if (params.get("yingmi") === "error") setYingmiNotice("盈米授权没有完成，可以再点一次连接。")
   }, [])
 
   useEffect(() => {
-    if (source !== "week") return
+    autoJumped.current = false
+  }, [source])
+
+  useEffect(() => {
+    if (source === "yingmi") return
     let stale = false
-    void loadPreview(weekEnd, () => stale)
+    void loadPreview(weekEnd, source, () => stale)
     return () => {
       stale = true
     }
-  }, [weekEnd, loadPreview])
+  }, [source, weekEnd, loadPreview])
 
   useEffect(() => {
-    if (!preview || autoJumped.current) return
+    if (!preview || autoJumped.current || source === "yingmi") return
+    const expected = source === "ima" ? IMA_DIANJING_RANK_FOLDER : EXTERNAL_RANK_FOLDER
+    if (preview.folder !== expected) return
     const latest = preview.weeks[0]
     if (preview.files.length === 0 && latest && latest.week_end !== weekEnd) {
       autoJumped.current = true
       setWeekEnd(latest.week_end)
     }
-  }, [preview, weekEnd])
+  }, [preview, weekEnd, source])
 
   useEffect(() => {
     setStrategy("全部")
@@ -193,7 +211,9 @@ export function ExternalRankWeekView() {
 
   const parsedCount = preview?.files.filter((file) => file.parsed).length ?? 0
   const rangeLabel = preview ? `${slashDate(preview.week_start)} ~ ${slashDate(preview.week_end)}` : "—"
-  const folderHref = `/ma/dashboard/ai-knowledge?folder=${encodeURIComponent(EXTERNAL_RANK_FOLDER)}`
+  const folderPath = source === "ima" ? IMA_DIANJING_RANK_FOLDER : EXTERNAL_RANK_FOLDER
+  const folderHref = `/ma/dashboard/ai-knowledge?folder=${encodeURIComponent(folderPath)}`
+  const fileSource = source !== "yingmi"
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -208,7 +228,9 @@ export function ExternalRankWeekView() {
     setGenerating(true)
     setGenerateError("")
     try {
-      const res = await fetch(`/ma/api/tracking-funds/external-rank/generate?week_end=${encodeURIComponent(weekEnd)}`, {
+      const params = new URLSearchParams({ week_end: weekEnd })
+      if (source === "ima") params.set("source", "ima")
+      const res = await fetch(`/ma/api/tracking-funds/external-rank/generate?${params.toString()}`, {
         cache: "no-store",
       })
       const type = res.headers.get("content-type") || ""
@@ -238,13 +260,15 @@ export function ExternalRankWeekView() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
             <h2 className="text-base font-semibold">外部私募业绩排行</h2>
-            {source === "week" && (
+            {fileSource && (
             <p className="mt-1 text-xs text-muted-foreground leading-relaxed max-w-3xl">
-              从知识库「{EXTERNAL_RANK_FOLDER}」里找出与所选周对应的榜单：文件名里的日期或区间，或表格中的净值截止日期，落在该周周一到截止日。可以预览排名、下载原文件，或把本周已识别的榜单合并成一份 Excel。
+              {source === "ima"
+                ? "每周三 10:00 从 ima 知识库「点睛焱究所」拉取最新一周的业绩榜，放在「外部私募业绩排行 / ima点睛」。按净值截止日期或文件名里的周区间对应到所选周。"
+                : `从小荷公众号每周业绩榜（知识库「${EXTERNAL_RANK_FOLDER}」）里找出与所选周对应的榜单：文件名里的日期或区间，或表格中的净值截止日期，落在该周周一到截止日。可以预览排名、下载原文件，或把本周已识别的榜单合并成一份 Excel。`}
             </p>
             )}
           </div>
-          {source === "week" && (
+          {fileSource && (
           <div className="flex flex-wrap items-center gap-2">
             <a
               href={folderHref}
@@ -271,14 +295,15 @@ export function ExternalRankWeekView() {
             <span className="text-xs text-zinc-400 shrink-0">数据源</span>
             <select
               value={source}
-              onChange={(event) => setSource(event.target.value === "yingmi" ? "yingmi" : "week")}
+              onChange={(event) => setSource(rankSourceOf(event.target.value))}
               className="h-9 min-w-[8rem] rounded-md border border-zinc-200 bg-background px-2 text-sm dark:border-zinc-700"
             >
-              <option value="week">周报文件</option>
+              <option value="week">小荷公众号</option>
+              <option value="ima">ima点睛</option>
               <option value="yingmi">盈米</option>
             </select>
           </label>
-          {source === "week" && (
+          {fileSource && (
           <>
           <div className="flex items-center gap-2">
             <span className="text-xs text-zinc-400 shrink-0">报告周截止日</span>
@@ -335,8 +360,8 @@ export function ExternalRankWeekView() {
           )}
         </div>
 
-        {source === "week" && generateError && <p className="mt-3 text-sm text-red-600">{generateError}</p>}
-        {source === "week" && previewError && <p className="mt-3 text-sm text-red-600">{previewError}</p>}
+        {fileSource && generateError && <p className="mt-3 text-sm text-red-600">{generateError}</p>}
+        {fileSource && previewError && <p className="mt-3 text-sm text-red-600">{previewError}</p>}
       </div>
 
       {source === "yingmi" ? (
@@ -348,13 +373,15 @@ export function ExternalRankWeekView() {
         {previewLoading ? (
           <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            正在读取{EXTERNAL_RANK_FOLDER}…
+            正在读取{source === "ima" ? "ima点睛" : "小荷公众号"}…
           </div>
         ) : !preview || preview.groups.length === 0 ? (
           <div className="py-12 px-5 text-center text-sm text-muted-foreground">
             {preview && preview.files.length > 0
               ? "本周文件没能识别成业绩榜，下面仍可下载原文件。"
-              : "这一周没有匹配到榜单。可以改截止日，或从「已有周次」里选一周。"}
+              : source === "ima" && preview && preview.scanned === 0
+                ? "还没有从 ima 点睛拉到榜单。每周三 10:00 会自动拉取最新一周。"
+                : "这一周没有匹配到榜单。可以改截止日，或从「已有周次」里选一周。"}
           </div>
         ) : (
           <table className="w-full text-sm">

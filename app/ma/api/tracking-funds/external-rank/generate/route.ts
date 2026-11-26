@@ -6,8 +6,10 @@ export const dynamic = "force-dynamic"
 
 export async function GET(req: Request) {
   try {
-    const weekEnd = new URL(req.url).searchParams.get("week_end") || ""
-    const { buffer, fileName } = await buildExternalRankWeekFile(weekEnd)
+    const url = new URL(req.url)
+    const weekEnd = url.searchParams.get("week_end") || ""
+    const source = url.searchParams.get("source") === "ima" ? "ima" : "files"
+    const { buffer, fileName } = await buildExternalRankWeekFile(weekEnd, source)
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
     return new NextResponse(bytes, {
       status: 200,

@@ -134,6 +134,7 @@ export function WeeklyReviewDataStatus({
         variant={lockedVariant ?? variant}
         buckets={visible?.categories.map((category) => category.bucket) ?? []}
         bucketsReady={!!visible}
+        weekEnd={weekEnd ?? ""}
       />
     )}
     <section className={`rounded-xl border bg-background shadow-sm overflow-hidden ${loading && visible ? "opacity-60" : ""}`}>

@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import type { WeeklyReviewStrategyNav, WeeklyReviewStrategyNavVariant } from "@/lib/ma/weekly-review-strategy-nav"
+import {
+  STRATEGY_NAV_UNIVERSES,
+  type WeeklyReviewStrategyNav,
+  type WeeklyReviewStrategyNavUniverse,
+  type WeeklyReviewStrategyNavVariant,
+} from "@/lib/ma/weekly-review-strategy-nav"
 
 const LINE_COLORS = [
   "#e11d48", "#2563eb", "#d97706", "#059669", "#7c3aed",
@@ -87,7 +92,7 @@ type LegendItem = {
 
 /** Sheet titles may carry a hint in （...）; legend chips keep only the official short name. */
 function shortStrategyNavLabel(bucket: string): string {
-  const short = bucket.replace(/（[^（）]+)）$/, "").trim()
+  const short = bucket.replace(/（[^（）]+）$/, "").trim()
   return short || bucket
 }
 
@@ -95,14 +100,35 @@ function strategyNavLegendName(bucket: string, count: number): string {
   return `${shortStrategyNavLabel(bucket)}（${count}）`
 }
 
+function chipClass(active: boolean, disabled = false): string {
+  return [
+    "rounded px-2 py-1 text-xs",
+    disabled ? "cursor-not-allowed opacity-40" : "",
+    active
+      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+      : "border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900",
+  ].filter(Boolean).join(" ")
+}
+
+function emptyUniverseMessage(universe: WeeklyReviewStrategyNavUniverse, hasBuckets: boolean): string {
+  if (!hasBuckets) return "这个周报里暂无策略"
+  if (universe === "tracking") return "JY跟踪池里这些策略还没有足够的净值来画平均线"
+  if (universe === "xiaohe") return "本周小荷公众号榜上还没有可匹配净值的产品来画平均线"
+  if (universe === "ima") return "本周 ima点睛榜上还没有可匹配净值的产品来画平均线"
+  if (universe === "yt") return "YT 来源中这些策略还没有足够的净值来画平均线"
+  return "这些策略在库里还没有足够的净值来画平均线"
+}
+
 export function WeeklyReviewStrategyNavChart({
   variant,
   buckets,
   bucketsReady,
+  weekEnd = "",
 }: {
   variant: WeeklyReviewStrategyNavVariant
   buckets: string[]
   bucketsReady: boolean
+  weekEnd?: string
 }) {
   const dark = useDark()
   const [payload, setPayload] = useState<WeeklyReviewStrategyNav | null>(null)
@@ -112,41 +138,68 @@ export function WeeklyReviewStrategyNavChart({
   const [months, setMonths] = useState<6 | 12 | 36>(6)
   const [windowRange, setWindowRange] = useState<{ start: string; end: string } | null>(null)
   const [selected, setSelected] = useState<Set<string> | null>(null)
+  const [universe, setUniverse] = useState<WeeklyReviewStrategyNavUniverse>("market")
+  const [compare, setCompare] = useState(false)
+  const [compareStrategy, setCompareStrategy] = useState("")
   const datesRef = useRef<string[]>([])
   const bucketKey = buckets.join("\0")
+  const waitingCompare = compare && !compareStrategy
 
   useEffect(() => {
+    if (!compare) return
+    if (compareStrategy && buckets.includes(compareStrategy)) return
+    setCompareStrategy("")
+  }, [bucketKey, buckets, compare, compareStrategy])
+
+  useEffect(() => {
+    if (waitingCompare) {
+      setPayload(null)
+      setError("")
+      setLoading(false)
+      setWindowRange(null)
+      setSelected(null)
+      return
+    }
     const ctrl = new AbortController()
     setLoading(true)
     setError("")
-    setPayload(null)
-    setWindowRange(null)
-    setSelected(null)
-    fetch(`/ma/api/tracking-funds/weekly-review/strategy-nav?variant=${variant}`, { signal: ctrl.signal, cache: "no-store" })
+    const params = new URLSearchParams({ variant })
+    if (weekEnd) params.set("week_end", weekEnd)
+    if (compare) {
+      params.set("mode", "compare")
+      params.set("strategy", compareStrategy)
+    } else {
+      params.set("universe", universe)
+    }
+    fetch(`/ma/api/tracking-funds/weekly-review/strategy-nav?${params}`, { signal: ctrl.signal, cache: "no-store" })
       .then(async (res) => {
         const json = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(typeof json.error === "string" ? json.error : "策略平均净值加载失败")
         setPayload(json as WeeklyReviewStrategyNav)
+        setWindowRange(null)
+        setSelected(null)
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return
+        setPayload(null)
         setError(err instanceof Error ? err.message : "策略平均净值加载失败")
       })
       .finally(() => {
         if (!ctrl.signal.aborted) setLoading(false)
       })
     return () => ctrl.abort()
-  }, [variant])
+  }, [variant, universe, compare, compareStrategy, weekEnd, waitingCompare])
 
   const shown = useMemo(() => {
     if (!payload) return []
+    if (compare) return payload.series
     const byName = new Map(payload.series.map((row) => [row.bucket, row]))
     const wanted = bucketKey ? bucketKey.split("\0") : []
     return wanted.flatMap((name) => {
       const row = byName.get(name)
       return row ? [row] : []
     })
-  }, [payload, bucketKey])
+  }, [payload, bucketKey, compare])
 
   const legendItems = useMemo<LegendItem[]>(
     () => shown.map((item, index) => ({
@@ -313,16 +366,23 @@ export function WeeklyReviewStrategyNavChart({
     })
   }
 
+  const omittedSources = compare && payload
+    ? STRATEGY_NAV_UNIVERSES.filter((row) => !payload.series.some((item) => item.bucket === row.label)).map((row) => row.label)
+    : []
+
   return (
     <section className="rounded-xl border bg-background shadow-sm p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-xs font-semibold text-foreground">策略平均净值</h3>
           <p className="mt-1 max-w-3xl text-[11px] leading-5 text-zinc-400">
-            {payload?.note ?? "按库内归入各策略的全部产品计算等权累计净值。"}
+            {payload?.note ?? (compare
+              ? "先选择一个策略，再比较它在各来源中的等权累计净值。"
+              : "按所选来源中归入各策略的产品计算等权累计净值。")}
             {variant === "futures"
               ? " 图例为策略简称，括号内为计入只数。时序/截面占比和按频率、规模、品种、因子、方法论等分组口径见上方说明。"
               : " 图例为策略简称，括号内为计入只数。"}
+            {compare && omittedSources.length > 0 ? ` 未显示：${omittedSources.join("、")}（该策略没有可画的净值）。` : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -335,12 +395,7 @@ export function WeeklyReviewStrategyNavChart({
               key={value}
               type="button"
               onClick={() => preset(value)}
-              className={[
-                "rounded px-2 py-1 text-xs",
-                presetOn(value)
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900",
-              ].join(" ")}
+              className={chipClass(presetOn(value))}
             >
               {label}
             </button>
@@ -377,6 +432,58 @@ export function WeeklyReviewStrategyNavChart({
         </div>
       </div>
 
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {STRATEGY_NAV_UNIVERSES.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            aria-pressed={!compare && universe === item.key}
+            aria-label={item.label}
+            title={item.label}
+            disabled={compare}
+            onClick={() => {
+              setCompare(false)
+              setUniverse(item.key)
+            }}
+            className={chipClass(!compare && universe === item.key, compare)}
+          >
+            {item.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          aria-pressed={compare}
+          aria-label="对比"
+          title="对比：先选一个策略，再比较各来源"
+          onClick={() => setCompare((current) => !current)}
+          className={["ml-1", chipClass(compare)].join(" ")}
+        >
+          对比
+        </button>
+        {compare && (
+          <>
+            <span className="ml-2 text-xs text-zinc-400">策略</span>
+            {buckets.map((bucket) => {
+              const label = shortStrategyNavLabel(bucket)
+              const on = compareStrategy === bucket
+              return (
+                <button
+                  key={bucket}
+                  type="button"
+                  aria-pressed={on}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => setCompareStrategy(bucket)}
+                  className={chipClass(on)}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </>
+        )}
+      </div>
+
       {legendItems.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
           {legendItems.map((item) => {
@@ -407,22 +514,29 @@ export function WeeklyReviewStrategyNavChart({
 
       <div className="relative mt-3">
         {error && <p className="text-sm text-red-600">{error}</p>}
-        {!error && option && bucketsReady && (
+        {!error && waitingCompare && (
+          <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+            {buckets.length === 0 ? "这个周报里暂无策略" : "请先选择一个策略，再比较各来源的平均净值"}
+          </div>
+        )}
+        {!error && !waitingCompare && option && bucketsReady && (
           <ReactECharts option={option} style={{ height: 380 }} notMerge lazyUpdate={false} onEvents={{ datazoom: onDataZoom }} />
         )}
-        {!error && bucketsReady && option && legendItems.length > 0 && active.size === 0 && (
+        {!error && !waitingCompare && bucketsReady && option && legendItems.length > 0 && active.size === 0 && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
             已全部隐藏，点「全选」或点图例再显示
           </div>
         )}
-        {!error && bucketsReady && !loading && payload && shown.length === 0 && (
+        {!error && !waitingCompare && bucketsReady && !loading && payload && shown.length === 0 && (
           <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-            {buckets.length === 0 ? "这个周报里暂无策略" : "这些策略在库里还没有足够的净值来画平均线"}
+            {compare
+              ? "这个策略在各来源中都没有可画的净值"
+              : emptyUniverseMessage(universe, buckets.length > 0)}
           </div>
         )}
-        {!error && (!bucketsReady || (loading && !option)) && (
+        {!error && !waitingCompare && (!bucketsReady || (loading && !option)) && (
           <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
-            正在计算各策略平均净值…
+            {compare ? "正在计算该策略在各来源中的平均净值…" : "正在计算各策略平均净值…"}
           </div>
         )}
       </div>

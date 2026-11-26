@@ -68,6 +68,9 @@ INDEX_SPECS: list[tuple[str, list[tuple[str, str]]]] = [
     ("000902.SH", [("em", "1.000902"), ("qq", "sh000902"), ("sina", "sh000902"), ("csindex", "000902")]),  # 中证流通
     ("000832.SH", [("em", "1.000832"), ("qq", "sh000832"), ("sina", "sh000832"), ("csindex", "000832")]),  # 中证转债
     ("H11006.CSI", [("csindex", "H11006")]),  # 中证国债
+    ("H11001.CSI", [("csindex", "H11001")]),  # 中证全债
+    ("000012.SH", [("em", "1.000012"), ("qq", "sh000012"), ("sina", "sh000012"), ("csindex", "000012")]),  # 上证国债
+    ("000013.SH", [("em", "1.000013"), ("qq", "sh000013"), ("sina", "sh000013"), ("csindex", "000013")]),  # 上证企业债
     ("000922.SH", [("em", "1.000922"), ("qq", "sh000922"), ("sina", "sh000922"), ("csindex", "000922")]),  # 中证红利
     ("BK0999.EM", [("em", "90.BK0999")]),
     ("BK1000.EM", [("em", "90.BK1000")]),
@@ -89,6 +92,15 @@ SECTOR_COMPOSITES: dict[str, list[str]] = {
     "801276.SI": ["801780.SI", "801790.SI", "801180.SI"],
     "801274.SI": ["801150.SI"],
 }
+
+# Choice names these CBA*.CS codes, but CLOSE is empty on our EmQuant account.
+# Levels come from the ChinaBond website (财富 / 总值).
+CHINABOND_SPECS: list[tuple[str, str]] = [
+    ("CBA00201.CS", "综合指数"),
+    ("CBA00601.CS", "国债总指数"),
+    ("CBA02701.CS", "信用债总指数"),
+]
+
 
 SW_L1_CODES = sorted({
     code.split(".")[0]
@@ -312,6 +324,29 @@ def fetch_ak_hk(symbol: str, start: str, end: str) -> list[dict]:
     return out
 
 
+def fetch_chinabond(category: str, start: str, end: str) -> list[dict]:
+    try:
+        import akshare as ak
+
+        if category == "综合指数":
+            df = ak.bond_composite_index_cbond(indicator="财富", period="总值")
+        else:
+            df = ak.bond_index_general_cbond(index_category=category, indicator="财富", period="总值")
+    except Exception as exc:
+        _log(f"chinabond {category}: {exc}")
+        return []
+    if df is None or getattr(df, "empty", True):
+        return []
+    out: list[dict] = []
+    for _, r in df.iterrows():
+        d = str(r.get("date", ""))[:10]
+        close = _num(r.get("value"))
+        if close is None or not _in_range(d, start, end):
+            continue
+        out.append({"date": d, "close": close, "amount": None, "source": "chinabond"})
+    return out
+
+
 def fetch_one(kind: str, symbol: str, start: str, end: str, lmt: int) -> list[dict]:
     if kind == "em":
         return fetch_em(symbol, start, end, lmt)
@@ -433,6 +468,17 @@ def main() -> None:
                          "amount": r.get("amount"), "source": "sw"})
 
     data.extend(build_composites(sw_rows, start_date, end_date))
+
+    for ts_code, category in CHINABOND_SPECS:
+        rows = fetch_chinabond(category, start_date, end_date)
+        if len(rows) < 2:
+            errors.append(ts_code)
+            _log(f"miss {ts_code}")
+            continue
+        _log(f"ok {ts_code} {len(rows)} chinabond")
+        for r in rows:
+            data.append({"date": r["date"], "ts_code": ts_code, "close": r["close"],
+                         "amount": r.get("amount"), "source": "chinabond"})
 
     print(json.dumps({
         "start_date": start_date,

@@ -1593,7 +1593,7 @@ export const FUND_DATA_CATALOG = {
     { path: "/fund/compare", tool: "fund_compare", desc: "投资分析基金对比：区间收益、年化、波动、夏普、回撤。需投资页权限" },
     { path: "/fof/underlying", tool: "fof_underlying", desc: "投资分析 FOF底层汇总：净值、涨跌幅、市值、区间收益。需投资池权限" },
     { path: "/weekly-review", tool: "weekly_review", desc: "周度回顾预览、近三周数据状态，以及生成周报 Excel 的任务。需投资页权限" },
-    { path: "/external-rank", tool: "external_rank", desc: "外部私募业绩排行：知识库周报榜单或盈米代销。需投资页权限" },
+    { path: "/external-rank", tool: "external_rank", desc: "外部私募业绩排行：小荷公众号、ima点睛或盈米代销。需投资页权限" },
   ],
 }
 

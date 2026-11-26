@@ -298,10 +298,10 @@ export const ACCOUNT_MCP_TOOLS: AccountMcpTool[] = [
     name: "external_rank",
     area: "tracking",
     description:
-      "外部私募业绩排行。source=files（默认）读知识库里对上这一周的榜单；source=yingmi 读盈米代销私募。ytd_pct、ret_1w_pct、ret_1y_pct 是百分点。和跟踪池对名次仍用 external_rank_compare。生成本周合并 Excel 用 weekly_review，variant=external，report=run。需要投资页权限。",
+      "外部私募业绩排行。source=files（默认）读小荷公众号对上这一周的榜单；source=ima 读每周三从 ima 点睛拉来的榜；source=yingmi 读盈米代销私募。ytd_pct、ret_1w_pct、ret_1y_pct 是百分点。和跟踪池对名次仍用 external_rank_compare。生成本周合并 Excel 用 weekly_review，variant=external，report=run。需要投资页权限。",
     inputSchema: obj({
-      source: { type: "string", description: "files 或 yingmi" },
-      week_end: { type: "string", description: "YYYY-MM-DD，只用于 files" },
+      source: { type: "string", description: "files、ima 或 yingmi" },
+      week_end: { type: "string", description: "YYYY-MM-DD，用于 files 和 ima" },
       strategy: { type: "string", description: "策略或分组，例如主观多头、500指增" },
       q: { type: "string", description: "管理人、产品或备案号" },
       limit: { type: "integer", description: "盈米结果条数，默认 40，最大 80" },

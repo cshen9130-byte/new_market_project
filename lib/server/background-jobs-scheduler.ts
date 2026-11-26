@@ -136,6 +136,20 @@ cron.schedule("30 18 * * 1-5", () => {
     }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
   }
 
+  // Wednesday 10:00 Beijing. Latest 周度业绩 week folder only.
+  // Older weeks are never scheduled; copy that folder into 外部私募业绩排行/ima点睛.
+  cron.schedule("0 10 * * 3", () => {
+    void (async () => {
+      try {
+        const { startImaDianjingRankEtl } = await import("./ima-dianjing-rank-job")
+        const started = startImaDianjingRankEtl()
+        if (!started.ok) console.log(`[ima-dianjing] skipped: ${started.reason}`)
+      } catch (e) {
+        console.error("[ima-dianjing] scheduler error:", e)
+      }
+    })()
+  }, { timezone: "Asia/Shanghai", recoverMissedExecutions: true })
+
   // Sunday and Monday 08:10 Beijing. Yingmi's daily MCP credit resets at 00:00.
   // Sunday starts or resumes the weekly 代销私募 crawl; if that day's credit stops
   // the run, Monday continues the same queue. The refresh token lives in
@@ -532,6 +546,8 @@ cron.schedule("30 18 * * 1-5", () => {
         const { runScheduledWeeklyReviewExcel } = await import("./weekly-review-excel-cache")
         const generated = await runScheduledWeeklyReviewExcel("daily-cron")
         console.log(`[weekly-review-excel] daily ${JSON.stringify(generated.items)}`)
+        const { runScheduledWeeklyReviewStrategyNav } = await import("./weekly-review-strategy-nav")
+        runScheduledWeeklyReviewStrategyNav()
       } catch (e) {
         console.error("[weekly-review-excel] daily scheduler error:", e)
       }
@@ -545,6 +561,8 @@ cron.schedule("30 18 * * 1-5", () => {
       try {
         const { runScheduledStrategyEnvironment } = await import("./strategy-environment-daily")
         runScheduledStrategyEnvironment()
+        const { runScheduledWeeklyReviewStrategyNav } = await import("./weekly-review-strategy-nav")
+        runScheduledWeeklyReviewStrategyNav()
       } catch (e) {
         console.error("[strategy-environment] scheduler error:", e)
       }

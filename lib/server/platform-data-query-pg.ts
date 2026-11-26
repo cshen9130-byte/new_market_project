@@ -6,6 +6,7 @@
 import { query } from "@/lib/db"
 import { appendStrategyLevelFilter } from "@/lib/ma/strategy-unconfigured"
 import { sqlPreferAmacOfficialName } from "@/lib/server/fund-name-match"
+import { sqlInPoolNameDuplicateCodes, sqlInPoolNameDuplicatePeers } from "@/lib/server/fund-name-duplicate"
 import {
   sqlStrategySourceExprs,
   sqlType6LatestStrategyJoin,
@@ -50,6 +51,8 @@ export type PlatformNavPresenceFilter = "all" | "present" | "absent"
 export type PlatformNavDateFilter = "all" | "m1" | "m1_3" | "m3_6" | "within_m6" | "over_m6"
 /** 备案号是否在 JY跟踪池（tracking_pool），与数据总览「跟踪池」同一口径。 */
 export type PlatformInPoolFilter = "all" | "in" | "out"
+/** 在跟踪池内，按基金名称找出备案号不是同一只的产品。 */
+export type PlatformNameDupFilter = "all" | "dup"
 
 export type PlatformDataListParams = {
   page: number
@@ -75,6 +78,8 @@ export type PlatformDataListParams = {
   navDateFilter?: PlatformNavDateFilter
   /** in = 备案号在 JY跟踪池；out = 不在。 */
   inPoolFilter?: PlatformInPoolFilter
+  /** dup = 在跟踪池里，基金名称相同但备案号不是同一只。Ignored unless inPoolFilter is in. */
+  nameDupFilter?: PlatformNameDupFilter
   /** Recent NAV cadence. Same labels as 团队数据. */
   navFrequencyFilter?: TeamDataNavFrequencyFilter
   sort: string
@@ -631,6 +636,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
     navPresenceFilter = "all",
     navDateFilter = "all",
     inPoolFilter = "all",
+    nameDupFilter = "all",
     navFrequencyFilter = "all",
     sort,
     sortDir,
@@ -671,6 +677,15 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
   if (navDateFilter !== "all") where.push(NAV_DATE_SQL[navDateFilter])
   if (inPoolFilter === "in") where.push(IN_TRACKING_POOL_SQL)
   else if (inPoolFilter === "out") where.push(`NOT ${IN_TRACKING_POOL_SQL}`)
+  if (inPoolFilter === "in" && nameDupFilter === "dup") {
+    where.push(`UPPER(BTRIM(i.beian_hao)) IN (SELECT code FROM (${sqlInPoolNameDuplicateCodes()}) name_dup_codes)`)
+  }
+
+  const finish = async (rows: TeamDataListRow[], total: number) => {
+    const page = alignUpdateChannelPage(rows, productSourceFilter, total)
+    if (inPoolFilter !== "in" || nameDupFilter !== "dup") return page
+    return { data: await attachNameDuplicatePeers(page.data), total: page.total }
+  }
 
   const sortNeedsTeam = sort === "team_nav" || sort === "team_nav_date" || sort === "unit_nav" || sort === "nav_date"
   const sortNeedsProductPage = sort === "unit_nav" || sort === "nav_date"
@@ -916,7 +931,7 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
         : await attachNavGapDiagnosis(data)
     }
     if (operationDateFilter === "present") data = await withOperationDates(data)
-    return alignUpdateChannelPage(data, productSourceFilter, total)
+    return finish(data, total)
   }
 
   const limitIdx = filterParams.length + 1
@@ -1006,7 +1021,33 @@ export async function listPlatformPrivateFunds(params: PlatformDataListParams): 
   let data = await attachInceptionDates(await attachProductPageNav(withStoredPlatformNav(await enrichPlatformFundPage(toSeeds(pageRows)), pageRows)))
   data = resortPage(data, sort, sortDir)
   if (operationDateFilter === "present") data = await withOperationDates(data)
-  return alignUpdateChannelPage(data, productSourceFilter, total)
+  return finish(data, total)
+}
+
+async function attachNameDuplicatePeers(rows: TeamDataListRow[]): Promise<TeamDataListRow[]> {
+  const codes = [...new Set(rows.map((row) => (row.beian_hao ?? "").trim().toUpperCase()).filter(Boolean))]
+  if (codes.length === 0) return rows
+  const peers = await query<{ beian_hao: string; peer_code: string; peer_name: string }>(
+    sqlInPoolNameDuplicatePeers(),
+    [codes],
+  )
+  const byCode = new Map<string, { beian_hao: string; product_name: string }[]>()
+  for (const peer of peers) {
+    const code = peer.beian_hao.trim().toUpperCase()
+    const peerCode = peer.peer_code.trim().toUpperCase()
+    if (!code || !peerCode || code === peerCode) continue
+    const list = byCode.get(code) ?? []
+    const name = peer.peer_name.trim()
+    const prev = list.find((item) => item.beian_hao === peerCode)
+    if (!prev) list.push({ beian_hao: peerCode, product_name: name })
+    else if (name && name.length < prev.product_name.length) prev.product_name = name
+    byCode.set(code, list)
+  }
+  for (const list of byCode.values()) list.sort((a, b) => a.beian_hao.localeCompare(b.beian_hao))
+  return rows.map((row) => ({
+    ...row,
+    name_dup_peers: byCode.get((row.beian_hao ?? "").trim().toUpperCase()) ?? [],
+  }))
 }
 
 async function withOperationDates(rows: TeamDataListRow[]): Promise<TeamDataListRow[]> {

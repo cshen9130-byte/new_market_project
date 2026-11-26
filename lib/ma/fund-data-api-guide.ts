@@ -1321,7 +1321,7 @@ ${FENCE}
 
 ### GET /external-rank
 
-MCP：\`external_rank\`。需要投资页权限。\`source=files\` 是知识库「外部私募业绩排行」对上这一周的榜。\`source=yingmi\` 是盈米代销。和跟踪池对名次仍用 \`external_rank_compare\`。
+MCP：\`external_rank\`。需要投资页权限。\`source=files\` 是知识库「外部私募业绩排行」对上这一周的榜。\`source=ima\` 是每周三从 ima 点睛拉来的榜。\`source=yingmi\` 是盈米代销。和跟踪池对名次仍用 \`external_rank_compare\`。
 
 ${FENCE}bash
 curl -H "x-api-key: ${key}" "${FUND_DATA_API_BASE}/external-rank?source=files"

@@ -230,6 +230,8 @@ export type TeamDataListRow = {
   inception_nav_match?: InceptionNavMatchStatus | null
   /** Absolute calendar days between 产品成立日 and 净值起始日, when both exist. */
   inception_nav_gap_days?: number | null
+  /** Set when 平台数据 is filtered to 在跟踪池 / 名称重复. Other filings of the same fund name. */
+  name_dup_peers?: { beian_hao: string; product_name: string }[]
 }
 
 type RawEmailFund = {
