@@ -1,8 +1,14 @@
 "use client"
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react"
+import dynamic from "next/dynamic"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { WeeklyReviewPoolKey } from "@/lib/ma/weekly-review-pools"
+
+const WeeklyReviewStrategyNavChart = dynamic(
+  () => import("./WeeklyReviewStrategyNavChart").then((m) => m.WeeklyReviewStrategyNavChart),
+  { ssr: false },
+)
 import {
   WEEKLY_REVIEW_SOURCE_LABEL,
   WEEKLY_REVIEW_SOURCE_ORDER,
@@ -122,6 +128,14 @@ export function WeeklyReviewDataStatus({
   const visible = body?.variant === variant ? body : cachedWeekly?.variant === variant ? cachedWeekly : null
 
   return (
+    <div className="flex flex-col gap-4">
+    {embedded && (
+      <WeeklyReviewStrategyNavChart
+        variant={lockedVariant ?? variant}
+        buckets={visible?.categories.map((category) => category.bucket) ?? []}
+        bucketsReady={!!visible}
+      />
+    )}
     <section className={`rounded-xl border bg-background shadow-sm overflow-hidden ${loading && visible ? "opacity-60" : ""}`}>
       <div className="px-4 py-2.5 border-b">
         <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -237,6 +251,7 @@ export function WeeklyReviewDataStatus({
         </div>
       )}
     </section>
+    </div>
   )
 }
 
