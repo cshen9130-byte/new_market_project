@@ -84,6 +84,8 @@ export const CHAT_SITE_PAGES: ChatSitePage[] = [
   p("mom", "MOM分析", "/ma/dashboard/mom-analysis", "MOM分析", "mom", ["MOM", "MOM模块"]),
   p("mom-risk-report", "MOM每日风控", "/ma/dashboard/mom-analysis/risk-report", "MOM分析 → MOM每日风控", "mom", ["每日风控", "风控报告"]),
   p("mom-account-risk", "单账户每日风控", "/ma/dashboard/mom-analysis/account-risk-report", "MOM分析 → 单账户每日风控", "mom", ["单账户风控", "CFMMC"]),
+  p("mom-briefing", "MOM简报", "/ma/dashboard/mom-analysis/risk-report?tab=briefing", "MOM分析 → MOM每日风控 → MOM简报", "mom", ["MOM 简报", "风控简报"]),
+  p("mom-account-briefing", "单账户简报", "/ma/dashboard/mom-analysis/account-risk-report?tab=briefing", "MOM分析 → 单账户每日风控 → 单账户简报", "mom", ["单账户风控简报", "账户简报", "单张户简报"]),
   p("mom-trader-analysis", "盘手历史交易复盘", "/ma/dashboard/mom-analysis/trader-analysis", "MOM分析 → 盘手历史交易复盘", "mom", ["盘手分析", "交易复盘", "盘手复盘"]),
   p("mom-pnl-rank", "盈亏排名", "/ma/dashboard/mom-analysis/trader-analysis?tab=pnl-rank", "MOM分析 → 盘手历史交易复盘 → 盈亏排名", "mom", ["盈亏排名"]),
   p("mom-variety-review", "品种交易回顾", "/ma/dashboard/mom-analysis/trader-analysis?tab=variety-review", "MOM分析 → 盘手历史交易复盘 → 品种交易回顾", "mom", ["品种回顾"]),

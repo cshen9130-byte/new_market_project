@@ -22,7 +22,15 @@ function maxDate(a: string, b: string): string {
   return a >= b ? a : b
 }
 
-export default function RollingVolChart({ height = 260 }: { height?: number }) {
+export default function RollingVolChart({
+  height = 260,
+  scopeKey = "",
+  variant = "mom",
+}: {
+  height?: number
+  scopeKey?: string
+  variant?: "mom" | "account"
+}) {
   const [navData,  setNavData]  = useState<NavPoint[]>([])
   const [bmData,   setBmData]   = useState<BmPoint[]>([])
   const [lagMeta,  setLagMeta]  = useState<NhciLagMeta | null>(null)
@@ -75,7 +83,7 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
       }
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [scopeKey])
 
   const option = (() => {
     const WINDOW = Math.min(volWindow, Math.max(2, navData.length - 1))
@@ -155,7 +163,7 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
         },
       ],
       series: [
-        { name: "产品",    type: "line", yAxisIndex: 0, data: fundVol,   smooth: false, symbol: "none", lineStyle: { color: "#ef4444", width: 1.5 }, itemStyle: { color: "#ef4444" }, areaStyle: { color: "#ef444422" } },
+        { name: variant === "account" ? "账户" : "产品", type: "line", yAxisIndex: 0, data: fundVol,   smooth: false, symbol: "none", lineStyle: { color: "#ef4444", width: 1.5 }, itemStyle: { color: "#ef4444" }, areaStyle: { color: "#ef444422" } },
         ...(bmVol.length > 0 ? [
           { name: "南华商品", type: "line", yAxisIndex: 0, data: bmVol,   smooth: false, symbol: "none", lineStyle: { color: "#60a5fa", width: 1.5 }, itemStyle: { color: "#60a5fa" }, areaStyle: { color: "#60a5fa22" } },
           { name: "波动比率", type: "line", yAxisIndex: 1, data: ratioData, smooth: true,  symbol: "none", lineStyle: { color: "#a78bfa", width: 1.5, type: "dashed" }, itemStyle: { color: "#a78bfa" } },
@@ -201,7 +209,7 @@ export default function RollingVolChart({ height = 260 }: { height?: number }) {
         {showLag && (
           <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
             南华商品 NHCI 未对齐最新持仓日
-            {latestNav ? `（产品 ${latestNav}` : "（产品 ?"}
+            {latestNav ? `（${variant === "account" ? "账户" : "产品"} ${latestNav}` : `（${variant === "account" ? "账户" : "产品"} ?`}
             {latestBm ? ` / NHCI ${latestBm}` : " / NHCI 缺失"}
             {lagMeta?.positionAsOf ? `；持仓截至 ${lagMeta.positionAsOf}` : ""}
             ）。EmQuant 当日结算未入库或缓存未失效时波动比率在共有日期上计算——产品线仍绘至其自身最新交易日。请等待盘后 NHCI 抓取或检查 nanhua ETL。

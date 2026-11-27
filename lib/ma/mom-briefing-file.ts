@@ -44,7 +44,13 @@ export function buildMomBriefingHtml(input: {
   points: BriefingNavPoint[]
   latest: BriefingNavPoint
   pageUrl: string
+  title?: string
+  kicker?: string
+  fileTitle?: string
 }): string {
+  const title = input.title || "MOM 风控简报"
+  const kicker = input.kicker || "MOM PORTFOLIO MANAGEMENT"
+  const fileTitle = input.fileTitle || title.replace(/\s+/g, "")
   const ytd = briefingYearReturn(input.points, input.latest)
   const recent = input.points.slice(-10).reverse()
   const rows = recent.map((point) => (
@@ -54,7 +60,7 @@ export function buildMomBriefingHtml(input: {
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<title>MOM风控简报-${esc(input.latest.date.slice(0, 10))}</title>
+<title>${esc(fileTitle)}-${esc(input.latest.date.slice(0, 10))}</title>
 <style>
   body { margin: 0; background: #f3efe3; color: #1a3a5c; font-family: "Noto Serif SC", "Source Han Serif SC", SimSun, serif; }
   main { width: 794px; margin: 24px auto; background: linear-gradient(160deg,#fdfcf7,#f3efe3); min-height: 1123px; box-shadow: 0 12px 40px rgba(0,0,0,.12); }
@@ -77,8 +83,8 @@ export function buildMomBriefingHtml(input: {
 <main>
   <div class="bar"></div>
   <div class="pad">
-    <p class="label">MOM PORTFOLIO MANAGEMENT</p>
-    <h1>MOM 风控简报</h1>
+    <p class="label">${esc(kicker)}</p>
+    <h1>${esc(title)}</h1>
     <p class="label">每日风险与业绩速览 · ${esc(input.latest.date.slice(0, 10))}</p>
     <div class="gold"></div>
     <h2>一、当日预估收益</h2>

@@ -42,6 +42,7 @@ const AdvisorSectorExposureStack   = dynamic(() => import("@/components/ma/advis
 const OptionFloatingPnlCharts  = dynamic(() => import("@/components/ma/option-floating-pnl-charts"),  { ssr: false })
 const AccountRiskDataImport    = dynamic(() => import("@/components/ma/account-risk-data-import"),    { ssr: false })
 const BriefingMomSignals       = dynamic(() => import("@/components/ma/briefing-mom-signals"),        { ssr: false })
+const BriefingAccountCrossSection = dynamic(() => import("@/components/ma/briefing-account-cross-section"), { ssr: false })
 
 const baseSubNavItems = [
   { key: "overview",  name: "产品总览", icon: BarChart2 },
@@ -9685,8 +9686,22 @@ html[data-mom-embed="1"] #mom-briefing-printable {
                     {/* Rolling vol chart */}
                     <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4"
                          style={{ background: "#ffffff" }}>
-                      <RollingVolChart height={260} />
+                      <RollingVolChart height={260} scopeKey={accountScopeKey} variant={isAccount ? "account" : "mom"} />
                     </div>
+
+                    {isAccount && (
+                    <>
+                    <div className="flex items-center gap-3 mt-5 mb-3">
+                      <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                      <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
+                          style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                        二、持仓截面
+                      </h2>
+                      <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                    </div>
+                    <BriefingAccountCrossSection scopeKey={accountScopeKey} />
+                    </>
+                    )}
 
                     {!isAccount && (
                     <>
@@ -9711,7 +9726,7 @@ html[data-mom-embed="1"] #mom-briefing-printable {
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        {isAccount ? "二、板块持仓分析" : "三、板块持仓分析"}
+                        三、板块持仓分析
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>
@@ -9731,7 +9746,7 @@ html[data-mom-embed="1"] #mom-briefing-printable {
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        {isAccount ? "三、品种持仓分析" : "四、品种持仓分析"}
+                        四、品种持仓分析
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>
@@ -9808,7 +9823,7 @@ html[data-mom-embed="1"] #mom-briefing-printable {
                       <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
                       <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
                           style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
-                        {isAccount ? "四、期权浮动盈亏" : "六、期权浮动盈亏"}
+                        {isAccount ? "五、期权浮动盈亏" : "六、期权浮动盈亏"}
                       </h2>
                       <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
                     </div>

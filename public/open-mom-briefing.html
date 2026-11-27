@@ -21,9 +21,17 @@
   <script>
     (function () {
       var msg = document.getElementById("msg")
+      var source = new URLSearchParams(location.search).get("source") === "account" ? "account" : "mom"
+      var isAccount = source === "account"
+      if (isAccount) {
+        document.title = "单账户简报"
+        msg.textContent = "正在打开单账户简报…"
+      }
       var raw = location.hash.replace(/^#/, "")
       if (!raw) {
-        msg.textContent = "缺少登录信息，请从手机版 MOM 每日风控重新打开。"
+        msg.textContent = isAccount
+          ? "缺少登录信息，请从手机版单账户每日风控重新打开。"
+          : "缺少登录信息，请从手机版 MOM 每日风控重新打开。"
         return
       }
       try {
@@ -39,7 +47,10 @@
         }))
         try { sessionStorage.setItem("momEmbedBriefing", "1") } catch (e) {}
         // Top-level (no iframe). embed=1 is understood by the currently deployed Next bundle.
-        location.replace("/ma/dashboard/mom-analysis/risk-report?tab=briefing&embed=1")
+        var dest = isAccount
+          ? "/ma/dashboard/mom-analysis/account-risk-report?tab=briefing&embed=1"
+          : "/ma/dashboard/mom-analysis/risk-report?tab=briefing&embed=1"
+        location.replace(dest)
       } catch (e) {
         msg.textContent = "登录信息无法识别，请从手机版重新打开。"
       }

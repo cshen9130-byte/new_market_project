@@ -26,4 +26,21 @@ describe("MOM briefing file", () => {
     assert.match(html, /\+10\.00%/)
     assert.ok(Math.abs((briefingYearReturn(points, points[1]) ?? 0) - 0.1) < 1e-9)
   })
+
+  it("can render a single-account briefing file", () => {
+    const html = buildMomBriefingHtml({
+      points,
+      latest: points[1],
+      pageUrl: "https://example.test/ma/dashboard/mom-analysis/account-risk-report?tab=briefing",
+      title: "单账户风控简报",
+      kicker: "SINGLE ACCOUNT RISK",
+      fileTitle: "单账户风控简报",
+    })
+    assert.match(html, /单账户风控简报/)
+    assert.match(html, /SINGLE ACCOUNT RISK/)
+    assert.doesNotMatch(html, /MOM PORTFOLIO MANAGEMENT/)
+    assert.match(html, /2026-11-23/)
+    assert.match(html, /\+1\.20%/)
+    assert.match(html, /account-risk-report\?tab=briefing/)
+  })
 })
