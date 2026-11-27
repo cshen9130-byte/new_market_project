@@ -64,8 +64,8 @@ export async function getLiveDiscount(now = new Date()): Promise<LiveDiscountPay
       if (quote.trade_date && quote.trade_date !== today) return
       const fut = quote.last
       const days = calendarDaysToCffexExpiry(symbol, now)
-      if (days == null || days <= 1) return
-      const ann = ((spotPx - fut) / spotPx / days) * 365 * 100
+      if (days == null || days < 0) return
+      const ann = days === 0 ? 0 : ((spotPx - fut) / spotPx / days) * 365 * 100
       if (!Number.isFinite(ann)) return
       roleSeries[role] = {
         date: today,

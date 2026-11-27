@@ -41,7 +41,7 @@ const ROLE_STYLE: Record<
   下季: { color: "#5BA8A8", area: true, width: 2 },
 }
 
-const MIN_DAYS = 5
+const MIN_DAYS = 0
 
 type Point = {
   date: string
@@ -444,7 +444,7 @@ export function StockMarketView() {
       const last = row?.data.at(-1)
       return typeof last?.[1] === "number" ? `${last[1].toFixed(2)}%` : "--"
     }
-    return { clock, quarter: pick("当季"), nextQuarter: pick("下季") }
+    return { clock, front: pick("近月"), quarter: pick("当季"), nextQuarter: pick("下季") }
   }, [live?.fetchedAt, product, series])
 
   useEffect(() => {
@@ -504,7 +504,7 @@ export function StockMarketView() {
               </div>
               <p className="mt-1 ml-[11px] text-xs text-zinc-400">
                 {liveReadout
-                  ? `最新 ${liveReadout.clock} · 当季 ${liveReadout.quarter} · 下季 ${liveReadout.nextQuarter}`
+                  ? `最新 ${liveReadout.clock} · 当月 ${liveReadout.front} · 当季 ${liveReadout.quarter} · 下季 ${liveReadout.nextQuarter}`
                   : liveError
                     ? `实时行情未刷新：${liveError}`
                     : "正在接入最新价…"}

@@ -15,7 +15,7 @@ Code: `lib/server/index-basis-rate.ts`, `lib/client/cffex-expiry.ts`, `component
 - **T** is calendar days from that day to the contract's expiry. Expiry is the third Friday of the contract month.
 - A negative number is 贴水 (futures below the index). 开心基差 plots `(S − F)`, so flip their chart before comparing.
 
-Skip **T < 2**. Expiry day turns a few ticks into hundreds of percent. Do not floor T at 1 and still plot the point.
+Plot **T = 1** at the real annualized rate (a small raw basis can jump sharply at 换月). Plot **T = 0** (expiry day) as 0%. Do not floor T at 1 and annualize the expiry-day basis. Skip **T < 0**.
 
 ## Which contract
 

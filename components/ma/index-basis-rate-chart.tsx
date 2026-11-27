@@ -10,11 +10,10 @@ import { HelpAnnualizedBasis } from "@/components/ma/realtime-chart-help"
 import { useSpotKline } from "@/hooks/use-spot-kline"
 import { useSymbolKline } from "@/hooks/use-symbol-kline"
 import {
-  annualizedBasisPct,
   basisPoints,
   cffexRoleOfContract,
+  chartAnnualizedBasisPct,
   daysForBasisBar,
-  daysToCffexExpiry,
   isNearCffexExpiry,
   type CffexContractRole,
 } from "@/lib/client/cffex-expiry"
@@ -139,14 +138,14 @@ export function IndexBasisRateChart({
     variant === "pro" && !isIntradayTimeframe(interval) ? { history: true } : undefined,
   )
   const { bars: spotBars, error: spotError } = useSpotKline(product, interval, spot)
-  const days = symbol ? daysToCffexExpiry(symbol) : null
+  const days = symbol ? daysForBasisBar(symbol) : null
   const nearExpiry = symbol ? isNearCffexExpiry(symbol) : false
   const lastFut = quote?.last ?? tfCandles.at(-1)?.close ?? candles.at(-1)?.close ?? null
   const lastSpot = spot?.price ?? spotBars.at(-1)?.close ?? spot?.bars.at(-1)?.close ?? null
   const lastPts = lastFut != null && lastSpot != null ? basisPoints(lastFut, lastSpot) : null
   const lastRawPct = lastPts != null && lastSpot ? (lastPts / lastSpot) * 100 : null
-  const lastBasis = lastFut != null && lastSpot != null && days != null
-    ? annualizedBasisPct(lastFut, lastSpot, days)
+  const lastBasis = lastFut != null && lastSpot != null
+    ? chartAnnualizedBasisPct(lastFut, lastSpot, days)
     : null
   const up = lastBasis == null ? null : lastBasis >= 0
   const sessionOnly = isIntradayTimeframe(interval)
@@ -186,8 +185,7 @@ export function IndexBasisRateChart({
       const spotPx = spotByTime.get(candle.time) ?? lastKnown
       if (spotPx == null) continue
       const barDays = daysForBasisBar(symbol, new Date(candle.time * 1000))
-      if (barDays == null) continue
-      const value = annualizedBasisPct(candle.close, spotPx, barDays)
+      const value = chartAnnualizedBasisPct(candle.close, spotPx, barDays)
       if (value == null) continue
       points.push({ time: candle.time, value })
     }

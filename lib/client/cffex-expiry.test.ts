@@ -7,6 +7,7 @@ import { describe, it } from "node:test"
 import {
   annualizedBasisPct,
   calendarDaysToCffexExpiry,
+  chartAnnualizedBasisPct,
   daysForBasisBar,
   daysToCffexExpiry,
   listedCffexIndexContractsOnYmd,
@@ -52,6 +53,17 @@ describe("daysForBasisBar", () => {
     assert.equal(days, 11)
     const ann = annualizedBasisPct(100 * (1 - 0.0045), 100, days!)
     assert.ok(ann != null && ann < -14 && ann > -16, `near ann ${ann}`)
+  })
+
+  it("uses raw calendar days on T=1 and returns 0% on expiry, without flooring T at 1", () => {
+    const t1 = shanghaiNoon("2026-10-15")
+    const t0 = shanghaiNoon("2026-10-16")
+    assert.equal(daysForBasisBar("IM2610", t1), 1)
+    assert.equal(daysForBasisBar("IM2610", t0), 0)
+    const ann1 = chartAnnualizedBasisPct(6670.6, 6678.6486, 1)
+    const ann0 = chartAnnualizedBasisPct(6716, 6681.9444, 0)
+    assert.ok(ann1 != null && ann1 < -43.9 && ann1 > -44.1, `T=1 ann ${ann1}`)
+    assert.equal(ann0, 0)
   })
 
   it("still rolls a continuous symbol inside the last 7 days", () => {

@@ -85,8 +85,10 @@ export async function GET() {
           LEFT(UPPER(SPLIT_PART(contract, '.', 1)), 2) AS symbol,
           UPPER(SPLIT_PART(contract, '.', 1)) AS root,
           trade_date::date AS trade_date,
-          -- Sina/AkShare often returns settle=0; prefer positive clear, else close
-          COALESCE(NULLIF(clear, 0), NULLIF(close, 0)) AS settle
+          contract,
+          close,
+          -- Prefer close; unsuffixed rows often copy close into clear, while *.CFE clear is settlement.
+          COALESCE(NULLIF(close, 0), NULLIF(clear, 0)) AS settle
         FROM raw_futures_contracts_daily
         WHERE contract ~* '^(IH|IF|IC|IM)[0-9]{4}'
       ),
@@ -95,7 +97,9 @@ export async function GET() {
           symbol, root, trade_date, settle
         FROM norm
         WHERE settle IS NOT NULL AND settle::float8 > 0
-        ORDER BY root, trade_date, settle DESC
+        ORDER BY root, trade_date,
+                 CASE WHEN NULLIF(close, 0) IS NOT NULL THEN 0 ELSE 1 END,
+                 CASE WHEN position('.' in contract) = 0 THEN 0 ELSE 1 END
       ),
       spot AS (
         SELECT DISTINCT ON (symbol, trade_date)
@@ -133,10 +137,10 @@ export async function GET() {
 
       const expiry = thirdFriday(parsed.year, parsed.month)
       const days = Math.round((expiry.getTime() - td.getTime()) / 86400000)
-      // Skip expired and expiry-day points — T<=1 makes 365/T explode.
-      if (days <= 1) continue
+      // After expiry, skip. T=1 uses the real annualized rate; T=0 is plotted as 0%.
+      if (days < 0) continue
 
-      const ann = ((spot - settle) / spot / days) * 365 * 100
+      const ann = days === 0 ? 0 : ((spot - settle) / spot / days) * 365 * 100
       if (!Number.isFinite(ann)) continue
 
       if (!bySymbolRoot[r.symbol]) bySymbolRoot[r.symbol] = {}

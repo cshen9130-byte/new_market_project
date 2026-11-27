@@ -1,6 +1,6 @@
 import {
-  annualizedBasisPct,
   calendarDaysToCffexExpiry,
+  chartAnnualizedBasisPct,
   CFFEX_CONTRACT_ROLES,
   listedCffexIndexContractsOnYmd,
   parseIndexFuturesMonth,
@@ -28,9 +28,9 @@ function shanghaiNoon(ymd: string) {
 
 function point(ymd: string, futures: number, spot: number, symbol: string): BasisRatePoint | null {
   const days = calendarDaysToCffexExpiry(symbol, shanghaiNoon(ymd))
-  // Expiry day (T <= 1) turns a few ticks into hundreds of percent.
-  if (days == null || days < 2) return null
-  const value = annualizedBasisPct(futures, spot, days)
+  // T=1 uses the real annualized rate; T=0 is 0%. After expiry, skip.
+  if (days == null || days < 0) return null
+  const value = chartAnnualizedBasisPct(futures, spot, days)
   const time = chinaWallToUnix(`${ymd} 00:00:00`)
   if (value == null || time == null) return null
   return { time, value }

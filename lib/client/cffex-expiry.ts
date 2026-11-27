@@ -284,12 +284,19 @@ export function daysToCffexExpiry(symbol: string, now = new Date()): number | nu
 
 /**
  * Days used to annualize the live quote and an intraday bar of this symbol.
- * Daily history does not use this: it rolls to the contract that held the
- * same term that day. Dividing a continuous price by one far expiry flattens
- * the curve, and dividing it by the front month's last week prints about −85%.
+ * Listed months use raw calendar days (0 on expiry). Continuous (*0) still
+ * follows the max-OI roll window via daysToCffexExpiry.
  */
 export function daysForBasisBar(symbol: string, now = new Date()): number | null {
-  return daysToCffexExpiry(symbol, now)
+  if (/^(IH|IF|IC|IM)0$/i.test(symbol.trim())) return daysToCffexExpiry(symbol, now)
+  return calendarDaysToCffexExpiry(symbol, now)
+}
+
+/** T=1 is the real annualized rate; T=0 is 0%; T<0 is omitted. */
+export function chartAnnualizedBasisPct(futures: number, spot: number, days: number | null) {
+  if (days == null || days < 0) return null
+  if (days === 0) return 0
+  return annualizedBasisPct(futures, spot, days)
 }
 
 export function isNearCffexExpiry(symbol: string, now = new Date()) {

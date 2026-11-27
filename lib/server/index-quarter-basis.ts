@@ -1,7 +1,7 @@
 import {
-  annualizedBasisPct,
+  calendarDaysToCffexExpiry,
   cffexContractForRole,
-  daysToCffexExpiry,
+  chartAnnualizedBasisPct,
 } from "@/lib/client/cffex-expiry"
 import { INDEX_FUTURES } from "@/lib/client/ctp-market"
 import type { QuarterBasisReading } from "@/lib/index-quarter-basis"
@@ -36,9 +36,9 @@ export async function latestQuarterBasisReadings(): Promise<QuarterBasisReading[
     const symbol = cffexContractForRole(item.product, "quarter")
     const quote = quotes?.quotes[symbol]
     const spot = spots?.[item.product]
-    const days = daysToCffexExpiry(symbol)
-    const live = quote?.last != null && spot?.price != null && days != null
-      ? annualizedBasisPct(quote.last, spot.price, days)
+    const days = calendarDaysToCffexExpiry(symbol)
+    const live = quote?.last != null && spot?.price != null
+      ? chartAnnualizedBasisPct(quote.last, spot.price, days)
       : null
     const liveDate = isoDate(quote?.trade_date) || isoDate(spot?.date)
     if (live != null && liveDate) {
