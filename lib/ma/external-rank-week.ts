@@ -58,3 +58,31 @@ export type ExternalRankWeekPreview = {
   groups: ExternalRankWeekGroup[]
   weeks: ExternalRankDetectedWeek[]
 }
+
+export type ExternalRankCompareSourceKey = "files" | "ima"
+
+export type ExternalRankCompareSource = {
+  key: ExternalRankCompareSourceKey
+  label: string
+}
+
+export type ExternalRankCompareValue = {
+  source: ExternalRankCompareSourceKey
+  /** Decimal return, 0.12 = 12%. */
+  median: number
+  n: number
+}
+
+export type ExternalRankCompareStrategy = {
+  strategy: string
+  values: ExternalRankCompareValue[]
+}
+
+export type ExternalRankWeekCompare = {
+  week_start: string
+  week_end: string
+  metric: "ret_1w"
+  metric_label: string
+  sources: ExternalRankCompareSource[]
+  strategies: ExternalRankCompareStrategy[]
+}

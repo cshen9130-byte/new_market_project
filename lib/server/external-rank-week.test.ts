@@ -4,15 +4,18 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import * as XLSX from "xlsx"
-import type { ExternalRankWeekFile } from "@/lib/ma/external-rank-week"
+import type { ExternalRankWeekFile, ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
 import { parseExternalRankWorkbook } from "./external-rank-sheet"
 import {
+  buildExternalRankCompareFromSources,
   buildExternalRankWeekWorkbook,
+  compareStrategyKey,
   concreteDateSpans,
   extractRankFileDates,
   externalRankWeekFileName,
   externalRankWeekWindow,
   matchRankWeek,
+  medianNumbers,
   weekFriday,
   yearForShortDates,
 } from "./external-rank-week"
@@ -139,5 +142,85 @@ describe("workbook", () => {
     const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 })
     assert.equal(rows[2]?.[2], "北京禧悦私募")
     assert.equal(rows[2]?.[6], 1.5912)
+  })
+})
+
+function fakeRow(partial: Partial<ExternalRankWeekRow> & Pick<ExternalRankWeekRow, "class_key" | "manager" | "ret_1w">): ExternalRankWeekRow {
+  return {
+    rank: 1,
+    strategy: partial.class_key,
+    product: partial.product ?? partial.manager,
+    aum: null,
+    nav_date: null,
+    ytd: null,
+    ytd_drawdown: null,
+    sheet: "s",
+    ...partial,
+  }
+}
+
+function fakeFile(path: string, rows: ExternalRankWeekRow[]): ExternalRankWeekFile {
+  return {
+    path,
+    name: path,
+    size: 1,
+    updated_at: "",
+    parsed: true,
+    error: null,
+    title: path,
+    as_of: "2026-11-20",
+    window_label: "今年以来",
+    classes: [...new Set(rows.map((row) => row.class_key))],
+    matched_by: "filename",
+    row_count: rows.length,
+    truncated: false,
+    rows,
+  }
+}
+
+describe("source medians", () => {
+  it("takes the mid value, or the average of the two middle values", () => {
+    assert.equal(medianNumbers([]), null)
+    assert.equal(medianNumbers([0.03]), 0.03)
+    assert.equal(medianNumbers([0.01, 0.03, 0.02]), 0.02)
+    assert.equal(medianNumbers([0.01, 0.03]), 0.02)
+  })
+
+  it("aligns 宏观 and 市场中性 labels across sources", () => {
+    assert.equal(compareStrategyKey("宏观"), "宏观策略")
+    assert.equal(compareStrategyKey("宏观策略"), "宏观策略")
+    assert.equal(compareStrategyKey("股票市场中性"), "市场中性")
+    assert.equal(compareStrategyKey("1000指增"), "1000指增")
+  })
+
+  it("compares the same strategy across sources and does not invent a 0 median", () => {
+    const xiaohe = fakeFile("xiaohe.xlsx", [
+      fakeRow({ class_key: "1000指增", manager: "甲", product: "甲1号", ret_1w: 0.02 }),
+      fakeRow({ class_key: "1000指增", manager: "乙", product: "乙1号", ret_1w: 0.04 }),
+      fakeRow({ class_key: "1000指增", manager: "乙", product: "乙1号", ret_1w: 0.99 }),
+      fakeRow({ class_key: "主观多头", manager: "丙", product: "丙1号", ret_1w: -0.01 }),
+      fakeRow({ class_key: "未分类", manager: "丁", product: "丁1号", ret_1w: 0.5 }),
+      fakeRow({ class_key: "1000指增", manager: "戊", product: "戊1号", ret_1w: null }),
+    ])
+    const ima = fakeFile("ima.xlsx", [
+      fakeRow({ class_key: "1000指增", manager: "己", product: "己1号", ret_1w: 0.01 }),
+      fakeRow({ class_key: "宏观", manager: "庚", product: "庚1号", ret_1w: 0.03 }),
+    ])
+    const compare = buildExternalRankCompareFromSources("2026-11-16", "2026-11-20", [
+      { key: "files", label: "小荷公众号", files: [xiaohe] },
+      { key: "ima", label: "ima点睛", files: [ima] },
+    ])
+    assert.equal(compare.metric, "ret_1w")
+    const names = compare.strategies.map((row) => row.strategy)
+    assert.deepEqual(names, ["1000指增", "宏观策略", "主观多头"])
+    const idx = compare.strategies.find((row) => row.strategy === "1000指增")
+    assert.equal(idx?.values.find((value) => value.source === "files")?.n, 2)
+    assert.equal(idx?.values.find((value) => value.source === "files")?.median, 0.03)
+    assert.equal(idx?.values.find((value) => value.source === "ima")?.median, 0.01)
+    const macro = compare.strategies.find((row) => row.strategy === "宏观策略")
+    assert.deepEqual(macro?.values.map((value) => value.source), ["ima"])
+    const longOnly = compare.strategies.find((row) => row.strategy === "主观多头")
+    assert.deepEqual(longOnly?.values.map((value) => value.source), ["files"])
+    assert.ok(!compare.strategies.some((row) => row.strategy === "未分类"))
   })
 })

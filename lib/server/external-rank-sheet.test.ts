@@ -79,6 +79,48 @@ describe("dianjing workbook", () => {
     assert.ok(Math.abs((parsed.rows[0].ret_1w ?? 0) - 0.0065) < 1e-9)
     assert.ok(Math.abs((parsed.rows[0].ytd ?? 0) - 0.207) < 1e-9)
   })
+
+  it("strips OCR duration glued onto 指增 and takes the last mashed 近1周 percent", () => {
+    const parsed = parseExternalRankWorkbook(workbook([
+      ["基金简称", "管理人", "管理规模", "策略", "近1周", "今年"],
+      [null, null, null, "存续时间", "成立以来收益最大回撤", null],
+      ["玉数涵瑞沪深300指数增强二号", "玉数", "100亿以上", "300指增7.48", "41.34%-35.93%-0.78%", "12.95%"],
+      ["众量资产添运1号", "众量", "50~100亿", "1000指增3.87", "10.00%-20.00%-1.54%", "-4.77%"],
+    ], "近1周收益降序"), "2026.11.16~11.20 上周网红私募业绩更新-第477次_按周降序.xlsx")
+    assert.equal(parsed.rows[0].class_key, "300指增")
+    assert.equal(parsed.rows[0].strategy, "300指增")
+    assert.ok(Math.abs((parsed.rows[0].ret_1w ?? 0) - (-0.0078)) < 1e-9)
+    assert.ok(Math.abs((parsed.rows[0].ytd ?? 0) - 0.1295) < 1e-9)
+    assert.ok(Math.abs((parsed.rows[0].ytd_drawdown ?? 0) - 0.3593) < 1e-9)
+    assert.equal(parsed.rows[1].class_key, "1000指增")
+    assert.deepEqual(parsed.classes.sort(), ["1000指增", "300指增"])
+  })
+
+  it("reads 超额汇总 when 本周/今年收益 are glued into the strategy column", () => {
+    const parsed = parseExternalRankWorkbook(workbook([
+      ["产品名称", "管理人", "管理规模", "策略", "2025超额", "2024超额"],
+      [null, null, null, "本周收益今年收益", "本周超额今年超额", null],
+      ["玉数涵瑞沪深300指数增强二号", "玉数", "100亿以上", "300指增-0.78%12.95%", "0.76%27.54%", null],
+    ], "周超额降序"), "2026.11.16~11.20 网红量化私募超额汇总第230次.xlsx")
+    assert.equal(parsed.rows.length, 1)
+    assert.equal(parsed.rows[0].class_key, "300指增")
+    assert.equal(parsed.rows[0].manager, "玉数")
+    assert.ok(Math.abs((parsed.rows[0].ret_1w ?? 0) - (-0.0078)) < 1e-9)
+    assert.ok(Math.abs((parsed.rows[0].ytd ?? 0) - 0.1295) < 1e-9)
+  })
+
+  it("maps OCR leftovers: TA, EX500指增, and a duration-only strategy cell", () => {
+    const parsed = parseExternalRankWorkbook(workbook([
+      ["产品名称", "管理人", "策略", "近1周", "今年"],
+      ["宏锡量化CTA7号", "宏锡", "TA9.76", "3.63%", "19.36%"],
+      ["香农吉祥500指增一号", "香农", "EX500指增-9.33%-22.34%", "1.00%", "2.00%"],
+      ["衍盛铭量沪深300指数增强1号", "衍盛", "7.33", "1.00%", "2.00%"],
+    ]), "2026.11.16~11.20 上周网红私募业绩更新.xlsx")
+    assert.equal(parsed.rows[0].class_key, "量化CTA")
+    assert.equal(parsed.rows[1].class_key, "500指增")
+    assert.ok(Math.abs((parsed.rows[1].ret_1w ?? 0) - 0.01) < 1e-9)
+    assert.equal(parsed.rows[2].class_key, "300指增")
+  })
 })
 
 describe("dates", () => {

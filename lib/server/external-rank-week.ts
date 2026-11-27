@@ -9,7 +9,12 @@ import * as XLSX from "xlsx"
 import {
   EXTERNAL_RANK_FOLDER,
   IMA_DIANJING_RANK_FOLDER,
+  type ExternalRankCompareSource,
+  type ExternalRankCompareSourceKey,
+  type ExternalRankCompareStrategy,
+  type ExternalRankCompareValue,
   type ExternalRankDetectedWeek,
+  type ExternalRankWeekCompare,
   type ExternalRankWeekFile,
   type ExternalRankWeekGroup,
   type ExternalRankWeekPreview,
@@ -496,6 +501,108 @@ export async function buildExternalRankWeekPreview(
     })),
   }
 }
+
+export const EXTERNAL_RANK_COMPARE_SOURCES: ExternalRankCompareSource[] = [
+  { key: "files", label: "小荷公众号" },
+  { key: "ima", label: "ima点睛" },
+]
+
+export function medianNumbers(values: number[]): number | null {
+  const xs = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b)
+  if (xs.length === 0) return null
+  const mid = Math.floor(xs.length / 2)
+  return xs.length % 2 === 1 ? xs[mid]! : (xs[mid - 1]! + xs[mid]!) / 2
+}
+
+/** Align names so 宏观 and 宏观策略 (and similar) compare as one strategy. */
+export function compareStrategyKey(raw: string): string {
+  const compact = raw.replace(/\s+/g, "")
+  if (!compact) return "未分类"
+  if (/^宏观/.test(compact)) return "宏观策略"
+  if (/市场中性/.test(compact)) return "市场中性"
+  return compact
+}
+
+function productCompareKey(row: ExternalRankWeekRow): string {
+  const manager = (row.manager || "").replace(/\s+/g, "")
+  const product = (row.product || "").replace(/\s+/g, "")
+  return `${manager}\0${product || manager}`
+}
+
+export function sourceStrategyMedians(files: ExternalRankWeekFile[]): Map<string, { median: number; n: number }> {
+  const buckets = new Map<string, Map<string, number>>()
+  for (const file of files) {
+    if (!file.parsed) continue
+    for (const row of file.rows) {
+      if (row.ret_1w == null || !Number.isFinite(row.ret_1w)) continue
+      const strategy = compareStrategyKey(row.class_key || row.strategy || "未分类")
+      if (!strategy || strategy === "未分类") continue
+      const products = buckets.get(strategy) ?? new Map<string, number>()
+      const key = productCompareKey(row)
+      if (!products.has(key)) products.set(key, row.ret_1w)
+      buckets.set(strategy, products)
+    }
+  }
+  const out = new Map<string, { median: number; n: number }>()
+  for (const [strategy, products] of buckets) {
+    const values = [...products.values()]
+    const median = medianNumbers(values)
+    if (median == null) continue
+    out.set(strategy, { median, n: values.length })
+  }
+  return out
+}
+
+export function buildExternalRankCompareFromSources(
+  weekStart: string,
+  weekEnd: string,
+  bySource: Array<{ key: ExternalRankCompareSourceKey; label: string; files: ExternalRankWeekFile[] }>,
+): ExternalRankWeekCompare {
+  const sources: ExternalRankCompareSource[] = bySource.map(({ key, label }) => ({ key, label }))
+  const medians = bySource.map((entry) => ({
+    key: entry.key,
+    map: sourceStrategyMedians(entry.files),
+  }))
+  const names = new Set<string>()
+  for (const entry of medians) {
+    for (const name of entry.map.keys()) names.add(name)
+  }
+  const strategies: ExternalRankCompareStrategy[] = [...names]
+    .sort((a, b) => {
+      const na = medians.reduce((sum, entry) => sum + (entry.map.get(a)?.n ?? 0), 0)
+      const nb = medians.reduce((sum, entry) => sum + (entry.map.get(b)?.n ?? 0), 0)
+      return nb - na || a.localeCompare(b, "zh-CN")
+    })
+    .map((strategy) => {
+      const values: ExternalRankCompareValue[] = []
+      for (const entry of medians) {
+        const hit = entry.map.get(strategy)
+        if (!hit) continue
+        values.push({ source: entry.key, median: hit.median, n: hit.n })
+      }
+      return { strategy, values }
+    })
+    .filter((row) => row.values.length > 0)
+  return {
+    week_start: weekStart,
+    week_end: weekEnd,
+    metric: "ret_1w",
+    metric_label: "近一周收益率中位数",
+    sources,
+    strategies,
+  }
+}
+
+export async function buildExternalRankWeekCompare(weekEndRaw: string): Promise<ExternalRankWeekCompare> {
+  const { weekStart, weekEnd } = externalRankWeekWindow(weekEndRaw)
+  const bySource: Array<{ key: ExternalRankCompareSourceKey; label: string; files: ExternalRankWeekFile[] }> = []
+  for (const source of EXTERNAL_RANK_COMPARE_SOURCES) {
+    const files = await loadExternalRankWeekFiles(weekEndRaw, source.key)
+    bySource.push({ key: source.key, label: source.label, files })
+  }
+  return buildExternalRankCompareFromSources(weekStart, weekEnd, bySource)
+}
+
 
 function sheetTitle(name: string, used: Set<string>): string {
   const cleaned = name

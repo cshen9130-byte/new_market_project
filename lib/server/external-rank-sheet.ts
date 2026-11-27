@@ -193,7 +193,7 @@ function headerKind(cell: string): HeaderKind | null {
   if (/产品名称|产品简称|基金名称|基金简称/.test(s)) return "product"
   if (/管理规模|^规模$/.test(s)) return "aum"
   if (/净值日期|截止日期|统计截止/.test(s)) return "nav_date"
-  if (/今年以来收益率|今年来收益率|今年以来收益|今年来收益|近一年收益率|过去一年收益率|^今年$|^20\d{2}年$/.test(s)) return "ytd"
+  if (/今年以来收益率|今年来收益率|今年以来收益|今年来收益|今年收益|近一年收益率|过去一年收益率|^今年$|^20\d{2}年$/.test(s)) return "ytd"
   if (/今年以来最大回撤|今年来最大回撤|今年最大回撤|今年以来动态回撤|今年来动态回撤/.test(s)) return "ytd_dd"
   if (/近一周收益率|近1周收益率|一周收益率|近一周收益|^近1周$|^近一周$/.test(s)) return "ret_1w"
   return null
@@ -258,10 +258,66 @@ function inferWindow(title: string, headers: string[]): ExternalRankWindow {
   return "ytd"
 }
 
-function classKeyForStrategy(strategy: string): string {
-  const compact = strategy.replace(/\s+/g, "")
-  if (!compact || /^-?\d+(?:\.\d+)?%$/.test(compact) || /降序|升序/.test(compact)) return "未分类"
-  return resolveRankClass(strategy) ?? compact
+const PERCENT_TOKEN = /-?\d+(?:\.\d+)?%/g
+const INDEX_BOOST_RE = /A?\d{3,4}指增|全指指增|红利指增|小市值指增|空气指增/
+
+/** Percents in a cell, as decimals. "41.34%-35.93%-0.78%" → [0.4134, -0.3593, -0.0078] */
+export function extractReturnPercents(value: unknown): number[] {
+  const raw = cellText(value)
+  if (!raw) return []
+  const out: number[] = []
+  for (const token of raw.match(PERCENT_TOKEN) ?? []) {
+    const n = Number(token.slice(0, -1))
+    if (Number.isFinite(n)) out.push(n / 100)
+  }
+  return out
+}
+
+/**
+ * OCR from 小荷公众号 screenshots often glues 存续时间 or 本周/今年收益
+ * onto the strategy cell, e.g. "300指增7.48" or "1000指增-0.78%12.95%".
+ */
+export function cleanExternalRankStrategy(raw: string): string {
+  let compact = raw.replace(/\s+/g, "")
+  compact = compact.replace(/(?:-?\d+(?:\.\d+)?%)+/g, "")
+  compact = compact.replace(/[\d.:：]+$/g, "")
+  return compact
+}
+
+function classKeyFromProduct(product: string): string | null {
+  const s = product.replace(/\s+/g, "")
+  if (!s) return null
+  const family = resolveRankClass(s)
+  if (family) return family
+  if (/A500/.test(s)) return "A500指增"
+  if (/沪深300|300指数增强|300指增/.test(s)) return "300指增"
+  if (/中证1000|1000指数增强|1000指增/.test(s)) return "1000指增"
+  if (/中证2000|2000指数增强|2000指增/.test(s)) return "2000指增"
+  if (/中证500|500指数增强|500指增/.test(s)) return "500指增"
+  if (/全指(?:指数)?增强|全指指增/.test(s)) return "全指指增"
+  if (/红利(?:指数)?增强|红利指增/.test(s)) return "红利指增"
+  if (/小市值(?:指数)?增强|小市值指增/.test(s)) return "小市值指增"
+  const boost = s.match(INDEX_BOOST_RE)
+  return boost ? boost[0] : null
+}
+
+function classKeyForStrategy(strategy: string, product = ""): string {
+  const compact = cleanExternalRankStrategy(strategy)
+  if (!compact || /^-?\d+(?:\.\d+)?%$/.test(compact) || /降序|升序/.test(compact)) {
+    return classKeyFromProduct(product) || "未分类"
+  }
+  // Screenshot OCR often drops the leading C from CTA.
+  if (/^TA$/i.test(compact)) return "量化CTA"
+  const family = resolveRankClass(compact)
+  if (family) return family
+  const boost = compact.match(INDEX_BOOST_RE)
+  if (boost) return boost[0]
+  return compact
+}
+
+function mashedWeekThenYtd(text: string): boolean {
+  const s = text.replace(/\s+/g, "")
+  return /本周收益.*今年收益|今年收益.*本周收益/.test(s)
 }
 
 export function parseExternalRankWorkbook(data: Buffer | Uint8Array, fileName = ""): ParsedExternalRank {
@@ -285,6 +341,8 @@ export function parseExternalRankWorkbook(data: Buffer | Uint8Array, fileName = 
     })
     let headerAt = -1
     let columns = new Map<number, HeaderKind>()
+    let strategyEmbedsReturns = false
+    let weekSubheader = ""
     for (let i = 0; i < Math.min(grid.length, 15); i++) {
       const kinds = new Map<number, HeaderKind>()
       for (let c = 0; c < (grid[i]?.length ?? 0); c++) {
@@ -292,9 +350,20 @@ export function parseExternalRankWorkbook(data: Buffer | Uint8Array, fileName = 
         if (kind && ![...kinds.values()].includes(kind)) kinds.set(c, kind)
       }
       const values = [...kinds.values()]
-      if ((values.includes("manager") || values.includes("product")) && (values.includes("ytd") || values.includes("ret_1w"))) {
+      const hasParty = values.includes("manager") || values.includes("product")
+      const hasReturn = values.includes("ytd") || values.includes("ret_1w")
+      const next = grid[i + 1] ?? []
+      const strategyColHint = [...kinds.entries()].find(([, value]) => value === "strategy")?.[0]
+      const weekColHint = [...kinds.entries()].find(([, value]) => value === "ret_1w")?.[0]
+      const embeds = hasParty && (
+        (strategyColHint != null && mashedWeekThenYtd(cellText(next[strategyColHint])))
+        || next.some((cell) => mashedWeekThenYtd(cellText(cell)))
+      )
+      if (hasParty && (hasReturn || embeds)) {
         headerAt = i
         columns = kinds
+        strategyEmbedsReturns = embeds
+        weekSubheader = weekColHint == null ? "" : cellText(next[weekColHint])
         sawHeader = true
         break
       }
@@ -329,21 +398,41 @@ export function parseExternalRankWorkbook(data: Buffer | Uint8Array, fileName = 
       const product = productCol == null ? "" : cellText(line[productCol])
       if (!manager && !product) continue
       sequence += 1
-      const strategy = strategyCol == null ? "" : cellText(line[strategyCol])
+      const rawStrategy = strategyCol == null ? "" : cellText(line[strategyCol])
+      const strategy = cleanExternalRankStrategy(rawStrategy)
       const navDate = dateCol == null ? null : parseIsoDate(line[dateCol])
       if (navDate) asOfCandidates.push(navDate)
       const rankValue = rankCol == null ? null : parseNumber(line[rankCol])
+      let ytd = ytdCol == null ? null : parseNumber(line[ytdCol])
+      let ytdDrawdown = ddCol == null ? null : parseNumber(line[ddCol])
+      let ret1w = weekCol == null ? null : parseNumber(line[weekCol])
+      if (ytd == null && ytdCol != null) {
+        const percents = extractReturnPercents(line[ytdCol])
+        if (percents.length === 1) ytd = percents[0]
+      }
+      if (weekCol != null) {
+        const percents = extractReturnPercents(line[weekCol])
+        if (ret1w == null && percents.length) ret1w = percents[percents.length - 1]
+        if (ytdDrawdown == null && percents.length >= 3 && /回撤/.test(weekSubheader.replace(/\s+/g, ""))) {
+          ytdDrawdown = percents[percents.length - 2]
+        }
+      }
+      if (strategyEmbedsReturns) {
+        const percents = extractReturnPercents(rawStrategy)
+        if (ret1w == null && percents[0] != null) ret1w = percents[0]
+        if (ytd == null && percents[1] != null) ytd = percents[1]
+      }
       pending.push({
         rank: rankValue != null && rankValue > 0 ? Math.round(rankValue) : sequence,
-        strategy,
-        class_key: classKeyForStrategy(strategy || sheetName || baseName),
+        strategy: strategy || rawStrategy,
+        class_key: classKeyForStrategy(rawStrategy || sheetName || baseName, product),
         manager,
         product: product || null,
         aum: aumCol == null ? null : cellText(line[aumCol]) || null,
         nav_date: navDate,
-        ytd: ytdCol == null ? null : parseNumber(line[ytdCol]),
-        ytd_drawdown: ddCol == null ? null : parseNumber(line[ddCol]),
-        ret_1w: weekCol == null ? null : parseNumber(line[weekCol]),
+        ytd,
+        ytd_drawdown: ytdDrawdown,
+        ret_1w: ret1w,
         sheet: sheetName,
       })
     }

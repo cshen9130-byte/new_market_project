@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Download, ExternalLink, Loader2 } from "lucide-react"
 import { DateInput } from "@/components/ui/date-input"
-import { EXTERNAL_RANK_FOLDER, IMA_DIANJING_RANK_FOLDER, type ExternalRankWeekFile, type ExternalRankWeekPreview, type ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
+import { EXTERNAL_RANK_FOLDER, IMA_DIANJING_RANK_FOLDER, type ExternalRankWeekCompare, type ExternalRankWeekFile, type ExternalRankWeekPreview, type ExternalRankWeekRow } from "@/lib/ma/external-rank-week"
+import { ExternalRankSourceMedianChart } from "./ExternalRankSourceMedianChart"
 import { YingmiPrivateFundPanel } from "./YingmiPrivateFundPanel"
 
 function shanghaiToday(): string {
@@ -116,6 +117,9 @@ export function ExternalRankWeekView() {
   const [preview, setPreview] = useState<ExternalRankWeekPreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(true)
   const [previewError, setPreviewError] = useState("")
+  const [compare, setCompare] = useState<ExternalRankWeekCompare | null>(null)
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [compareError, setCompareError] = useState("")
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState("")
   const [selectedPath, setSelectedPath] = useState("")
@@ -173,6 +177,33 @@ export function ExternalRankWeekView() {
       stale = true
     }
   }, [source, weekEnd, loadPreview])
+
+  useEffect(() => {
+    if (source === "yingmi") return
+    let stale = false
+    setCompareLoading(true)
+    setCompareError("")
+    void fetch(`/ma/api/tracking-funds/external-rank/compare?week_end=${encodeURIComponent(weekEnd)}`, {
+      cache: "no-store",
+    })
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}))
+        if (stale) return
+        if (!res.ok) throw new Error(typeof json.error === "string" ? json.error : "中位数对比加载失败")
+        setCompare(json as ExternalRankWeekCompare)
+      })
+      .catch((err) => {
+        if (stale) return
+        setCompare(null)
+        setCompareError(err instanceof Error ? err.message : "中位数对比加载失败")
+      })
+      .finally(() => {
+        if (!stale) setCompareLoading(false)
+      })
+    return () => {
+      stale = true
+    }
+  }, [source, weekEnd])
 
   useEffect(() => {
     if (!preview || autoJumped.current || source === "yingmi") return
@@ -368,42 +399,7 @@ export function ExternalRankWeekView() {
         <YingmiPrivateFundPanel notice={yingmiNotice} />
       ) : (
       <div className="contents">
-      <div className="rounded-xl border bg-background shadow-sm overflow-hidden">
-        <div className="px-5 py-3 border-b text-sm font-medium">策略分布</div>
-        {previewLoading ? (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            正在读取{source === "ima" ? "ima点睛" : "小荷公众号"}…
-          </div>
-        ) : !preview || preview.groups.length === 0 ? (
-          <div className="py-12 px-5 text-center text-sm text-muted-foreground">
-            {preview && preview.files.length > 0
-              ? "本周文件没能识别成业绩榜，下面仍可下载原文件。"
-              : source === "ima" && preview && preview.scanned === 0
-                ? "还没有从 ima 点睛拉到榜单。每周三 10:00 会自动拉取最新一周。"
-                : "这一周没有匹配到榜单。可以改截止日，或从「已有周次」里选一周。"}
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-zinc-50/80 text-xs text-zinc-500 dark:bg-zinc-900/40">
-                <th className="px-5 py-2 text-left font-medium">策略</th>
-                <th className="px-5 py-2 text-right font-medium">文件数</th>
-                <th className="px-5 py-2 text-right font-medium">条目数</th>
-              </tr>
-            </thead>
-            <tbody>
-              {preview.groups.map((group) => (
-                <tr key={group.strategy} className="border-b last:border-0">
-                  <td className="px-5 py-2">{group.strategy}</td>
-                  <td className="px-5 py-2 text-right tabular-nums">{group.file_count}</td>
-                  <td className="px-5 py-2 text-right tabular-nums">{group.row_count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <ExternalRankSourceMedianChart data={compare} loading={compareLoading} error={compareError} />
 
       <div className="rounded-xl border bg-background shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b text-sm font-medium">本周文件</div>
@@ -413,15 +409,23 @@ export function ExternalRankWeekView() {
           <div className="py-10 text-center text-sm text-muted-foreground">没有文件</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[56rem] table-fixed text-sm">
+              <colgroup>
+                <col className="w-[24%]" />
+                <col className="w-[6.5rem]" />
+                <col />
+                <col className="w-[4rem]" />
+                <col className="w-[10.5rem]" />
+                <col className="w-[9rem]" />
+              </colgroup>
               <thead>
                 <tr className="border-b bg-zinc-50/80 text-xs text-zinc-500 dark:bg-zinc-900/40">
                   <th className="px-5 py-2 text-left font-medium">名称</th>
-                  <th className="px-5 py-2 text-left font-medium">截止日期</th>
+                  <th className="px-5 py-2 text-left font-medium whitespace-nowrap">截止日期</th>
                   <th className="px-5 py-2 text-left font-medium">策略</th>
-                  <th className="px-5 py-2 text-right font-medium">行数</th>
-                  <th className="px-5 py-2 text-left font-medium">修改</th>
-                  <th className="px-5 py-2 text-right font-medium">操作</th>
+                  <th className="px-5 py-2 text-right font-medium whitespace-nowrap">行数</th>
+                  <th className="px-5 py-2 text-left font-medium whitespace-nowrap">修改</th>
+                  <th className="px-5 py-2 text-right font-medium whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -521,6 +525,44 @@ export function ExternalRankWeekView() {
           </div>
         )}
       </div>
+
+      <div className="rounded-xl border bg-background shadow-sm overflow-hidden">
+        <div className="px-5 py-3 border-b text-sm font-medium">策略分布</div>
+        {previewLoading ? (
+          <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            正在读取{source === "ima" ? "ima点睛" : "小荷公众号"}…
+          </div>
+        ) : !preview || preview.groups.length === 0 ? (
+          <div className="py-12 px-5 text-center text-sm text-muted-foreground">
+            {preview && preview.files.length > 0
+              ? "本周文件没能识别成业绩榜，下面仍可下载原文件。"
+              : source === "ima" && preview && preview.scanned === 0
+                ? "还没有从 ima 点睛拉到榜单。每周三 10:00 会自动拉取最新一周。"
+                : "这一周没有匹配到榜单。可以改截止日，或从「已有周次」里选一周。"}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-zinc-50/80 text-xs text-zinc-500 dark:bg-zinc-900/40">
+                <th className="px-5 py-2 text-left font-medium">策略</th>
+                <th className="px-5 py-2 text-right font-medium">文件数</th>
+                <th className="px-5 py-2 text-right font-medium">条目数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.groups.map((group) => (
+                <tr key={group.strategy} className="border-b last:border-0">
+                  <td className="px-5 py-2">{group.strategy}</td>
+                  <td className="px-5 py-2 text-right tabular-nums">{group.file_count}</td>
+                  <td className="px-5 py-2 text-right tabular-nums">{group.row_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       </div>
       )}
     </div>
@@ -538,20 +580,38 @@ function FileRow({
 }) {
   return (
     <tr className={`border-b last:border-0 ${active ? "bg-red-50/60 dark:bg-red-950/20" : ""}`}>
-      <td className="px-5 py-2 max-w-[22rem]">
-        <button type="button" onClick={onOpen} className="text-left hover:text-red-600">
-          <span className="block truncate">{file.name}</span>
+      <td className="px-5 py-2 min-w-0 overflow-hidden align-top">
+        <button
+          type="button"
+          onClick={onOpen}
+          title={file.name}
+          className="block w-full min-w-0 max-w-full overflow-hidden text-left hover:text-red-600"
+        >
+          <span className="block min-w-0 truncate" title={file.name}>{file.name}</span>
           {!file.parsed && <span className="block text-xs text-amber-700 dark:text-amber-400">未能识别成业绩榜</span>}
         </button>
       </td>
-      <td className="px-5 py-2 tabular-nums whitespace-nowrap">{file.as_of ? slashDate(file.as_of) : "—"}</td>
-      <td className="px-5 py-2 text-muted-foreground">{file.classes.length ? file.classes.join("、") : "—"}</td>
-      <td className="px-5 py-2 text-right tabular-nums">{file.parsed ? file.row_count : "—"}</td>
-      <td className="px-5 py-2 text-muted-foreground whitespace-nowrap">
+      <td className="px-5 py-2 tabular-nums whitespace-nowrap overflow-hidden align-top">{file.as_of ? slashDate(file.as_of) : "—"}</td>
+      <td className="px-5 py-2 min-w-0 overflow-hidden align-top text-muted-foreground">
+        {file.classes.length ? (
+          <div className="flex min-w-0 flex-wrap gap-1">
+            {file.classes.map((item) => (
+              <span
+                key={item}
+                className="inline-flex max-w-full items-center rounded-md border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-xs leading-4 break-all text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              >
+                {item}
+              </span>
+            ))}
+          </div>
+        ) : "—"}
+      </td>
+      <td className="px-5 py-2 text-right tabular-nums whitespace-nowrap overflow-hidden align-top">{file.parsed ? file.row_count : "—"}</td>
+      <td className="px-5 py-2 text-muted-foreground whitespace-nowrap overflow-hidden align-top">
         {formatWhen(file.updated_at)}
         <span className="ml-2 text-xs">{formatSize(file.size)}</span>
       </td>
-      <td className="px-5 py-2 text-right whitespace-nowrap">
+      <td className="px-5 py-2 text-right whitespace-nowrap overflow-hidden align-top">
         <button type="button" onClick={onOpen} className="text-xs text-zinc-600 hover:text-red-600 dark:text-zinc-300">
           查看
         </button>
