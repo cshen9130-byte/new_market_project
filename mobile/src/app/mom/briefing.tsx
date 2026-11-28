@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router"
+import { useLocalSearchParams, useRouter } from "expo-router"
 import { createElement, useCallback, useEffect, useRef, useState } from "react"
 import {
   ActivityIndicator,
@@ -103,6 +103,10 @@ const CAPTURE_JS = `
 
 export default function MomBriefingScreen() {
   const router = useRouter()
+  const params = useLocalSearchParams<{ source?: string | string[] }>()
+  const sourceParam = Array.isArray(params.source) ? params.source[0] : params.source
+  const isAccount = sourceParam === "account"
+  const briefingTitle = isAccount ? "单账户简报" : "MOM 简报"
   const webRef = useRef<any>(null)
   const [url, setUrl] = useState("")
   const [error, setError] = useState("")
@@ -122,8 +126,9 @@ export default function MomBriefingScreen() {
           role: user.role,
           permissions: user.permissions,
         }
-        // open-mom-briefing redirects to risk-report?tab=briefing&embed=1
-        const next = `${baseUrl}/open-mom-briefing#${encodeURIComponent(JSON.stringify(payload))}`
+        // open-mom-briefing redirects to the matching risk-report briefing tab.
+        const qs = isAccount ? "?source=account" : ""
+        const next = `${baseUrl}/open-mom-briefing${qs}#${encodeURIComponent(JSON.stringify(payload))}`
         if (cancelled) return
         setUrl(next)
       } catch (err) {
@@ -133,7 +138,7 @@ export default function MomBriefingScreen() {
     return () => {
       cancelled = true
     }
-  }, [baseUrl])
+  }, [baseUrl, isAccount])
 
   function keepInWebView(requestUrl: string): boolean {
     const next = String(requestUrl || "")
@@ -178,7 +183,7 @@ export default function MomBriefingScreen() {
       if (!canShare) throw new Error("当前系统不支持分享")
       await Sharing.shareAsync(path, {
         mimeType: "image/png",
-        dialogTitle: "分享 MOM 简报",
+        dialogTitle: isAccount ? "分享单账户简报" : "分享 MOM 简报",
         UTI: "public.png",
       })
     } finally {
@@ -217,8 +222,8 @@ export default function MomBriefingScreen() {
       router.back()
       return
     }
-    router.push("/mom/daily")
-  }, [router])
+    router.push(isAccount ? "/mom/account" : "/mom/daily")
+  }, [router, isAccount])
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -231,11 +236,11 @@ export default function MomBriefingScreen() {
         router.back()
         return true
       }
-      router.push("/mom/daily")
+      router.push(isAccount ? "/mom/account" : "/mom/daily")
       return true
     })
     return () => sub.remove()
-  }, [router])
+  }, [router, isAccount])
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -243,7 +248,7 @@ export default function MomBriefingScreen() {
         <Pressable onPress={onNavBack} hitSlop={12}>
           <Text style={styles.back}>返回</Text>
         </Pressable>
-        <Text style={styles.title}>MOM 简报</Text>
+        <Text style={styles.title}>{briefingTitle}</Text>
         <View style={styles.topRight}>
           <Pressable
             onPress={onShare}
@@ -264,7 +269,7 @@ export default function MomBriefingScreen() {
       ) : url ? (
         <View style={styles.frame}>
           {Platform.OS === "web" ? (
-            <WebFrame url={url} />
+            <WebFrame url={url} title={briefingTitle} />
           ) : (
             <>
               {loading ? <ActivityIndicator color={colors.up} style={styles.loader} /> : null}
@@ -316,9 +321,9 @@ export default function MomBriefingScreen() {
   )
 }
 
-function WebFrame({ url }: { url: string }) {
+function WebFrame({ url, title }: { url: string; title: string }) {
   return createElement("iframe", {
-    title: "MOM 简报",
+    title,
     src: url,
     style: { flex: 1, width: "100%", height: "100%", border: "none", background: "#f3f0ea" },
   })

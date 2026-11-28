@@ -21,6 +21,14 @@ const functions = [
     openInNewTab: false,
   },
   {
+    title: "单账户简报",
+    description: "与 MOM 简报同结构的单账户风控简报，可下载 PDF、图片或 HTML。",
+    href: "/ma/dashboard/mom-analysis/account-risk-report?tab=briefing",
+    downloadHref: null,
+    icon: FileText,
+    openInNewTab: false,
+  },
+  {
     title: "盘手历史交易复盘",
     description: "基于客户交易核算日报，按账户汇总期间盈亏、手续费、权益等绩效指标。",
     href: "/ma/dashboard/mom-analysis/trader-analysis",

@@ -106,15 +106,16 @@ export function MomReport({ source, title }: { source: MomSource; title: string 
           <Text style={styles.kicker}>每日风控</Text>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.meta}>{data?.date || "还没有核算日期"}</Text>
-          {source === "mom" ? (
-            <Pressable style={styles.briefing} onPress={() => router.push("/mom/briefing")}>
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={styles.briefingName}>MOM 简报</Text>
-                <Text style={styles.meta}>在手机里查看和电脑版相同的简报。</Text>
-              </View>
-              <Text style={styles.briefingGo}>查看</Text>
-            </Pressable>
-          ) : null}
+          <Pressable
+            style={styles.briefing}
+            onPress={() => router.push(source === "account" ? "/mom/briefing?source=account" : "/mom/briefing")}
+          >
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={styles.briefingName}>{source === "account" ? "单账户简报" : "MOM 简报"}</Text>
+              <Text style={styles.meta}>在手机里查看和电脑版相同的简报。</Text>
+            </View>
+            <Text style={styles.briefingGo}>查看</Text>
+          </Pressable>
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
           <View style={styles.hero}>
